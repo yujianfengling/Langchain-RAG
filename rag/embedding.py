@@ -1,0 +1,227 @@
+"""
+Embedding模块
+负责管理本地Embedding模型，提供文本向量化功能
+使用LangChain Embeddings接口，支持HuggingFace模型
+"""
+
+import os
+from typing import List, Optional, Union
+
+# 尝试导入LangChain Embeddings接口
+try:
+    from langchain_core.embeddings import Embeddings
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_AVAILABLE = False
+    # 创建一个简单的Embeddings替代基类
+    class Embeddings:
+        """LangChain Embeddings的简单替代基类"""
+        def embed_documents(self, texts: List[str]) -> List[List[float]]:
+            raise NotImplementedError
+        
+        def embed_query(self, text: str) -> List[float]:
+            raise NotImplementedError
+
+# 尝试导入HuggingFaceEmbeddings
+try:
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    HUGGINGFACE_AVAILABLE = True
+except ImportError:
+    HUGGINGFACE_AVAILABLE = False
+
+# 全局模型缓存
+_embedding_model = None
+
+
+def get_embedding_model() -> Embeddings:
+    """
+    获取Embedding模型实例（单例模式）
+    
+    Returns:
+        Embeddings模型实例
+        
+    Raises:
+        ImportError: 缺少必要的依赖包
+        RuntimeError: 模型加载失败
+    """
+    global _embedding_model
+    
+    # 如果模型已加载，直接返回
+    if _embedding_model is not None:
+        return _embedding_model
+    
+    # 从环境变量获取模型名称
+    model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+    
+    # 检查依赖
+    if not HUGGINGFACE_AVAILABLE:
+        raise ImportError(
+            "缺少langchain-community包，请运行: pip install langchain-community\n"
+            "或者: pip install langchain[community]"
+        )
+    
+    try:
+        # 创建模型实例
+        model_kwargs = {'device': 'cpu'}  # 默认使用CPU
+        encode_kwargs = {'normalize_embeddings': True}  # 归一化嵌入
+        
+        _embedding_model = HuggingFaceEmbeddings(
+            model_name=model_name,
+            model_kwargs=model_kwargs,
+            encode_kwargs=encode_kwargs,
+            show_progress=False  # 不显示进度条
+        )
+        
+        # 验证模型是否可用
+        _embedding_model.embed_query("测试")
+        
+        return _embedding_model
+        
+    except Exception as e:
+        # 清除可能的部分加载
+        _embedding_model = None
+        
+        # 提供详细的错误信息
+        error_msg = f"加载Embedding模型失败: {str(e)}\n"
+        error_msg += "可能的原因:\n"
+        error_msg += "1. 模型下载失败，请检查网络连接\n"
+        error_msg += "2. transformers包未安装: pip install transformers\n"
+        error_msg += "3. torch包未安装: pip install torch\n"
+        error_msg += f"4. 模型名称错误: {model_name}\n"
+        
+        raise RuntimeError(error_msg)
+
+
+def embed_documents(documents: List[Union['Document', str]]) -> List[List[float]]:
+    """
+    将文档列表转换为向量
+    
+    Args:
+        documents: Document对象列表或字符串列表
+        
+    Returns:
+        向量列表，每个向量是浮点数列表
+        
+    Raises:
+        ValueError: 输入列表为空
+        RuntimeError: 向量化失败
+    """
+    if not documents:
+        raise ValueError("文档列表不能为空")
+    
+    try:
+        # 获取模型
+        model = get_embedding_model()
+        
+        # 提取文本内容
+        texts = []
+        for doc in documents:
+            if hasattr(doc, 'page_content'):
+                # Document对象
+                texts.append(doc.page_content)
+            elif isinstance(doc, str):
+                # 字符串
+                texts.append(doc)
+            else:
+                raise ValueError(f"不支持的文档类型: {type(doc)}")
+        
+        # 批量向量化
+        embeddings = model.embed_documents(texts)
+        
+        return embeddings
+        
+    except Exception as e:
+        raise RuntimeError(f"文档向量化失败: {str(e)}")
+
+
+def embed_query(query: str) -> List[float]:
+    """
+    将用户问题转换为向量
+    
+    Args:
+        query: 用户问题字符串
+        
+    Returns:
+        问题向量（浮点数列表）
+        
+    Raises:
+        ValueError: 查询字符串为空
+        RuntimeError: 向量化失败
+    """
+    if not query or not query.strip():
+        raise ValueError("查询字符串不能为空")
+    
+    try:
+        # 获取模型
+        model = get_embedding_model()
+        
+        # 向量化查询
+        embedding = model.embed_query(query)
+        
+        return embedding
+        
+    except Exception as e:
+        raise RuntimeError(f"查询向量化失败: {str(e)}")
+
+
+def get_embedding_dimension() -> Optional[int]:
+    """
+    获取Embedding向量的维度
+    
+    Returns:
+        向量维度，如果模型未加载则返回None
+    """
+    try:
+        model = get_embedding_model()
+        # 使用测试文本获取维度
+        test_embedding = model.embed_query("测试")
+        return len(test_embedding)
+    except:
+        return None
+
+
+def check_embedding_status() -> dict:
+    """
+    检查Embedding模块的状态
+    
+    Returns:
+        状态信息字典
+    """
+    status = {
+        'langchain_available': LANGCHAIN_AVAILABLE,
+        'huggingface_available': HUGGINGFACE_AVAILABLE,
+        'model_loaded': _embedding_model is not None,
+        'model_name': os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5"),
+        'dimension': get_embedding_dimension()
+    }
+    
+    # 检查torch和transformers
+    try:
+        import torch
+        status['torch_available'] = True
+        status['torch_version'] = torch.__version__
+    except ImportError:
+        status['torch_available'] = False
+    
+    try:
+        import transformers
+        status['transformers_available'] = True
+        status['transformers_version'] = transformers.__version__
+    except ImportError:
+        status['transformers_available'] = False
+    
+    return status
+
+
+# 便捷函数
+def embed_texts(texts: List[str]) -> List[List[float]]:
+    """
+    将文本列表转换为向量（便捷函数）
+    
+    Args:
+        texts: 文本字符串列表
+        
+    Returns:
+        向量列表
+    """
+    return embed_documents(texts)

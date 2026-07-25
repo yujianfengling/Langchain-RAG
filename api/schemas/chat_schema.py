@@ -1,0 +1,28 @@
+# api/schemas/chat_schema.py
+# 聊天接口数据模型
+
+from typing import List, Optional
+from pydantic import BaseModel
+
+
+class ChatRequest(BaseModel):
+    """聊天请求"""
+    question: str
+    subject_id: str
+    history: List[dict] = []
+
+
+class ChatResponse(BaseModel):
+    """聊天响应"""
+    success: bool = True
+    answer: str
+    sources: List[dict] = []
+    model: str = "deepseek"
+    latency: float = 0.0
+
+
+class ChatStreamRequest(BaseModel):
+    """流式聊天请求"""
+    question: str
+    subject_id: str
+    history: List[dict] = []
