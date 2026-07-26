@@ -11,8 +11,8 @@ from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
 
-# 向量存储目录配置
-VECTOR_STORE_DIR = "data/vector_store"
+# 向量存储目录配置（使用绝对路径，避免工作目录不一致导致写入失败）
+VECTOR_STORE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "vector_store")
 
 
 def create_vector_store(
@@ -42,6 +42,8 @@ def create_vector_store(
     try:
         import faiss
         import numpy as np
+        import tempfile
+        import shutil
         
         # 确定存储路径
         if persist_dir is None:
@@ -72,17 +74,27 @@ def create_vector_store(
         index.add(vectors)
         
         # 保存索引文件
+        # FAISS C++ fopen 在 Windows 上不支持中文路径，
+        # 因此先写入临时ASCII路径，再移到目标位置
         index_path = os.path.join(persist_dir, "index.faiss")
-        faiss.write_index(index, index_path)
-        
-        # 保存文档和元数据
         docs_path = os.path.join(persist_dir, "index.pkl")
-        with open(docs_path, 'wb') as f:
-            pickle.dump({
-                'documents': docs,
-                'texts': texts,
-                'metadatas': metadatas
-            }, f)
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_index = os.path.join(tmp_dir, "index.faiss")
+            tmp_docs = os.path.join(tmp_dir, "index.pkl")
+            
+            faiss.write_index(index, tmp_index)
+            
+            with open(tmp_docs, 'wb') as f:
+                pickle.dump({
+                    'documents': docs,
+                    'texts': texts,
+                    'metadatas': metadatas
+                }, f)
+            
+            # 移动到最终位置
+            shutil.move(tmp_index, index_path)
+            shutil.move(tmp_docs, docs_path)
         
         logger.info(f"FAISS索引已创建并保存至: {persist_dir}")
         logger.info(f"  - 索引文件: {index_path}")
@@ -121,6 +133,8 @@ def load_vector_store(
     """
     try:
         import faiss
+        import tempfile
+        import shutil
         
         # 确定存储路径
         if persist_dir is None:
@@ -138,8 +152,11 @@ def load_vector_store(
             logger.warning(f"文档文件不存在: {docs_path}")
             return None
         
-        # 加载FAISS索引
-        index = faiss.read_index(index_path)
+        # 加载FAISS索引（通过临时ASCII路径绕过中文路径问题）
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_index = os.path.join(tmp_dir, "index.faiss")
+            shutil.copy2(index_path, tmp_index)
+            index = faiss.read_index(tmp_index)
         
         # 加载文档数据
         with open(docs_path, 'rb') as f:
@@ -280,24 +297,33 @@ class FAISSVectorStore:
         """保存索引和文档到磁盘"""
         try:
             import faiss
+            import tempfile
+            import shutil
             
             if self.persist_dir is None:
                 return
             
             os.makedirs(self.persist_dir, exist_ok=True)
             
-            # 保存FAISS索引
+            # 保存FAISS索引（通过临时ASCII路径绕过中文路径问题）
             index_path = os.path.join(self.persist_dir, "index.faiss")
-            faiss.write_index(self.index, index_path)
-            
-            # 保存文档
             docs_path = os.path.join(self.persist_dir, "index.pkl")
-            with open(docs_path, 'wb') as f:
-                pickle.dump({
-                    'documents': self.documents,
-                    'texts': [doc.page_content for doc in self.documents],
-                    'metadatas': [doc.metadata for doc in self.documents]
-                }, f)
+            
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_index = os.path.join(tmp_dir, "index.faiss")
+                tmp_docs = os.path.join(tmp_dir, "index.pkl")
+                
+                faiss.write_index(self.index, tmp_index)
+                
+                with open(tmp_docs, 'wb') as f:
+                    pickle.dump({
+                        'documents': self.documents,
+                        'texts': [doc.page_content for doc in self.documents],
+                        'metadatas': [doc.metadata for doc in self.documents]
+                    }, f)
+                
+                shutil.move(tmp_index, index_path)
+                shutil.move(tmp_docs, docs_path)
             
             logger.info(f"已保存FAISS索引至: {self.persist_dir}")
             

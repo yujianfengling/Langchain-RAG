@@ -18,6 +18,11 @@ try:
     from langchain_core.messages import HumanMessage, SystemMessage
     LANGCHAIN_AVAILABLE = True
 except ImportError:
+    ChatPromptTemplate = None  # 保证函数签名不炸
+    JsonOutputParser = None
+    HumanMessage = None
+    SystemMessage = None
+    ChatOpenAI = None
     LANGCHAIN_AVAILABLE = False
     print("警告: langchain相关库未安装，请运行 'pip install langchain langchain-openai' 安装")
 

@@ -3,6 +3,7 @@ uvicorn[standard]
 pydantic
 pydantic-settings
 python-dotenv
+python-multipart
 langchain
 langchain-core
 langchain-openai
@@ -13,6 +14,7 @@ chromadb
 requests
 sentence-transformers
 pdfplumber
+pypdf
 docx2txt
 rank-bm25
 faiss-cpu

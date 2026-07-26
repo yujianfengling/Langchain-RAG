@@ -69,7 +69,9 @@ const SubjectDetailView: React.FC<{
       ]);
       
       if (docsRes.status === 'fulfilled') {
-        setDocuments(docsRes.value?.data?.documents || []);
+        const docsData = docsRes.value;
+        // 兼容两种格式：直接返回documents数组 或 包在data里
+        setDocuments(docsData?.documents || docsData?.data?.documents || []);
       }
       if (statsRes.status === 'fulfilled') {
         setStats(statsRes.value?.data);

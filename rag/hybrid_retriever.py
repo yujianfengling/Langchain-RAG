@@ -6,9 +6,16 @@ v2.0 更新：
 - 新增BM25关键词检索
 - RRF (Reciprocal Rank Fusion) 融合排序
 - 检索来源标记（vector / bm25 / hybrid）
+
+v2.1 更新：
+- BM25索引持久化到磁盘（pickle）
+- 启动时自动从磁盘加载已有BM25索引
 """
 
+import os
+import pickle
 import logging
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from .vector_store import similarity_search, load_vector_store, GlobalFAISS
@@ -18,6 +25,79 @@ logger = logging.getLogger(__name__)
 
 # 全局BM25检索器（按subject_id分组）
 _bm25_retrievers: Dict[str, BM25Retriever] = {}
+
+# BM25索引持久化根目录（使用绝对路径）
+_BM25_INDEX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "bm25_index")
+
+
+def _get_bm25_index_path(subject_id: str) -> Path:
+    """获取指定学科的BM25索引文件路径"""
+    return Path(_BM25_INDEX_DIR) / subject_id / "bm25.pkl"
+
+
+def _save_bm25_index(subject_id: str) -> None:
+    """
+    将BM25索引持久化到磁盘
+    
+    保存内容：
+    - documents: 原始Document对象列表
+    - tokenized_corpus: 分词后的语料库
+    """
+    bm25 = _bm25_retrievers.get(subject_id)
+    if bm25 is None or bm25.is_empty:
+        return
+    
+    index_path = _get_bm25_index_path(subject_id)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        data = {
+            "documents": bm25._documents,
+            "tokenized_corpus": bm25._tokenized_corpus,
+        }
+        with open(index_path, 'wb') as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        logger.info(f"BM25索引已持久化: {index_path} ({bm25.doc_count}个文档)")
+    except Exception as e:
+        logger.error(f"BM25索引持久化失败: {e}", exc_info=True)
+
+
+def _load_bm25_index(subject_id: str) -> bool:
+    """
+    从磁盘加载BM25索引到内存
+    
+    Returns:
+        是否加载成功
+    """
+    if subject_id in _bm25_retrievers and not _bm25_retrievers[subject_id].is_empty:
+        return True  # 已在内存中
+    
+    index_path = _get_bm25_index_path(subject_id)
+    if not index_path.exists():
+        return False
+    
+    try:
+        with open(index_path, 'rb') as f:
+            data = pickle.load(f)
+        
+        documents = data.get("documents", [])
+        tokenized_corpus = data.get("tokenized_corpus", [])
+        
+        if not documents:
+            return False
+        
+        # 直接构造BM25Retriever，跳过add_documents的分词（已有tokenized_corpus）
+        retriever = BM25Retriever.__new__(BM25Retriever)
+        retriever._documents = documents
+        retriever._tokenized_corpus = tokenized_corpus
+        retriever._rebuild_index()
+        
+        _bm25_retrievers[subject_id] = retriever
+        logger.info(f"BM25索引已从磁盘加载: {index_path} ({retriever.doc_count}个文档)")
+        return True
+    except Exception as e:
+        logger.error(f"BM25索引加载失败: {e}", exc_info=True)
+        return False
 
 
 def build_index(
@@ -43,6 +123,9 @@ def build_index(
     # 2. 构建BM25索引
     bm25 = BM25Retriever(documents)
     _bm25_retrievers[subject_id] = bm25
+    
+    # 3. 持久化BM25索引到磁盘（重启后可自动加载）
+    _save_bm25_index(subject_id)
     
     logger.info(f"BM25索引构建完成: subject={subject_id}, BM25文档={bm25.doc_count}")
     
@@ -90,11 +173,14 @@ def retrieve(
         result_lists.append(vector_results)
         logger.debug(f"向量检索: {len(vector_results)}个结果")
     
-    # 2. BM25检索
-    if use_bm25 and subject_id in _bm25_retrievers:
-        bm25_results = _bm25_search(query, subject_id, top_k)
-        result_lists.append(bm25_results)
-        logger.debug(f"BM25检索: {len(bm25_results)}个结果")
+    # 2. BM25检索（如果内存中没有，尝试从磁盘自动加载）
+    if use_bm25:
+        if subject_id not in _bm25_retrievers:
+            _load_bm25_index(subject_id)
+        if subject_id in _bm25_retrievers:
+            bm25_results = _bm25_search(query, subject_id, top_k)
+            result_lists.append(bm25_results)
+            logger.debug(f"BM25检索: {len(bm25_results)}个结果")
     
     # 3. 结果融合
     if not result_lists:
@@ -215,9 +301,15 @@ def _make_simple_doc(content: str, metadata: dict):
 
 
 def get_retriever_status(subject_id: str) -> Dict[str, Any]:
-    """获取检索器状态"""
+    """获取检索器状态（含持久化信息）"""
+    # 确保尝试从磁盘加载
+    if subject_id not in _bm25_retrievers:
+        _load_bm25_index(subject_id)
+    
     bm25 = _bm25_retrievers.get(subject_id)
     faiss_store = GlobalFAISS.get(subject_id)
+    
+    bm25_disk_path = _get_bm25_index_path(subject_id)
     
     return {
         "subject_id": subject_id,
@@ -228,7 +320,9 @@ def get_retriever_status(subject_id: str) -> Dict[str, Any]:
         "bm25": {
             "available": bm25 is not None and not bm25.is_empty,
             "document_count": bm25.doc_count if bm25 else 0,
-            "implementation": bm25.get_status().get('implementation', 'unknown') if bm25 else 'none'
+            "implementation": bm25.get_status().get('implementation', 'unknown') if bm25 else 'none',
+            "persisted_on_disk": bm25_disk_path.exists(),
+            "index_path": str(bm25_disk_path),
         },
         "hybrid_enabled": True,
         "rrf_enabled": True
@@ -236,11 +330,24 @@ def get_retriever_status(subject_id: str) -> Dict[str, Any]:
 
 
 def clear_index(subject_id: str) -> None:
-    """清除指定学科的混合索引"""
+    """清除指定学科的混合索引（内存 + 磁盘）"""
     global _bm25_retrievers
     
     if subject_id in _bm25_retrievers:
         _bm25_retrievers[subject_id].clear()
         del _bm25_retrievers[subject_id]
+    
+    # 清理磁盘上的BM25索引文件
+    index_path = _get_bm25_index_path(subject_id)
+    if index_path.exists():
+        try:
+            index_path.unlink()
+            # 清理空的父目录
+            parent_dir = index_path.parent
+            if parent_dir.exists() and not any(parent_dir.iterdir()):
+                parent_dir.rmdir()
+            logger.info(f"BM25磁盘索引已删除: {index_path}")
+        except Exception as e:
+            logger.warning(f"删除BM25磁盘索引失败: {e}")
     
     logger.info(f"混合索引已清除: subject={subject_id}")

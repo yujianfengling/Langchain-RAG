@@ -151,8 +151,8 @@ async def upload_file(
 
         # 2. 文件名预校验（在读取内容前快速拒绝非法请求）
         import re as _re
-        if not _re.match(r'^[a-zA-Z0-9_-]+$', subject_id):
-            raise ValidationError("学科ID格式不合法")
+        if not _re.match(r'^[\w\u4e00-\u9fff-]+$', subject_id):
+            raise ValidationError("学科ID格式不合法（支持中文、英文、数字、下划线、连字符）")
 
         # 3. 读取文件内容
         file_content = await file.read()

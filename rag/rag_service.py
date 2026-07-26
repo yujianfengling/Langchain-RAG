@@ -15,7 +15,29 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Any
 
+import base64
+
 logger = logging.getLogger(__name__)
+
+# 项目根目录（绝对路径，用于构建所有数据目录）
+_PROJECT_ROOT = str(Path(__file__).parent.parent)
+_VECTOR_STORE_BASE = os.path.join(_PROJECT_ROOT, "data", "vector_store")
+_SUBJECTS_DATA_BASE = os.path.join(_PROJECT_ROOT, "data", "subjects")
+
+
+def _safe_dir_name(subject_id: str) -> str:
+    """
+    将学科ID转为文件系统安全的目录名。
+    FAISS在Windows上不支持中文路径，因此中文ID需编码为ASCII。
+    纯ASCII的ID直接返回。
+    """
+    try:
+        subject_id.encode('ascii')
+        return subject_id  # 纯ASCII，直接用
+    except UnicodeEncodeError:
+        # 中文ID → base64编码（去掉=填充，用_替代/和+）
+        encoded = base64.urlsafe_b64encode(subject_id.encode('utf-8')).decode('ascii').rstrip('=')
+        return f"_zh_{encoded}"
 
 # 导入LangChain Document对象
 try:
@@ -108,8 +130,8 @@ def build_knowledge_base(
         
         logger.info(f"文本分割完成: {len(documents)}个文档 → {len(split_docs)}个chunk")
         
-        # 2. 创建向量数据库（按学科目录隔离）
-        persist_dir = f"data/vector_store/{subject_id}"
+        # 2. 创建向量数据库（按学科目录隔离，使用绝对路径）
+        persist_dir = os.path.join(_VECTOR_STORE_BASE, _safe_dir_name(subject_id))
         
         # 获取嵌入模型
         embeddings = get_embedding_model()
@@ -165,7 +187,7 @@ def load_knowledge_base(subject_id: str) -> Any:
     
     try:
         # 检查知识库目录是否存在
-        persist_dir = f"data/vector_store/{subject_id}"
+        persist_dir = os.path.join(_VECTOR_STORE_BASE, _safe_dir_name(subject_id))
         persist_path = Path(persist_dir)
         
         if not persist_path.exists():
@@ -357,7 +379,7 @@ def retrieve_context(
         else:
             # 搜索所有学科
             results = []
-            vector_store_base = Path("data/vector_store")
+            vector_store_base = Path(_VECTOR_STORE_BASE)
             
             if not vector_store_base.exists():
                 return results
@@ -485,7 +507,7 @@ def list_available_subjects() -> List[str]:
         学科ID列表
     """
     subjects = []
-    vector_store_base = Path("data/vector_store")
+    vector_store_base = Path(_VECTOR_STORE_BASE)
     
     if not vector_store_base.exists():
         return subjects
@@ -521,7 +543,7 @@ def delete_knowledge_base(subject_id: str) -> bool:
     
     try:
         # 检查知识库目录是否存在
-        persist_directory = f"data/vector_store/{subject_id}"
+        persist_directory = os.path.join(_VECTOR_STORE_BASE, _safe_dir_name(subject_id))
         persist_path = Path(persist_directory)
         
         if not persist_path.exists():
@@ -568,14 +590,14 @@ def rebuild_knowledge_base(
     
     try:
         # 1. 删除旧知识库（如果存在）
-        persist_directory = f"data/vector_store/{subject_id}"
+        persist_directory = os.path.join(_VECTOR_STORE_BASE, _safe_dir_name(subject_id))
         persist_path = Path(persist_directory)
         
         if persist_path.exists():
             shutil.rmtree(persist_path)
         
         # 2. 查找学科资料目录
-        subject_data_dir = Path(f"data/subjects/{subject_id}")
+        subject_data_dir = Path(os.path.join(_SUBJECTS_DATA_BASE, subject_id))
         if not subject_data_dir.exists():
             raise FileNotFoundError(f"学科资料目录不存在: {subject_data_dir}")
         
@@ -612,7 +634,7 @@ def get_knowledge_base_info(subject_id: str) -> Dict[str, Any]:
         'subject_id': subject_id,
         'exists': False,
         'document_count': 0,
-        'persist_directory': f"data/vector_store/{subject_id}"
+        'persist_directory': os.path.join(_VECTOR_STORE_BASE, _safe_dir_name(subject_id))
     }
     
     try:
@@ -650,7 +672,7 @@ def check_rag_service_status() -> Dict[str, Any]:
         'hybrid_available': HYBRID_AVAILABLE,
         'config_available': CONFIG_AVAILABLE,
         'available_subjects': list_available_subjects(),
-        'vector_store_base': 'data/vector_store',
+        'vector_store_base': _VECTOR_STORE_BASE,
         'version': '2.0',
         'features': {
             'semantic_split': CONFIG_AVAILABLE and settings.USE_SEMANTIC_SPLIT,
@@ -664,6 +686,6 @@ def check_rag_service_status() -> Dict[str, Any]:
         status['import_error'] = IMPORT_ERROR
     
     if CONFIG_AVAILABLE:
-        status['rag_config'] = settings.get_rag_config()
+        status['rag_config'] = settings.rag.get_masked_config()
     
     return status

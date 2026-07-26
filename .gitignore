@@ -7,6 +7,12 @@ logs/
 # 向量存储（运行时生成）
 data/vector_store/
 
+# BM25索引（运行时生成）
+data/bm25_index/
+
+# 本地模型文件（太大，需要各自下载）
+models/
+
 # Python缓存
 __pycache__/
 *.pyc

@@ -300,7 +300,7 @@ def upload_file_to_subject(subject_id: str, file_content: bytes, filename: str) 
             raise KnowledgeServiceError(err_msg)
 
         # 3. subject_id 安全校验（仅允许字母数字下划线连字符）
-        if not re.match(r'^[a-zA-Z0-9_-]+$', subject_id):
+        if not re.match(r'^[\w\u4e00-\u9fff-]+$', subject_id):
             raise KnowledgeServiceError("学科ID格式不合法")
 
         # 4. 创建学科目录并保存文件
@@ -394,7 +394,7 @@ def delete_subject_document(subject_id: str, filename: str) -> Dict[str, Any]:
             raise KnowledgeServiceError(err_msg)
 
         # subject_id 安全校验
-        if not re.match(r'^[a-zA-Z0-9_-]+$', subject_id):
+        if not re.match(r'^[\w\u4e00-\u9fff-]+$', subject_id):
             raise KnowledgeServiceError("学科ID格式不合法")
 
         safe_filename = Path(filename).name

@@ -7,6 +7,13 @@ Embedding模块
 import os
 from typing import List, Optional, Union
 
+# 确保.env在模型下载前加载（HF_ENDPOINT等环境变量）
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # 尝试导入LangChain Embeddings接口
 try:
     from langchain_core.embeddings import Embeddings
@@ -52,6 +59,14 @@ def get_embedding_model() -> Embeddings:
     
     # 从环境变量获取模型名称
     model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+    
+    # 优先使用本地模型目录（离线可用）
+    local_model_dir = os.getenv("EMBEDDING_LOCAL_DIR", "")
+    if local_model_dir:
+        local_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), local_model_dir)
+        if os.path.isdir(local_path):
+            model_name = local_path
+            print(f"[Embedding] 使用本地模型: {model_name}")
     
     # 检查依赖
     if not HUGGINGFACE_AVAILABLE:
