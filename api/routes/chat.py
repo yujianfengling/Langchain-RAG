@@ -20,12 +20,14 @@ async def chat(request: ChatRequest):
     
     - **question**: 用户问题
     - **subject_id**: 学科ID
+    - **model**: 模型名称（可选，默认使用配置中的默认模型）
     - **history**: 对话历史
     """
     try:
         result = chat_with_ai(
             question=request.question,
             subject_id=request.subject_id,
+            model=request.model,
             history=request.history,
         )
         
@@ -44,7 +46,7 @@ async def chat(request: ChatRequest):
             success=True,
             answer=result["answer"],
             sources=result.get("sources", []),
-            model=result.get("model", "deepseek"),
+            model=result.get("model", "mimo"),
             latency=result.get("latency", 0.0),
         )
     except (LLMServiceError, RAGServiceError, HTTPException):

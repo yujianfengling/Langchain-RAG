@@ -191,7 +191,7 @@ def get_embedding_dimension() -> Optional[int]:
         # 使用测试文本获取维度
         test_embedding = model.embed_query("测试")
         return len(test_embedding)
-    except:
+    except Exception:
         return None
 
 

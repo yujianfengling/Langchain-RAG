@@ -16,9 +16,11 @@ from .subject_service import (
 )
 
 from .model_service import (
-    get_current_model,
+    get_model_provider,
     get_available_models,
-    check_model_status,
+    get_model_config,
+    get_default_model,
+    MODEL_PROVIDERS,
 )
 
 __all__ = [
@@ -35,7 +37,9 @@ __all__ = [
     "delete_subject",
     
     # 模型服务
-    "get_current_model",
+    "get_model_provider",
     "get_available_models",
-    "check_model_status",
+    "get_model_config",
+    "get_default_model",
+    "MODEL_PROVIDERS",
 ]

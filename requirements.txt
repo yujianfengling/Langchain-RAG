@@ -8,9 +8,7 @@ langchain
 langchain-core
 langchain-openai
 langchain-community
-langchain-chroma
 langchain-text-splitters
-chromadb
 requests
 sentence-transformers
 pdfplumber
@@ -18,4 +16,3 @@ pypdf
 docx2txt
 rank-bm25
 faiss-cpu
-langchain-deepseek

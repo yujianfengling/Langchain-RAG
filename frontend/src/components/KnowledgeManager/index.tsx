@@ -74,7 +74,8 @@ const SubjectDetailView: React.FC<{
         setDocuments(docsData?.documents || docsData?.data?.documents || []);
       }
       if (statsRes.status === 'fulfilled') {
-        setStats(statsRes.value?.data);
+        // API直接返回 {subject_id, status, stats}，无需.data
+        setStats(statsRes.value);
       }
     } catch (error) {
       console.error('加载数据失败:', error);
@@ -179,8 +180,8 @@ const SubjectDetailView: React.FC<{
           </Col>
           <Col>
             <Space>
-              <Tag color={stats?.has_knowledge_base ? 'success' : 'default'}>
-                {stats?.has_knowledge_base ? '已构建' : '未构建'}
+              <Tag color={stats?.status === 'ready' ? 'success' : stats?.status === 'building' ? 'processing' : stats?.status === 'failed' ? 'error' : 'default'}>
+                {stats?.status === 'ready' ? '已构建' : stats?.status === 'building' ? '构建中' : stats?.status === 'failed' ? '构建失败' : '未构建'}
               </Tag>
             </Space>
           </Col>
@@ -192,20 +193,20 @@ const SubjectDetailView: React.FC<{
         <Row gutter={16} style={{ marginBottom: 16 }}>
           <Col span={8}>
             <Card>
-              <Statistic title="文档数量" value={stats.document_count || 0} />
+              <Statistic title="文档数量" value={stats.stats?.document_count || 0} />
             </Card>
           </Col>
           <Col span={8}>
             <Card>
-              <Statistic title="分块数量" value={stats.chunk_count || 0} />
+              <Statistic title="分块数量" value={stats.stats?.chunk_count || 0} />
             </Card>
           </Col>
           <Col span={8}>
             <Card>
               <Statistic 
                 title="知识库状态" 
-                value={stats.has_knowledge_base ? '已就绪' : '未构建'} 
-                valueStyle={{ color: stats.has_knowledge_base ? '#3f8600' : '#999' }}
+                value={stats?.status === 'ready' ? '已就绪' : stats?.status === 'building' ? '构建中' : stats?.status === 'failed' ? '构建失败' : '未构建'} 
+                valueStyle={{ color: stats?.status === 'ready' ? '#3f8600' : stats?.status === 'failed' ? '#cf1322' : '#999' }}
               />
             </Card>
           </Col>
@@ -262,7 +263,7 @@ const SubjectDetailView: React.FC<{
                 actions={[
                   <Popconfirm
                     title="确定删除此文档？"
-                    onConfirm={() => handleDeleteDocument(doc.filename)}
+                    onConfirm={() => handleDeleteDocument(doc.name)}
                   >
                     <Button type="text" danger icon={<DeleteOutlined />} />
                   </Popconfirm>
@@ -270,7 +271,7 @@ const SubjectDetailView: React.FC<{
               >
                 <List.Item.Meta
                   avatar={<FileTextOutlined style={{ fontSize: 24, color: '#1890ff' }} />}
-                  title={doc.filename}
+                  title={doc.name}
                   description={
                     <Space>
                       <Text type="secondary">大小: {doc.size || '-'}</Text>
@@ -310,7 +311,7 @@ const KnowledgeManager: React.FC = () => {
         setSubjects(subjectsRes.value || []);
       }
       if (kbRes.status === 'fulfilled') {
-        setKnowledgeBases(kbRes.value?.data?.subjects || []);
+        setKnowledgeBases(kbRes.value?.subjects || []);
       }
     } catch (error) {
       console.error('加载数据失败:', error);
@@ -365,7 +366,7 @@ const KnowledgeManager: React.FC = () => {
   // 获取学科的知识库状态
   const getSubjectKBStatus = (subjectId: string) => {
     const kb = knowledgeBases.find(k => k.subject_id === subjectId);
-    return kb?.status || '未构建';
+    return kb?.status || 'empty';
   };
 
   // 如果选中了学科，显示详情视图
@@ -449,8 +450,8 @@ const KnowledgeManager: React.FC = () => {
                     title={
                       <Space>
                         {subject.name}
-                        <Tag color={status === 'ready' ? 'success' : 'default'}>
-                          {status === 'ready' ? '已构建' : '未构建'}
+                        <Tag color={status === 'ready' ? 'success' : status === 'building' ? 'processing' : status === 'failed' ? 'error' : 'default'}>
+                          {status === 'ready' ? '已构建' : status === 'building' ? '构建中' : status === 'failed' ? '构建失败' : '未构建'}
                         </Tag>
                       </Space>
                     }

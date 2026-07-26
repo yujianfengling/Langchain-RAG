@@ -1,15 +1,15 @@
 """
 LLM模块
 提供统一的LLM接口，支持多种LLM提供商
-根据config.settings.llm.provider自动选择提供商
+使用新的ModelProvider架构，支持MiMo、DeepSeek、Qwen
 """
 
-from typing import Optional, Dict, Any, List, Union
-import os
-from config import settings
+from typing import Optional, Dict, Any
+from config.models import get_model_config, get_model_api_key, get_default_model
 
-# 支持的LLM提供商
-SUPPORTED_PROVIDERS = ["deepseek", "ollama", "qwen"]
+# 支持的LLM提供商（与config/models.py中的MODEL_CONFIG保持一致）
+SUPPORTED_PROVIDERS = ["mimo", "deepseek", "qwen"]
+
 
 def get_llm(
     provider: Optional[str] = None,
@@ -18,24 +18,24 @@ def get_llm(
     **kwargs
 ) -> Any:
     """
-    获取LLM实例的工厂函数
+    获取LLM实例的工厂函数（兼容旧接口）
     
     Args:
-        provider: LLM提供商名称，如果为None则从配置读取
+        provider: LLM提供商名称，如果为None则使用默认模型
         temperature: 温度参数（可选）
         max_tokens: 最大token数（可选）
         **kwargs: 其他配置参数
         
     Returns:
-        LLM实例
+        LLM实例（兼容LangChain接口）
         
     Raises:
         ValueError: 不支持的提供商
         RuntimeError: LLM初始化失败
     """
-    # 获取提供商：优先参数，其次配置，最后环境变量
+    # 获取提供商：优先参数，其次默认模型
     if provider is None:
-        provider = settings.llm.provider
+        provider = get_default_model()
     
     # 标准化提供商名称
     provider = provider.lower()
@@ -44,18 +44,56 @@ def get_llm(
     if provider not in SUPPORTED_PROVIDERS:
         raise ValueError(f"不支持的LLM提供商: {provider}。支持的提供商: {SUPPORTED_PROVIDERS}")
     
-    # 根据提供商返回对应的LLM实例
-    if provider == "deepseek":
-        from .deepseek import create_deepseek_llm
-        return create_deepseek_llm(temperature=temperature, max_tokens=max_tokens, **kwargs)
-    elif provider == "ollama":
-        from .ollama import create_ollama_llm
-        return create_ollama_llm(temperature=temperature, max_tokens=max_tokens, **kwargs)
-    elif provider == "qwen":
-        from .qwen import create_qwen_llm
-        return create_qwen_llm(temperature=temperature, max_tokens=max_tokens, **kwargs)
-    else:
-        raise ValueError(f"未实现的LLM提供商: {provider}")
+    # 使用新的ModelProvider架构
+    from services.model_service import get_model_provider
+    
+    # 创建兼容LangChain接口的包装器
+    class LLMWrapper:
+        """将ModelProvider包装为兼容LangChain接口的LLM实例"""
+        
+        def __init__(self, model_name, temperature=None, max_tokens=None):
+            self.model_name = model_name
+            self.temperature = temperature
+            self.max_tokens = max_tokens
+            self.provider = get_model_provider(model_name)
+        
+        def invoke(self, messages, **kwargs):
+            """调用模型（兼容LangChain接口）"""
+            # 转换消息格式
+            formatted_messages = []
+            for msg in messages:
+                if hasattr(msg, 'content'):
+                    # LangChain消息对象
+                    role = "user" if hasattr(msg, 'type') and msg.type == "human" else "system"
+                    formatted_messages.append({"role": role, "content": msg.content})
+                elif isinstance(msg, dict):
+                    # 已经是字典格式
+                    formatted_messages.append(msg)
+                else:
+                    # 字符串
+                    formatted_messages.append({"role": "user", "content": str(msg)})
+            
+            # 调用模型
+            result = self.provider.chat(
+                formatted_messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens
+            )
+            
+            # 返回兼容LangChain的响应
+            class Response:
+                def __init__(self, content):
+                    self.content = content
+            
+            return Response(result.get("answer", ""))
+        
+        def stream(self, messages, **kwargs):
+            """流式调用（简化实现，实际使用时可能需要完善）"""
+            # 暂时使用非流式调用模拟流式
+            response = self.invoke(messages, **kwargs)
+            yield response
+    
+    return LLMWrapper(provider, temperature, max_tokens)
 
 
 def get_llm_provider_info() -> Dict[str, Any]:
@@ -65,26 +103,18 @@ def get_llm_provider_info() -> Dict[str, Any]:
     Returns:
         提供商信息字典
     """
-    provider = settings.llm.provider
+    from services.model_service import get_model_config, get_default_model
     
-    info = {
-        "provider": provider,
+    model_name = get_default_model()
+    config = get_model_config(model_name)
+    
+    return {
+        "provider": model_name,
+        "model": config.get("model_name", model_name),
+        "display_name": config.get("name", model_name),
         "supported_providers": SUPPORTED_PROVIDERS,
-        "is_supported": provider in SUPPORTED_PROVIDERS
+        "is_supported": True
     }
-    
-    # 添加提供商特定信息
-    if provider == "deepseek":
-        from .deepseek import get_deepseek_config
-        info.update(get_deepseek_config())
-    elif provider == "ollama":
-        from .ollama import get_ollama_config
-        info.update(get_ollama_config())
-    elif provider == "qwen":
-        from .qwen import get_qwen_config
-        info.update(get_qwen_config())
-    
-    return info
 
 
 def check_llm_availability(provider: Optional[str] = None) -> Dict[str, Any]:
@@ -92,13 +122,13 @@ def check_llm_availability(provider: Optional[str] = None) -> Dict[str, Any]:
     检查LLM可用性
     
     Args:
-        provider: LLM提供商名称，如果为None则检查当前配置的提供商
+        provider: LLM提供商名称，如果为None则检查默认模型
         
     Returns:
         可用性信息字典
     """
     if provider is None:
-        provider = settings.llm.provider
+        provider = get_default_model()
     
     # 标准化提供商名称
     provider = provider.lower()
@@ -110,20 +140,26 @@ def check_llm_availability(provider: Optional[str] = None) -> Dict[str, Any]:
     }
     
     try:
-        if provider == "deepseek":
-            from .deepseek import check_deepseek_availability
-            deepseek_result = check_deepseek_availability()
-            result.update(deepseek_result)
-        elif provider == "ollama":
-            from .ollama import check_ollama_availability
-            ollama_result = check_ollama_availability()
-            result.update(ollama_result)
-        elif provider == "qwen":
-            from .qwen import check_qwen_availability
-            qwen_result = check_qwen_availability()
-            result.update(qwen_result)
-        else:
+        # 检查是否支持该提供商
+        if provider not in SUPPORTED_PROVIDERS:
             result["error"] = f"不支持的提供商: {provider}"
+            return result
+        
+        # 检查API密钥是否配置
+        api_key = get_model_api_key(provider)
+        if not api_key:
+            result["error"] = f"模型 {provider} 未配置API密钥"
+            return result
+        
+        # 获取模型配置
+        config = get_model_config(provider)
+        result.update({
+            "available": True,
+            "model": config.get("model_name", provider),
+            "display_name": config.get("name", provider),
+            "base_url": config.get("base_url", ""),
+        })
+        
     except Exception as e:
         result["error"] = f"检查{provider}可用性时出错: {str(e)}"
     

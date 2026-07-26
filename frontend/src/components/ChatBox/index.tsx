@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Input, Button, List, Avatar, Typography, Space, Spin, message } from 'antd';
+import { Input, Button, List, Avatar, Typography, Space, Spin, Select, message } from 'antd';
 import { SendOutlined, UserOutlined, RobotOutlined } from '@ant-design/icons';
 import { ChatMessage, Subject } from '../../types';
 import { sendMessage } from '../../api/chat';
@@ -38,7 +38,15 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
   const [inputValue, setInputValue] = useState('');
   const [loading, setLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string>('');
+  const [selectedModel, setSelectedModel] = useState<string>('mimo');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // 模型选项
+  const modelOptions = [
+    { value: 'mimo', label: '小米MiMo' },
+    { value: 'deepseek', label: 'DeepSeek' },
+    { value: 'qwen', label: '通义千问' },
+  ];
 
   // 生成会话ID
   useEffect(() => {
@@ -116,6 +124,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
       const response = await sendMessage({
         question: userMessage.content,
         subject_id: subjectId,
+        model: selectedModel,
         history,
       });
 
@@ -300,6 +309,21 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
         borderTop: '1px solid #f0f0f0',
         background: '#fafafa',
       }}>
+        <div style={{ 
+          display: 'flex', 
+          alignItems: 'center', 
+          gap: '12px',
+          marginBottom: '8px',
+        }}>
+          <Text type="secondary" style={{ fontSize: '12px' }}>当前模型:</Text>
+          <Select
+            value={selectedModel}
+            onChange={setSelectedModel}
+            options={modelOptions}
+            style={{ width: 120 }}
+            size="small"
+          />
+        </div>
         <Space.Compact style={{ width: '100%' }}>
           <TextArea
             value={inputValue}

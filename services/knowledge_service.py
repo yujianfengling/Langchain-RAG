@@ -216,15 +216,25 @@ def delete_subject_knowledge(subject_id: str) -> Dict[str, Any]:
         raise KnowledgeServiceError("知识库删除失败，请稍后重试")
 
 
-def list_knowledge_bases() -> List[str]:
+def list_knowledge_bases() -> List[Dict[str, str]]:
     """
     获取所有已构建的知识库列表
     
     Returns:
-        学科ID列表
+        知识库信息列表，每个元素包含 subject_id 和 status
+        status: "ready" (已构建), "empty" (未构建), "building" (构建中), "failed" (构建失败)
     """
     try:
-        return list_available_subjects()
+        subjects = list_available_subjects()
+        result = []
+        for subject_id in subjects:
+            persist_directory = _resolve_path(f"data/vector_store/{subject_id}")
+            if persist_directory.exists() and any(persist_directory.iterdir()):
+                status = "ready"
+            else:
+                status = "empty"
+            result.append({"subject_id": subject_id, "status": status})
+        return result
     except Exception as e:
         logger.error(f"获取知识库列表异常: {str(e)}", exc_info=True)
         raise KnowledgeServiceError("获取知识库列表失败")
@@ -238,7 +248,7 @@ def get_knowledge_base_stats(subject_id: str) -> Dict[str, Any]:
         subject_id: 学科ID
         
     Returns:
-        统计信息字典
+        统计信息字典，包含统一的状态字段
         
     Raises:
         KnowledgeServiceError: 获取失败时抛出
@@ -253,12 +263,33 @@ def get_knowledge_base_stats(subject_id: str) -> Dict[str, Any]:
         total_size = sum(f.stat().st_size for f in persist_directory.rglob('*') if f.is_file())
         file_count = sum(1 for f in persist_directory.rglob('*') if f.is_file())
         
+        # 统一状态判断：有向量文件则为ready，否则为empty
+        has_knowledge_base = total_size > 0 and file_count > 0
+        status = "ready" if has_knowledge_base else "empty"
+        
+        # 获取文档数量（上传的原始文件）
+        documents = get_subject_documents(subject_id)
+        document_count = len(documents)
+        
+        # 获取分块数量（向量数据库中的向量数量）
+        chunk_count = 0
+        try:
+            import faiss
+            faiss_index_path = persist_directory / "index.faiss"
+            if faiss_index_path.exists():
+                index = faiss.read_index(str(faiss_index_path))
+                chunk_count = index.ntotal
+        except Exception as e:
+            logger.warning(f"获取分块数量失败: {str(e)}")
+        
         return {
             "subject_id": subject_id,
-            "path": str(persist_directory),
+            "status": status,
+            "has_knowledge_base": has_knowledge_base,
+            "document_count": document_count,
+            "chunk_count": chunk_count,
             "total_size_bytes": total_size,
             "total_size_mb": round(total_size / (1024 * 1024), 2),
-            "file_count": file_count,
         }
         
     except KnowledgeServiceError:

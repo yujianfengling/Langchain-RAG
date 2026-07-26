@@ -9,6 +9,7 @@ class ChatRequest(BaseModel):
     """聊天请求"""
     question: str
     subject_id: str
+    model: Optional[str] = None
     history: List[dict] = []
 
 
@@ -17,7 +18,7 @@ class ChatResponse(BaseModel):
     success: bool = True
     answer: str
     sources: List[dict] = []
-    model: str = "deepseek"
+    model: str = "mimo"
     latency: float = 0.0
 
 

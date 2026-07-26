@@ -12,14 +12,21 @@ class KnowledgeBuildRequest(BaseModel):
     path: str
 
 
+class KnowledgeBaseItem(BaseModel):
+    """知识库列表项"""
+    subject_id: str
+    status: str = "empty"  # ready, empty, building, failed
+
+
 class KnowledgeListResponse(BaseModel):
     """知识库列表响应"""
-    subjects: List[str]
+    subjects: List[KnowledgeBaseItem]
 
 
 class KnowledgeStatsResponse(BaseModel):
     """知识库统计响应"""
     subject_id: str
+    status: str  # ready, empty, building, failed
     stats: dict
 
 

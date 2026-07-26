@@ -95,14 +95,14 @@ class RAGConfig(BaseConfig):
     def rerank(self):
         """重排序配置（兼容属性）"""
         class _Rerank:
-            enabled = False
+            enabled = True
         return _Rerank()
     
     @property
     def text_splitter(self):
         """文本分割配置（兼容属性）"""
         class _TextSplitter:
-            use_semantic_split = False
+            use_semantic_split = True
         return _TextSplitter()
     
     @property

@@ -1,7 +1,6 @@
 import React from 'react';
-import { Layout, Typography, Space, Card, Divider } from 'antd';
-import { SettingOutlined, CloudServerOutlined, InfoCircleOutlined } from '@ant-design/icons';
-import ModelSelector from '../components/ModelSelector';
+import { Layout, Typography, Space, Card } from 'antd';
+import { SettingOutlined, InfoCircleOutlined } from '@ant-design/icons';
 
 const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -35,21 +34,6 @@ const SettingsPage: React.FC = () => {
           padding: '24px',
           boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
         }}>
-          {/* 模型管理部分 */}
-          <div style={{ marginBottom: '32px' }}>
-            <Title level={5} style={{ marginBottom: '16px' }}>
-              <CloudServerOutlined /> 模型管理
-            </Title>
-            <Text type="secondary">
-              选择和管理AI模型。不同的模型可能在回答质量、速度等方面有所差异。
-              您可以根据需要切换不同的模型提供商。
-            </Text>
-            
-            <Divider />
-            
-            <ModelSelector />
-          </div>
-          
           {/* 系统信息部分 */}
           <div>
             <Title level={5} style={{ marginBottom: '16px' }}>
