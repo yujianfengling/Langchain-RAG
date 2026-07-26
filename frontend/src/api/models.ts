@@ -25,6 +25,6 @@ export const getAvailableModels = async (): Promise<ApiResponse<ModelInfo[]>> =>
 /**
  * 切换模型
  */
-export const switchModel = async (provider: string): Promise<ApiResponse<any>> => {
-  return apiClient.post('/models/switch', { provider });
+export const switchModel = async (model: string): Promise<ApiResponse<any>> => {
+  return apiClient.post('/models/switch', { model });
 };

@@ -62,6 +62,7 @@ _DEFAULT_SYSTEM_MESSAGE = "你是一名智慧教育助手。"
 def chat_with_ai(
     question: str,
     subject_id: Optional[str] = None,
+    model: Optional[str] = None,
     history: Optional[List[Dict[str, str]]] = None,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None
@@ -72,6 +73,7 @@ def chat_with_ai(
     Args:
         question: 用户问题
         subject_id: 学科ID（可选，用于指定知识库）
+        model: 模型名称（可选，默认使用配置中的默认模型）
         history: 对话历史列表
         temperature: 温度参数（可选）
         max_tokens: 最大token数（可选）
@@ -87,7 +89,7 @@ def chat_with_ai(
         "sources": [],
         "context_used": False,
         "subject_id": subject_id,
-        "model": None,
+        "model": model or "mimo",
         "confidence": "medium",
         "latency": 0.0,
         "error": None,
@@ -140,13 +142,15 @@ def chat_with_ai(
         answer = call_llm(
             prompt=prompt,
             system_message=_DEFAULT_SYSTEM_MESSAGE,
+            model=model,
             temperature=temperature,
             max_tokens=max_tokens,
         )
 
         # 5. 获取模型信息
-        llm_info = get_llm_provider_info()
-        response["model"] = llm_info.get("model", "unknown")
+        from services.model_service import get_model_config
+        model_config = get_model_config(model)
+        response["model"] = model_config.get("name", model or "mimo")
 
         # 6. 返回结果
         response["success"] = True

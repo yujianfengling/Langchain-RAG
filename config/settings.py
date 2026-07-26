@@ -153,8 +153,9 @@ class Settings:
         """
         return {
             "llm_provider": self._llm.provider,
+            "mimo_configured": self._llm.is_provider_configured("mimo"),
             "deepseek_configured": self._llm.is_provider_configured("deepseek"),
-            "ollama_configured": self._llm.is_provider_configured("ollama"),
+            "qwen_configured": self._llm.is_provider_configured("qwen"),
             "rag_config_valid": self._rag.is_valid(),
             "directories_ready": self._path.project_root.exists(),
             "config_valid": self.is_valid()

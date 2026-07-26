@@ -1,4 +1,5 @@
-import axios from './axios';
+import apiClient from './axios';
+import { ApiResponse } from '../types';
 
 // 教育功能API接口
 
@@ -57,19 +58,16 @@ export interface EducationAdviceResponse {
 }
 
 // 生成知识点总结
-export const generateSummary = async (data: EducationSummaryRequest): Promise<EducationSummaryResponse> => {
-  const response = await axios.post<EducationSummaryResponse>('/api/education/summary', data);
-  return response.data;
+export const generateSummary = async (data: EducationSummaryRequest): Promise<ApiResponse<EducationSummaryResponse>> => {
+  return apiClient.post('/education/summary', data);
 };
 
 // 生成题目解析
-export const generateExplanation = async (data: EducationExplainRequest): Promise<EducationExplainResponse> => {
-  const response = await axios.post<EducationExplainResponse>('/api/education/explain', data);
-  return response.data;
+export const generateExplanation = async (data: EducationExplainRequest): Promise<ApiResponse<EducationExplainResponse>> => {
+  return apiClient.post('/education/explain', data);
 };
 
 // 生成学习建议
-export const generateAdvice = async (data: EducationAdviceRequest = {}): Promise<EducationAdviceResponse> => {
-  const response = await axios.post<EducationAdviceResponse>('/api/education/advice', data);
-  return response.data;
+export const generateAdvice = async (data: EducationAdviceRequest = {}): Promise<ApiResponse<EducationAdviceResponse>> => {
+  return apiClient.post('/education/advice', data);
 };

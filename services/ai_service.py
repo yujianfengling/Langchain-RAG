@@ -121,6 +121,7 @@ def extract_sources(context_docs: List) -> List[Dict[str, Any]]:
 def call_llm(
     prompt: str,
     system_message: str = "你是一名智慧教育助手。",
+    model: Optional[str] = None,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None
 ) -> str:
@@ -130,6 +131,7 @@ def call_llm(
     Args:
         prompt: 用户提示词
         system_message: 系统消息
+        model: 模型名称（可选，默认使用配置中的默认模型）
         temperature: 温度参数
         max_tokens: 最大token数
         
@@ -143,16 +145,18 @@ def call_llm(
         raise AIServiceError(f"LLM模块不可用: {LLM_IMPORT_ERROR if not LLM_AVAILABLE else ''}")
     
     try:
-        llm = get_llm(temperature=temperature, max_tokens=max_tokens)
+        # 使用新的ModelProvider架构
+        from services.model_service import get_model_provider
         
-        from langchain_core.messages import HumanMessage, SystemMessage
+        provider = get_model_provider(model)
+        
         messages = [
-            SystemMessage(content=system_message),
-            HumanMessage(content=prompt)
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": prompt}
         ]
         
-        response = llm.invoke(messages)
-        return response.content if hasattr(response, 'content') else str(response)
+        result = provider.chat(messages, temperature=temperature, max_tokens=max_tokens)
+        return result.get("answer", "")
         
     except Exception as e:
         logger.error(f"LLM调用失败: {e}", exc_info=True)

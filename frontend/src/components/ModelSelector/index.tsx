@@ -74,10 +74,10 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onModelChange }) => {
   // 获取提供商图标
   const getProviderIcon = (provider: string) => {
     switch (provider.toLowerCase()) {
+      case 'mimo':
+        return '⚡';
       case 'deepseek':
         return '🤖';
-      case 'ollama':
-        return '🦙';
       case 'qwen':
         return '🧠';
       default:
@@ -88,10 +88,10 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onModelChange }) => {
   // 获取提供商描述
   const getProviderDescription = (provider: string) => {
     switch (provider.toLowerCase()) {
+      case 'mimo':
+        return '小米MiMo - 小米AI大模型';
       case 'deepseek':
         return 'DeepSeek API - 云端大语言模型';
-      case 'ollama':
-        return 'Ollama - 本地部署开源模型';
       case 'qwen':
         return 'Qwen - 通义千问大模型';
       default:

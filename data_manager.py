@@ -8,10 +8,17 @@ import json
 import os
 from typing import List, Dict, Any, Optional
 
-# 全局配置
-SUBJECTS_FILE = "data/subjects.json"
-FILES_FILE = "data/files.json"
-DATA_DIR = "data"
+# 使用项目配置系统
+try:
+    from config import settings
+    DATA_DIR = str(settings.path.data_dir)
+    SUBJECTS_FILE = str(settings.path.data_dir / "subjects.json")
+    FILES_FILE = str(settings.path.data_dir / "files.json")
+except ImportError:
+    # 兼容独立运行模式
+    DATA_DIR = "data"
+    SUBJECTS_FILE = "data/subjects.json"
+    FILES_FILE = "data/files.json"
 
 # 确保数据目录存在
 os.makedirs(DATA_DIR, exist_ok=True)

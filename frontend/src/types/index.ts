@@ -13,6 +13,7 @@ export interface ApiResponse<T = any> {
 export interface ChatRequest {
   question: string;
   subject_id: string;
+  model?: string;
   history?: Array<{ role: string; content: string }>;
 }
 
@@ -33,6 +34,9 @@ export interface Subject {
 
 // 知识库相关类型
 export interface KnowledgeStats {
+  subject_id: string;
+  status: string;
+  has_knowledge_base: boolean;
   path: string;
   total_size_bytes: number;
   total_size_mb: number;
@@ -41,6 +45,7 @@ export interface KnowledgeStats {
 
 export interface KnowledgeBase {
   subject_id: string;
+  status?: string;
   stats?: KnowledgeStats;
 }
 

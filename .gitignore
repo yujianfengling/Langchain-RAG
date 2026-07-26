@@ -3,6 +3,7 @@
 
 # 日志
 logs/
+*.log
 
 # 向量存储（运行时生成）
 data/vector_store/
@@ -50,9 +51,8 @@ frontend/node_modules/
 frontend/dist/
 frontend/.env.local
 
-# 测试临时文件
-test*.py
-test*.md
+# 测试临时文件（不排除tests/目录和根目录的test_*.py集成测试文件）
+test_tmp*
 
 # 构建产物
 *.egg-info/
@@ -63,8 +63,18 @@ build/
 data/subjects/
 data/knowledge_graph/
 data/cache/
+data/exports/
 data/files.json
 data/subjects.json
+data/*.db
+data/*.db-journal
 
 # 配置文件（可能包含敏感信息）
 config.json
+
+# 运行时数据库
+*.db
+*.db-journal
+
+# CodeBuddy项目数据
+.codebuddy/

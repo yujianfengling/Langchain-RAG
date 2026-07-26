@@ -36,7 +36,7 @@ async def list_knowledge():
     """
     获取知识库列表
     
-    返回所有已构建的知识库学科列表
+    返回所有已构建的知识库学科列表，包含 subject_id 和 status
     """
     try:
         subjects = list_knowledge_bases()
@@ -115,11 +115,13 @@ async def get_stats(subject_id: str):
         
         return KnowledgeStatsResponse(
             subject_id=stats["subject_id"],
+            status=stats["status"],
             stats={
-                "path": stats["path"],
+                "has_knowledge_base": stats["has_knowledge_base"],
+                "document_count": stats["document_count"],
+                "chunk_count": stats["chunk_count"],
                 "total_size_bytes": stats["total_size_bytes"],
                 "total_size_mb": stats["total_size_mb"],
-                "file_count": stats["file_count"],
             },
         )
     except KnowledgeServiceError as e:

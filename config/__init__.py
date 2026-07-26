@@ -18,7 +18,7 @@ except ImportError:
     pass  # python-dotenv 未安装时跳过
 
 from .settings import Settings, settings
-from .llm_config import LLMConfig, DeepSeekConfig, OllamaConfig
+from .llm_config import LLMConfig
 from .rag_config import RAGConfig
 from .path_config import PathConfig
 from .log_config import LogConfig
@@ -55,7 +55,7 @@ def get_llm_config(provider: str = None) -> dict:
     Returns:
         LLM配置字典
     """
-    return settings.llm.get_provider_dict(provider)
+    return settings.llm.get_provider_config(provider)
 
 
 def get_rag_config() -> dict:
@@ -152,8 +152,6 @@ __all__ = [
     
     # 配置类
     "LLMConfig",
-    "DeepSeekConfig",
-    "OllamaConfig",
     "RAGConfig",
     "PathConfig",
     "LogConfig",

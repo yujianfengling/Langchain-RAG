@@ -315,7 +315,7 @@ def get_retriever_status(subject_id: str) -> Dict[str, Any]:
         "subject_id": subject_id,
         "vector_store": {
             "available": faiss_store is not None,
-            "document_count": faiss_store.count if faiss_store else 0
+            "document_count": faiss_store.count() if faiss_store else 0
         },
         "bm25": {
             "available": bm25 is not None and not bm25.is_empty,

@@ -77,22 +77,26 @@ def _call_llm_for_mindmap(content: str) -> Dict[str, Any]:
     if not LANGCHAIN_AVAILABLE:
         raise ImportError("langchain相关库未安装")
     
-    # 从环境变量读取DeepSeek API配置
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-    temperature = float(os.getenv("DEEPSEEK_TEMPERATURE", "0.7"))
+    # 使用项目配置系统读取DeepSeek API配置
+    from config import settings
+    
+    # 通过统一ModelProvider获取配置（替代不存在的settings.llm.deepseek）
+    from config.models import get_model_config, get_model_api_key
+    
+    model_cfg = get_model_config("deepseek")
+    api_key = get_model_api_key("deepseek")
+    model = model_cfg.get("model_name", "deepseek-chat")
+    temperature = settings.llm.temperature
+    api_base = model_cfg.get("base_url", "https://api.deepseek.com")
     
     if not api_key:
-        raise ValueError("未设置DEEPSEEK_API_KEY环境变量")
-    
-    # 创建ChatOpenAI实例，使用DeepSeek API端点
-    api_base = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+        raise ValueError("未设置DEEPSEEK_API_KEY环境变量，请在.env文件中配置")
     llm = ChatOpenAI(
         model=model,
         temperature=temperature,
         max_tokens=2000,
         openai_api_key=api_key,
-        openai_api_base=api_base  # 从环境变量读取DeepSeek API端点
+        openai_api_base=api_base
     )
     
     # 构造prompt模板

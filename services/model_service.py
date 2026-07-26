@@ -1,172 +1,198 @@
-# services/model_service.py
-# 模型信息管理业务服务层
+"""
+模型服务模块
+提供统一的AI模型调用接口，支持多个模型提供商
+"""
+import time
+import requests
+import logging
+from typing import Optional, List, Dict, Any
+from config.models import get_model_config, get_model_api_key, get_default_model
 
-from typing import Dict, Any, Optional
+logger = logging.getLogger(__name__)
 
-from config import settings, get_llm_config
-from llm import get_llm, get_llm_provider_info, check_llm_availability
-
-
-class ModelServiceError(Exception):
-    """模型服务异常"""
-    pass
-
-
-def get_current_model() -> Dict[str, Any]:
-    """
-    获取当前配置的模型信息
+class ModelProvider:
+    """模型提供商基类"""
     
-    Returns:
-        当前模型信息字典
-    """
-    try:
-        # 获取LLM配置
-        llm_config = get_llm_config()
+    def __init__(self, model_name: str = None):
+        self.model_name = model_name or get_default_model()
+        self.config = get_model_config(self.model_name)
+        self.api_key = get_model_api_key(self.model_name)
         
-        # 获取提供商信息
-        provider_info = get_llm_provider_info()
+        if not self.api_key:
+            logger.warning(f"模型 {self.model_name} 未配置API密钥")
+    
+    def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+        """
+        调用模型进行对话
         
-        return {
-            "provider": settings.llm.provider,
-            "model": llm_config.get("model", llm_config.get("model_name", "unknown")),
-            "config": {
-                "temperature": llm_config.get("temperature"),
-                "max_tokens": llm_config.get("max_tokens")
-            },
-            "provider_info": provider_info
+        Args:
+            messages: 消息列表，格式为 [{"role": "user", "content": "..."}]
+            **kwargs: 其他参数
+        
+        Returns:
+            响应字典，包含 answer, model, latency 等字段
+        """
+        raise NotImplementedError
+    
+    def _call_openai_compatible_api(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+        """
+        调用OpenAI兼容的API
+        
+        Args:
+            messages: 消息列表
+            **kwargs: 其他参数
+        
+        Returns:
+            API响应
+        """
+        if not self.api_key:
+            raise ValueError(f"模型 {self.model_name} 未配置API密钥")
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
         }
-    except Exception as e:
-        raise ModelServiceError(f"获取当前模型信息失败: {str(e)}")
+        
+        payload = {
+            "model": self.config["model_name"],
+            "messages": messages,
+            "temperature": kwargs.get("temperature", 0.7),
+            "max_tokens": kwargs.get("max_tokens", 2048),
+        }
+        
+        url = f"{self.config['base_url']}/chat/completions"
+        
+        try:
+            start_time = time.time()
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            latency = time.time() - start_time
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            # 解析响应
+            if "choices" in data and len(data["choices"]) > 0:
+                answer = data["choices"][0]["message"]["content"]
+            else:
+                raise ValueError(f"模型 {self.model_name} 返回格式异常")
+            
+            return {
+                "answer": answer,
+                "model": self.model_name,
+                "model_display_name": self.config["name"],
+                "latency": latency,
+                "usage": data.get("usage", {}),
+            }
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"调用模型 {self.model_name} API失败: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"处理模型 {self.model_name} 响应失败: {str(e)}")
+            raise
 
 
-def get_available_models() -> Dict[str, Any]:
-    """
-    获取可用模型信息
+class MimoProvider(ModelProvider):
+    """小米MiMo模型提供商"""
     
-    Returns:
-        包含models列表的字典，每个模型包含provider、model、available字段
-    """
-    try:
-        from llm import SUPPORTED_PROVIDERS, check_llm_availability
-        
-        models = []
-        for provider in SUPPORTED_PROVIDERS:
-            try:
-                # 检查提供商可用性
-                availability = check_llm_availability(provider)
-                # 获取提供商配置
-                if provider == "deepseek":
-                    from llm.deepseek import get_deepseek_config
-                    config = get_deepseek_config()
-                    model_name = config.get("model", "deepseek-chat")
-                elif provider == "ollama":
-                    from llm.ollama import get_ollama_config
-                    config = get_ollama_config()
-                    model_name = config.get("model", "llama2")
-                elif provider == "qwen":
-                    from llm.qwen import get_qwen_config
-                    config = get_qwen_config()
-                    model_name = config.get("model", "qwen2.5:7b")
-                else:
-                    model_name = "unknown"
-                
-                models.append({
-                    "provider": provider,
-                    "model": model_name,
-                    "available": availability.get("available", False),
-                    "error": availability.get("error")
-                })
-            except Exception as e:
-                models.append({
-                    "provider": provider,
-                    "model": "unknown",
-                    "available": False,
-                    "error": str(e)
-                })
-        
-        return {"models": models}
-    except Exception as e:
-        raise ModelServiceError(f"获取可用模型信息失败: {str(e)}")
+    def __init__(self):
+        super().__init__("mimo")
+    
+    def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+        return self._call_openai_compatible_api(messages, **kwargs)
 
 
-def check_model_status(provider: Optional[str] = None) -> Dict[str, Any]:
+class DeepSeekProvider(ModelProvider):
+    """DeepSeek模型提供商"""
+    
+    def __init__(self):
+        super().__init__("deepseek")
+    
+    def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+        return self._call_openai_compatible_api(messages, **kwargs)
+
+
+class QwenProvider(ModelProvider):
+    """通义千问模型提供商"""
+    
+    def __init__(self):
+        super().__init__("qwen")
+    
+    def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+        return self._call_openai_compatible_api(messages, **kwargs)
+
+
+# 模型提供商映射
+MODEL_PROVIDERS = {
+    "mimo": MimoProvider,
+    "deepseek": DeepSeekProvider,
+    "qwen": QwenProvider,
+}
+
+def get_model_provider(model_name: str = None) -> ModelProvider:
     """
-    检查模型状态
+    获取模型提供商实例
     
     Args:
-        provider: LLM提供商名称，如果为None则检查当前配置的提供商
-        
+        model_name: 模型名称，默认使用配置中的默认模型
+    
     Returns:
-        模型状态信息字典
+        模型提供商实例
     """
-    try:
-        # 检查LLM可用性
-        availability = check_llm_availability(provider)
-        
-        # 获取当前模型信息
-        current_model = get_current_model()
-        
-        return {
-            "available": availability.get("available", False),
-            "provider": availability.get("provider", settings.llm.provider),
-            "error": availability.get("error"),
-            "current_model": current_model,
-            "check_time": "now"  # 可以添加时间戳
-        }
-    except Exception as e:
-        raise ModelServiceError(f"检查模型状态失败: {str(e)}")
+    if model_name is None:
+        model_name = get_default_model()
+    
+    if model_name not in MODEL_PROVIDERS:
+        raise ValueError(f"不支持的模型: {model_name}，支持的模型: {list(MODEL_PROVIDERS.keys())}")
+    
+    provider_class = MODEL_PROVIDERS[model_name]
+    return provider_class()
 
 
-def switch_model(provider: str) -> Dict[str, Any]:
+def get_available_models() -> List[Dict[str, str]]:
     """
-    切换模型提供商
+    获取所有可用的模型列表
+    
+    Returns:
+        模型列表，包含 name 和 display_name
+    """
+    models = []
+    for model_name, provider_class in MODEL_PROVIDERS.items():
+        try:
+            provider = provider_class()
+            config = provider.config
+            models.append({
+                "name": model_name,
+                "display_name": config["name"],
+                "has_api_key": bool(provider.api_key),
+            })
+        except Exception as e:
+            logger.warning(f"获取模型 {model_name} 信息失败: {str(e)}")
+            models.append({
+                "name": model_name,
+                "display_name": model_name,
+                "has_api_key": False,
+            })
+    return models
+
+
+def chat(model_name: str, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+    """
+    统一的对话接口
     
     Args:
-        provider: 要切换到的提供商名称
-        
+        model_name: 模型名称
+        messages: 消息列表
+        **kwargs: 其他参数
+    
     Returns:
-        切换结果字典
-        
-    Raises:
-        ModelServiceError: 切换失败
+        响应字典
     """
-    try:
-        from llm import SUPPORTED_PROVIDERS
-        
-        # 验证提供商是否支持
-        provider = provider.lower()
-        if provider not in SUPPORTED_PROVIDERS:
-            raise ModelServiceError(f"不支持的提供商: {provider}。支持的提供商: {SUPPORTED_PROVIDERS}")
-        
-        # 检查提供商可用性
-        availability = check_llm_availability(provider)
-        if not availability.get("available", False):
-            error_msg = availability.get("error", "提供商不可用")
-            raise ModelServiceError(f"无法切换到 {provider}: {error_msg}")
-        
-        # 修改配置：更新环境变量和settings对象
-        import os
-        os.environ["LLM_PROVIDER"] = provider
-        
-        # 直接修改settings对象的llm.provider
-        settings.llm.provider = provider
-        
-        return {
-            "success": True,
-            "message": f"模型切换成功，当前提供商: {provider}",
-            "provider": provider
-        }
-    except ModelServiceError:
-        raise
-    except Exception as e:
-        raise ModelServiceError(f"切换模型失败: {str(e)}")
+    provider = get_model_provider(model_name)
+    return provider.chat(messages, **kwargs)
 
 
-# 公开API
-__all__ = [
-    "get_current_model",
-    "get_available_models",
-    "check_model_status",
-    "switch_model",
-    "ModelServiceError"
-]
+# 兼容旧接口
+def get_deepseek_service():
+    """获取DeepSeek服务（兼容旧接口）"""
+    return get_model_provider("deepseek")
