@@ -63,8 +63,12 @@ def get_llm(
             formatted_messages = []
             for msg in messages:
                 if hasattr(msg, 'content'):
-                    # LangChain消息对象
-                    role = "user" if hasattr(msg, 'type') and msg.type == "human" else "system"
+                    # LangChain消息对象 → 正确映射角色
+                    if hasattr(msg, 'type'):
+                        role_map = {"human": "user", "ai": "assistant", "system": "system"}
+                        role = role_map.get(msg.type, "user")
+                    else:
+                        role = "user"
                     formatted_messages.append({"role": role, "content": msg.content})
                 elif isinstance(msg, dict):
                     # 已经是字典格式

@@ -140,15 +140,20 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
       };
 
       setMessages(prev => [...prev, aiMessage]);
-    } catch (error) {
+    } catch (error: any) {
       console.error('发送消息失败:', error);
-      message.error('发送消息失败，请稍后重试');
+      // 提取后端返回的具体错误信息
+      const errorMsg = error?.response?.data?.message 
+        || error?.response?.data?.detail 
+        || error?.message 
+        || '发送消息失败，请稍后重试';
+      message.error(errorMsg);
       
       // 添加错误消息
       const errorMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: '抱歉，处理您的问题时出现了错误。请稍后重试。',
+        content: `⚠️ ${errorMsg}`,
         timestamp: Date.now(),
       };
       setMessages(prev => [...prev, errorMessage]);

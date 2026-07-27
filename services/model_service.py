@@ -64,7 +64,7 @@ class ModelProvider:
         
         try:
             start_time = time.time()
-            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
             latency = time.time() - start_time
             
             response.raise_for_status()
@@ -84,49 +84,32 @@ class ModelProvider:
                 "usage": data.get("usage", {}),
             }
             
+        except requests.exceptions.Timeout:
+            logger.error(f"调用模型 {self.model_name} API超时（30秒）")
+            raise ValueError(f"模型 {self.config['name']} 响应超时，请稍后重试")
         except requests.exceptions.RequestException as e:
             logger.error(f"调用模型 {self.model_name} API失败: {str(e)}")
-            raise
+            raise ValueError(f"模型 {self.config['name']} 调用失败: {str(e)}")
         except Exception as e:
             logger.error(f"处理模型 {self.model_name} 响应失败: {str(e)}")
             raise
 
 
-class MimoProvider(ModelProvider):
-    """小米MiMo模型提供商"""
+class OpenAICompatibleProvider(ModelProvider):
+    """OpenAI兼容API提供商（适用于MiMo、DeepSeek、Qwen等）"""
     
-    def __init__(self):
-        super().__init__("mimo")
-    
-    def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
-        return self._call_openai_compatible_api(messages, **kwargs)
-
-
-class DeepSeekProvider(ModelProvider):
-    """DeepSeek模型提供商"""
-    
-    def __init__(self):
-        super().__init__("deepseek")
+    def __init__(self, model_name: str):
+        super().__init__(model_name)
     
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
         return self._call_openai_compatible_api(messages, **kwargs)
 
 
-class QwenProvider(ModelProvider):
-    """通义千问模型提供商"""
-    
-    def __init__(self):
-        super().__init__("qwen")
-    
-    def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
-        return self._call_openai_compatible_api(messages, **kwargs)
-
-
-# 模型提供商映射
+# 模型提供商映射（所有模型共用同一个 Provider 类）
 MODEL_PROVIDERS = {
-    "mimo": MimoProvider,
-    "deepseek": DeepSeekProvider,
-    "qwen": QwenProvider,
+    "mimo": OpenAICompatibleProvider,
+    "deepseek": OpenAICompatibleProvider,
+    "qwen": OpenAICompatibleProvider,
 }
 
 def get_model_provider(model_name: str = None) -> ModelProvider:
@@ -146,7 +129,7 @@ def get_model_provider(model_name: str = None) -> ModelProvider:
         raise ValueError(f"不支持的模型: {model_name}，支持的模型: {list(MODEL_PROVIDERS.keys())}")
     
     provider_class = MODEL_PROVIDERS[model_name]
-    return provider_class()
+    return provider_class(model_name)
 
 
 def get_available_models() -> List[Dict[str, str]]:
@@ -159,7 +142,7 @@ def get_available_models() -> List[Dict[str, str]]:
     models = []
     for model_name, provider_class in MODEL_PROVIDERS.items():
         try:
-            provider = provider_class()
+            provider = provider_class(model_name)
             config = provider.config
             models.append({
                 "name": model_name,
