@@ -39,6 +39,23 @@ def _safe_dir_name(subject_id: str) -> str:
         encoded = base64.urlsafe_b64encode(subject_id.encode('utf-8')).decode('ascii').rstrip('=')
         return f"_zh_{encoded}"
 
+
+def _original_subject_id(safe_name: str) -> str:
+    """
+    将安全目录名还原为原始学科ID（_safe_dir_name 的逆操作）。
+    """
+    if not safe_name.startswith('_zh_'):
+        return safe_name  # 纯ASCII，直接返回
+    try:
+        encoded = safe_name[4:]  # 去掉 _zh_ 前缀
+        # 补回 base64 的 = 填充
+        padding = 4 - len(encoded) % 4
+        if padding != 4:
+            encoded += '=' * padding
+        return base64.urlsafe_b64decode(encoded).decode('utf-8')
+    except Exception:
+        return safe_name  # 解码失败，返回原值
+
 # 导入LangChain Document对象
 try:
     from langchain_core.documents import Document
@@ -198,7 +215,7 @@ def load_knowledge_base(subject_id: str) -> Any:
         
         # 加载向量数据库
         vector_store = load_vector_store(
-            collection_name=subject_id,
+            collection_name=_safe_dir_name(subject_id),
             embeddings=embeddings,
             persist_dir=persist_dir
         )
@@ -515,7 +532,7 @@ def list_available_subjects() -> List[str]:
     try:
         for subject_dir in vector_store_base.iterdir():
             if subject_dir.is_dir():
-                subjects.append(subject_dir.name)
+                subjects.append(_original_subject_id(subject_dir.name))
     except Exception:
         pass
     

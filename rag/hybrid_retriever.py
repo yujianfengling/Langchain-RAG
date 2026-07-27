@@ -21,6 +21,9 @@ from typing import List, Dict, Any, Optional
 from .vector_store import similarity_search, load_vector_store, GlobalFAISS
 from .bm25_retriever import BM25Retriever, reciprocal_rank_fusion
 
+# 导入路径安全转换（FAISS不支持中文路径）
+from .rag_service import _safe_dir_name
+
 logger = logging.getLogger(__name__)
 
 # 全局BM25检索器（按subject_id分组）
@@ -226,7 +229,8 @@ def _vector_search(
     try:
         from .embedding import get_embedding_model
         embeddings = get_embedding_model()
-        vector_store = GlobalFAISS.get(subject_id, embeddings)
+        safe_name = _safe_dir_name(subject_id)
+        vector_store = GlobalFAISS.get(safe_name, embeddings)
         if vector_store is None:
             return []
         results = vector_store.similarity_search(query, k=top_k)
@@ -307,7 +311,7 @@ def get_retriever_status(subject_id: str) -> Dict[str, Any]:
         _load_bm25_index(subject_id)
     
     bm25 = _bm25_retrievers.get(subject_id)
-    faiss_store = GlobalFAISS.get(subject_id)
+    faiss_store = GlobalFAISS.get(_safe_dir_name(subject_id))
     
     bm25_disk_path = _get_bm25_index_path(subject_id)
     

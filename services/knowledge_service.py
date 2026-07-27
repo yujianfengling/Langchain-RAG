@@ -13,6 +13,7 @@ from rag.document import load_documents
 from rag.rag_service import (
     build_knowledge_base,
     list_available_subjects,
+    _safe_dir_name,
     delete_knowledge_base,
 )
 
@@ -196,7 +197,7 @@ def delete_subject_knowledge(subject_id: str) -> Dict[str, Any]:
     """
     try:
         # 检查知识库是否存在
-        persist_directory = _resolve_path(f"data/vector_store/{subject_id}")
+        persist_directory = _resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}")
         if not persist_directory.exists():
             raise KnowledgeServiceError(f"知识库不存在: {subject_id}")
         
@@ -228,7 +229,7 @@ def list_knowledge_bases() -> List[Dict[str, str]]:
         subjects = list_available_subjects()
         result = []
         for subject_id in subjects:
-            persist_directory = _resolve_path(f"data/vector_store/{subject_id}")
+            persist_directory = _resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}")
             if persist_directory.exists() and any(persist_directory.iterdir()):
                 status = "ready"
             else:
@@ -254,8 +255,8 @@ def get_knowledge_base_stats(subject_id: str) -> Dict[str, Any]:
         KnowledgeServiceError: 获取失败时抛出
     """
     try:
-        # 检查知识库是否存在
-        persist_directory = _resolve_path(f"data/vector_store/{subject_id}")
+        # 检查知识库是否存在（使用 _safe_dir_name 处理中文路径）
+        persist_directory = _resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}")
         if not persist_directory.exists():
             raise KnowledgeServiceError(f"知识库不存在: {subject_id}")
         
@@ -272,13 +273,18 @@ def get_knowledge_base_stats(subject_id: str) -> Dict[str, Any]:
         document_count = len(documents)
         
         # 获取分块数量（向量数据库中的向量数量）
+        # FAISS 在 Windows 上不支持中文路径，使用 tempfile 中转
         chunk_count = 0
         try:
             import faiss
+            import tempfile
             faiss_index_path = persist_directory / "index.faiss"
             if faiss_index_path.exists():
-                index = faiss.read_index(str(faiss_index_path))
-                chunk_count = index.ntotal
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    tmp_index = os.path.join(tmp_dir, "index.faiss")
+                    shutil.copy2(str(faiss_index_path), tmp_index)
+                    index = faiss.read_index(tmp_index)
+                    chunk_count = index.ntotal
         except Exception as e:
             logger.warning(f"获取分块数量失败: {str(e)}")
         
@@ -484,7 +490,7 @@ def rebuild_subject_knowledge(subject_id: str) -> Dict[str, Any]:
             raise KnowledgeServiceError(f"目录中没有找到支持格式的文件")
         
         # 删除旧知识库
-        persist_directory = _resolve_path(f"data/vector_store/{subject_id}")
+        persist_directory = _resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}")
         if persist_directory.exists():
             delete_knowledge_base(subject_id=subject_id)
         

@@ -282,3 +282,9 @@ def get_all_content(subject_id: Optional[str] = None) -> str:
         if content:
             all_content.append(f"=== {file.get('name', '未知文件')} ===\n{content}")
     return "\n\n".join(all_content)
+
+# ============ 别名（推荐使用完整名称） ============
+load_subjects = load_subs
+save_subjects = save_subs
+create_subject = create_subj
+delete_subject = delete_subj
