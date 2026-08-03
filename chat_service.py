@@ -65,7 +65,9 @@ def chat_with_ai(
     model: Optional[str] = None,
     history: Optional[List[Dict[str, str]]] = None,
     temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None
+    max_tokens: Optional[int] = None,
+    image_data: Optional[str] = None,
+    image_mime_type: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     智能问答主函数（非流式）
@@ -77,6 +79,8 @@ def chat_with_ai(
         history: 对话历史列表
         temperature: 温度参数（可选）
         max_tokens: 最大token数（可选）
+        image_data: 图片数据（base64编码，可选）
+        image_mime_type: 图片MIME类型（可选）
 
     Returns:
         响应字典：success, answer, sources, context_used, subject_id, model, latency, error
@@ -178,7 +182,9 @@ def chat_stream(
     subject_id: Optional[str] = None,
     history: Optional[List[Dict[str, str]]] = None,
     temperature: Optional[float] = None,
-    max_tokens: Optional[int] = None
+    max_tokens: Optional[int] = None,
+    image_data: Optional[str] = None,
+    image_mime_type: Optional[str] = None
 ) -> Generator[Dict[str, Any], None, None]:
     """
     智能问答流式接口（SSE）
@@ -189,6 +195,8 @@ def chat_stream(
         history: 对话历史
         temperature: 温度参数
         max_tokens: 最大token数
+        image_data: 图片数据（base64编码，可选）
+        image_mime_type: 图片MIME类型（可选）
 
     Yields:
         流式事件字典：type=start|chunk|end|error

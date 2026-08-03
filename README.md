@@ -27,7 +27,7 @@
 - **Loguru** - 日志管理
 
 ### 前端
-- **React 19** - UI框架
+- **React 18.2.0** - UI框架
 - **TypeScript** - 类型安全
 - **Vite** - 构建工具
 - **Tailwind CSS** - 样式框架
@@ -108,7 +108,7 @@ pip install -r requirements.txt
 
 #### 3. 启动后端服务
 ```bash
-python main.py
+python run_server.py
 ```
 
 #### 4. 启动前端
@@ -119,7 +119,7 @@ npm run dev
 ```
 
 #### 5. 访问系统
-- **前端界面**: http://localhost:5173
+- **前端界面**: http://localhost:3000
 - **后端API**: http://localhost:8000
 - **API文档**: http://localhost:8000/docs
 
@@ -154,14 +154,24 @@ npm run dev
 | `/health` | GET | 健康检查 |
 | `/api/chat` | POST | RAG增强对话 |
 | `/api/chat/stream` | POST | RAG增强对话（SSE流式） |
-| `/api/knowledge/upload` | POST | 上传文档 |
+| `/api/knowledge` | GET | 获取知识库列表 |
 | `/api/knowledge/build` | POST | 构建知识库 |
+| `/api/knowledge/{subject_id}` | DELETE | 删除知识库 |
 | `/api/knowledge/{subject_id}/stats` | GET | 知识库统计 |
+| `/api/knowledge/upload` | POST | 上传文档 |
+| `/api/knowledge/{subject_id}/documents` | GET | 获取学科文档列表 |
+| `/api/knowledge/{subject_id}/documents/{filename}` | DELETE | 删除学科文档 |
+| `/api/knowledge/{subject_id}/rebuild` | POST | 重新构建知识库 |
 | `/api/subjects` | GET | 获取学科列表 |
+| `/api/subjects/{subject_id}` | GET | 获取单个学科信息 |
+| `/api/subjects` | POST | 创建新学科 |
 | `/api/subjects/{subject_id}` | DELETE | 删除学科 |
 | `/api/models` | GET | 获取当前模型信息 |
 | `/api/models/status` | GET | 获取模型状态 |
 | `/api/models/available` | GET | 获取可用模型列表 |
+| `/api/models/switch` | POST | 切换模型提供商 |
+| `/api/education/batch-grading` | POST | 批量批改作业 |
+| `/api/education/analyze` | POST | 教育数据分析 |
 
 ### 请求示例
 
@@ -228,7 +238,7 @@ Game/git_text/
 │   ├── model_service.py   # 模型服务（ModelProvider架构）
 │   └── multimodal_service.py # 多模态服务
 ├── utils/                 # 工具函数
-├── main.py                # 后端入口
+├── run_server.py          # 后端入口
 ├── requirements.txt       # Python依赖
 ├── install.sh             # Linux/macOS安装脚本
 └── install.ps1            # Windows安装脚本
