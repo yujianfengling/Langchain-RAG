@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 # ========== 安全常量 ==========
 
 # 允许上传的文件扩展名白名单
-ALLOWED_EXTENSIONS = {'.txt', '.md', '.pdf', '.docx'}
+ALLOWED_EXTENSIONS = {'.txt', '.md', '.pdf', '.docx', '.jpg', '.jpeg', '.png', '.webp'}
 
 # 禁止上传的文件扩展名黑名单（高危类型）
 BLOCKED_EXTENSIONS = {'.py', '.exe', '.sh', '.bat', '.cmd', '.ps1', '.js', '.ts',
@@ -390,7 +390,7 @@ def get_subject_documents(subject_id: str) -> List[Dict[str, Any]]:
         if not subject_dir.exists():
             return []
         
-        supported_extensions = {'.txt', '.md', '.pdf', '.docx'}
+        supported_extensions = {'.txt', '.md', '.pdf', '.docx', '.jpg', '.jpeg', '.png', '.webp'}
         documents = []
         
         for file_path in subject_dir.iterdir():

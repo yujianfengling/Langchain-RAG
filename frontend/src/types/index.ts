@@ -15,6 +15,8 @@ export interface ChatRequest {
   subject_id: string;
   model?: string;
   history?: Array<{ role: string; content: string }>;
+  image_data?: string; // base64编码的图片数据
+  image_mime_type?: string; // 图片MIME类型
 }
 
 export interface ChatResponse {
@@ -96,4 +98,6 @@ export interface ChatMessage {
   sources?: string[];
   model?: string;
   latency?: number;
+  image_url?: string; // 图片URL（用于显示）
+  image_data?: string; // base64编码的图片数据
 }

@@ -11,6 +11,8 @@ class ChatRequest(BaseModel):
     subject_id: str
     model: Optional[str] = None
     history: List[dict] = []
+    image_data: Optional[str] = None  # base64编码的图片数据
+    image_mime_type: Optional[str] = None  # 图片MIME类型
 
 
 class ChatResponse(BaseModel):

@@ -29,6 +29,8 @@ async def chat(request: ChatRequest):
             subject_id=request.subject_id,
             model=request.model,
             history=request.history,
+            image_data=request.image_data,
+            image_mime_type=request.image_mime_type,
         )
         
         # 检查是否成功
@@ -73,6 +75,8 @@ async def chat_stream_endpoint(request: ChatRequest):
             question=request.question,
             subject_id=request.subject_id,
             history=request.history,
+            image_data=request.image_data,
+            image_mime_type=request.image_mime_type,
         )
         
         return StreamingResponse(

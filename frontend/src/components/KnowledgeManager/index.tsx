@@ -90,7 +90,7 @@ const SubjectDetailView: React.FC<{
 
   // 上传文件
   const handleUpload = async (file: File) => {
-    const allowedTypes = ['.pdf', '.docx', '.txt', '.md'];
+    const allowedTypes = ['.pdf', '.docx', '.txt', '.md', '.jpg', '.jpeg', '.png', '.webp'];
     const ext = '.' + file.name.split('.').pop()?.toLowerCase();
     
     if (!allowedTypes.includes(ext)) {
@@ -154,7 +154,7 @@ const SubjectDetailView: React.FC<{
     multiple: true,
     beforeUpload: handleUpload,
     showUploadList: false,
-    accept: '.pdf,.docx,.txt,.md',
+    accept: '.pdf,.docx,.txt,.md,.jpg,.jpeg,.png,.webp',
   };
 
   return (
@@ -223,7 +223,7 @@ const SubjectDetailView: React.FC<{
             {uploading ? '上传中...' : '点击或拖拽文件到此区域上传'}
           </p>
           <p className="ant-upload-hint">
-            支持 PDF、DOCX、TXT、Markdown 格式，单个文件最大 20MB
+            支持 PDF、DOCX、TXT、Markdown、图片（JPG/PNG/WEBP）格式，单个文件最大 20MB
           </p>
         </Dragger>
       </Card>

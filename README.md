@@ -6,7 +6,7 @@
 
 本系统实现了一个完整的RAG（检索增强生成）流程，用于教育领域的知识问答：
 
-1. **文档上传** - 支持多种格式文档上传（PDF、Word、TXT、Markdown等）
+1. **文档上传** - 支持多种格式文档上传（PDF、DOCX、TXT、Markdown、JPG、JPEG、PNG、WEBP）
 2. **知识库构建** - 自动文本分割、向量化、构建FAISS索引和BM25索引
 3. **混合检索** - 结合向量相似度检索和BM25关键词检索
 4. **Rerank重排序** - 对检索结果进行相关性重排序
@@ -21,6 +21,8 @@
 - **Sentence-Transformers** - 文本向量化（BAAI/bge-small-zh-v1.5）
 - **Rank-BM25** - BM25检索算法
 - **OpenAI SDK** - 统一LLM调用接口
+- **Pillow** - 图像处理
+- **pytesseract** - OCR文字提取
 - **Pydantic** - 数据验证和配置管理
 - **Loguru** - 日志管理
 
@@ -35,13 +37,14 @@
 
 ## 模型配置
 
-系统支持三种AI模型，**内置API密钥，clone后无需额外配置即可运行**：
+系统支持三种文本模型和一种视觉模型，**文本模型内置API密钥，clone后无需额外配置即可运行**：
 
 | 模型 | 提供商 | 默认 | API密钥状态 |
 |------|--------|------|-------------|
-| **小米MiMo** | 小米 | 默认模型 | 已内置 |
+| **小米MiMo** | 小米 | 默认文本模型 | 已内置 |
 | **DeepSeek** | DeepSeek | 可切换 | 已内置 |
 | **通义千问** | 阿里云 | 可切换 | 需用户配置 |
+| **通义千问视觉** | 阿里云 | 图片理解 | 需用户配置 |
 
 **默认模型：小米MiMo**
 
@@ -62,6 +65,7 @@ cp config/env.example .env
 | MiMo | `https://token-plan-cn.xiaomimimo.com/v1` | mimo-v2.5-pro |
 | DeepSeek | `https://api.deepseek.com` | deepseek-chat |
 | 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | qwen-plus |
+| 通义千问视觉 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | qwen-vl-plus |
 
 ## 环境要求
 
@@ -130,6 +134,7 @@ npm run dev
 - **小米MiMo** (默认) - 小米自研大模型
 - **DeepSeek** - DeepSeek大模型
 - **通义千问** - 阿里云大模型
+- **通义千问视觉** - 阿里云视觉大模型（用于图片理解）
 
 用户无需理解模型配置细节，直接在聊天界面选择即可。
 
@@ -218,14 +223,39 @@ Game/git_text/
 │   └── package.json
 ├── llm/                   # LLM集成
 ├── rag/                   # RAG核心模块
+│   └── multimodal/        # 多模态处理模块
 ├── services/              # 业务服务
-│   └── model_service.py   # 模型服务（ModelProvider架构）
+│   ├── model_service.py   # 模型服务（ModelProvider架构）
+│   └── multimodal_service.py # 多模态服务
 ├── utils/                 # 工具函数
 ├── main.py                # 后端入口
 ├── requirements.txt       # Python依赖
 ├── install.sh             # Linux/macOS安装脚本
 └── install.ps1            # Windows安装脚本
 ```
+
+## 多模态图片理解
+
+### 支持图片格式
+- JPG/JPEG
+- PNG
+- WEBP
+
+### 图片处理流程
+
+用户上传图片
+↓
+Qwen-VL视觉模型理解
+↓
+OCR文字提取（fallback）
+↓
+生成图片描述Document
+↓
+Embedding
+↓
+FAISS + BM25索引
+↓
+RAG问答
 
 ## RAG流程说明
 
@@ -269,6 +299,7 @@ MODEL_CONFIG = {
     "mimo": {"name": "小米MiMo", "base_url": "...", "model_name": "mimo-v2.5-pro"},
     "deepseek": {"name": "DeepSeek", "base_url": "...", "model_name": "deepseek-chat"},
     "qwen": {"name": "通义千问", "base_url": "...", "model_name": "qwen-plus"},
+    "qwen-vision": {"name": "通义千问视觉", "base_url": "...", "model_name": "qwen-vl-plus"},
 }
 ```
 
@@ -278,6 +309,7 @@ MODEL_CONFIG = {
 - 默认选中 `mimo`
 - 用户可切换到 `deepseek` 或 `qwen`
 - 选择后立即生效，下次请求使用新模型
+- 图片理解时自动使用 `qwen-vision` 视觉模型
 
 ## 常见问题
 

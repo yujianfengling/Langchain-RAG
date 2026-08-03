@@ -34,6 +34,22 @@ class ModelProvider:
         """
         raise NotImplementedError
     
+    def vision(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+        """
+        调用模型进行视觉理解（多模态）
+        
+        Args:
+            messages: 多模态消息列表，格式为 [{"role": "user", "content": [{"type": "text", ...}, {"type": "image_url", ...}]}]
+            **kwargs: 其他参数
+        
+        Returns:
+            响应字典，包含 answer, model, latency 等字段
+        
+        Raises:
+            NotImplementedError: 如果模型不支持视觉功能
+        """
+        raise NotImplementedError(f"模型 {self.model_name} 不支持视觉功能")
+    
     def _call_openai_compatible_api(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
         """
         调用OpenAI兼容的API
@@ -103,6 +119,57 @@ class OpenAICompatibleProvider(ModelProvider):
     
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
         return self._call_openai_compatible_api(messages, **kwargs)
+    
+    def vision(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+        """
+        视觉理解（多模态）实现
+        
+        Args:
+            messages: 多模态消息列表
+            **kwargs: 其他参数
+        
+        Returns:
+            响应字典
+        
+        Raises:
+            ValueError: 如果模型不支持视觉功能
+        """
+        # 检查模型是否支持视觉
+        if not self.config.get('is_vision', False):
+            raise ValueError(f"模型 {self.model_name} 不是视觉模型，不支持视觉功能")
+        
+        return self._call_openai_compatible_api(messages, **kwargs)
+
+
+class QwenVisionProvider(ModelProvider):
+    """通义千问视觉模型提供商（仅支持视觉功能）"""
+    
+    def __init__(self, model_name: str = "qwen-vision"):
+        super().__init__(model_name)
+    
+    def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+        """视觉模型不支持文本对话"""
+        raise NotImplementedError(f"模型 {self.model_name} 仅支持视觉功能，不支持文本对话")
+    
+    def vision(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+        """
+        视觉理解（多模态）实现
+        
+        Args:
+            messages: 多模态消息列表
+            **kwargs: 其他参数
+        
+        Returns:
+            响应字典
+        
+        Raises:
+            ValueError: 如果模型不支持视觉功能
+        """
+        # 检查模型是否支持视觉
+        if not self.config.get('is_vision', False):
+            raise ValueError(f"模型 {self.model_name} 不是视觉模型，不支持视觉功能")
+        
+        return self._call_openai_compatible_api(messages, **kwargs)
 
 
 # 模型提供商映射（所有模型共用同一个 Provider 类）
@@ -110,6 +177,8 @@ MODEL_PROVIDERS = {
     "mimo": OpenAICompatibleProvider,
     "deepseek": OpenAICompatibleProvider,
     "qwen": OpenAICompatibleProvider,
+    "qwen-vision": QwenVisionProvider,  # 通义千问视觉模型
+    "mimo-vision": OpenAICompatibleProvider,  # MiMo视觉模型（已弃用）
 }
 
 def get_model_provider(model_name: str = None) -> ModelProvider:
