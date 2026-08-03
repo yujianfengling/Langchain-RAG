@@ -1,7 +1,7 @@
 """
 文档加载模块
 负责加载各种格式的文档并转换为LangChain Document对象
-支持格式：txt, md, pdf, docx
+支持格式：txt, md, pdf, docx, jpg, jpeg, png, webp
 """
 
 import os
@@ -51,6 +51,13 @@ try:
 except ImportError:
     LOADER_AVAILABLE['docx'] = False
 
+# 尝试导入多模态图片处理模块
+try:
+    from .multimodal import MultimodalDocumentConverter
+    MULTIMODAL_AVAILABLE = True
+except ImportError:
+    MULTIMODAL_AVAILABLE = False
+
 
 def load_document(file_path: Union[str, Path]) -> List[Document]:
     """
@@ -85,6 +92,8 @@ def load_document(file_path: Union[str, Path]) -> List[Document]:
         return _load_pdf(file_path)
     elif file_ext == '.docx':
         return _load_docx(file_path)
+    elif file_ext in {'.jpg', '.jpeg', '.png', '.webp'}:
+        return _load_image(file_path)
     else:
         raise ValueError(f"不支持的文件格式: {file_ext}")
 
@@ -110,7 +119,7 @@ def load_documents(directory: Union[str, Path]) -> List[Document]:
         raise FileNotFoundError(f"目录不存在: {directory}")
     
     # 支持的文件扩展名
-    supported_extensions = {'.txt', '.md', '.pdf', '.docx'}
+    supported_extensions = {'.txt', '.md', '.pdf', '.docx', '.jpg', '.jpeg', '.png', '.webp'}
     
     # 查找所有支持的文件
     all_documents = []
@@ -281,6 +290,37 @@ def _load_docx(file_path: Path) -> List[Document]:
             raise Exception(f"读取DOCX文件失败: {str(e)}")
 
 
+def _load_image(file_path: Path) -> List[Document]:
+    """
+    加载图片文件
+    
+    Args:
+        file_path: 图片文件路径
+        
+    Returns:
+        Document对象列表
+        
+    Raises:
+        Exception: 加载失败
+    """
+    if not MULTIMODAL_AVAILABLE:
+        raise Exception("图片加载需要多模态模块（rag.multimodal）")
+    
+    try:
+        # 尝试使用MultimodalService（推荐）
+        try:
+            from services.multimodal_service import get_multimodal_service
+            multimodal_service = get_multimodal_service()
+            converter = MultimodalDocumentConverter(multimodal_service=multimodal_service)
+        except Exception as e:
+            print(f"无法初始化MultimodalService，使用传统方法: {e}")
+            converter = MultimodalDocumentConverter()
+        
+        return converter.convert_image(file_path)
+    except Exception as e:
+        raise Exception(f"读取图片文件失败: {str(e)}")
+
+
 def get_supported_formats() -> List[str]:
     """
     获取支持的文件格式列表
@@ -288,7 +328,7 @@ def get_supported_formats() -> List[str]:
     Returns:
         支持的文件扩展名列表
     """
-    return ['.txt', '.md', '.pdf', '.docx']
+    return ['.txt', '.md', '.pdf', '.docx', '.jpg', '.jpeg', '.png', '.webp']
 
 
 def check_loader_status() -> dict:
@@ -303,6 +343,14 @@ def check_loader_status() -> dict:
         status[fmt] = {
             'available': available,
             'loader': f"{fmt.upper()}Loader" if available else "降级方案"
+        }
+    
+    # 添加图片格式状态
+    image_formats = ['.jpg', '.jpeg', '.png', '.webp']
+    for fmt in image_formats:
+        status[fmt] = {
+            'available': MULTIMODAL_AVAILABLE,
+            'loader': 'MultimodalImageLoader' if MULTIMODAL_AVAILABLE else '不可用'
         }
     
     return status

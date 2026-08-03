@@ -27,6 +27,13 @@ MODEL_CONFIG = {
         "api_key": "",
         "model_name": os.getenv("DASHSCOPE_MODEL", "qwen-plus"),
     },
+    "qwen-vision": {
+        "name": "通义千问视觉",
+        "base_url": os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        "api_key": "",  # 通过 get_model_api_key() 从环境变量读取
+        "model_name": os.getenv("DASHSCOPE_VISION_MODEL", "qwen-vl-plus"),
+        "is_vision": True,  # 标记为视觉模型
+    },
 }
 
 # 环境变量映射
@@ -34,6 +41,8 @@ ENV_VAR_MAPPING = {
     "mimo": "MIMO_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "qwen": "DASHSCOPE_API_KEY",
+    "qwen-vision": "DASHSCOPE_API_KEY",  # 通义千问视觉模型使用相同API密钥
+    "mimo-vision": "MIMO_API_KEY",  # 复用MiMo API密钥（已弃用）
 }
 
 # 内置默认API密钥（私有仓库，clone后无需配置.env即可运行）
@@ -42,6 +51,8 @@ _BUILTIN_API_KEYS = {
     "mimo": "REDACTED_API_KEY",
     "deepseek": "REDACTED_API_KEY",
     "qwen": "",  # 通义千问暂未配置，需用户自行提供
+    "qwen-vision": "",  # 通义千问视觉模型暂未配置，需用户自行提供
+    "mimo-vision": "REDACTED_API_KEY",  # 复用MiMo API密钥（已弃用）
 }
 
 

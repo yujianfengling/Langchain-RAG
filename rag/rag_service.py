@@ -86,6 +86,13 @@ except ImportError as e:
     LOCAL_MODULES_AVAILABLE = False
     IMPORT_ERROR = str(e)
 
+# 导入多模态模块
+try:
+    from .multimodal import MultimodalDocumentConverter
+    MULTIMODAL_AVAILABLE = True
+except ImportError:
+    MULTIMODAL_AVAILABLE = False
+
 # 导入混合检索模块
 try:
     from .hybrid_retriever import build_index as build_hybrid_index, retrieve as hybrid_retrieve
@@ -688,14 +695,16 @@ def check_rag_service_status() -> Dict[str, Any]:
         'langchain_available': LANGCHAIN_AVAILABLE,
         'hybrid_available': HYBRID_AVAILABLE,
         'config_available': CONFIG_AVAILABLE,
+        'multimodal_available': MULTIMODAL_AVAILABLE,
         'available_subjects': list_available_subjects(),
         'vector_store_base': _VECTOR_STORE_BASE,
-        'version': '2.0',
+        'version': '2.1',
         'features': {
             'semantic_split': CONFIG_AVAILABLE and settings.USE_SEMANTIC_SPLIT,
             'bm25_retrieval': HYBRID_AVAILABLE and CONFIG_AVAILABLE and settings.USE_BM25,
             'rerank': CONFIG_AVAILABLE and settings.USE_RERANK,
             'rrf_fusion': HYBRID_AVAILABLE,
+            'multimodal': MULTIMODAL_AVAILABLE,
         }
     }
     
