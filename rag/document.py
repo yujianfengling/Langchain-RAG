@@ -139,6 +139,11 @@ def load_documents(directory: Union[str, Path]) -> List[Document]:
     if not found_files:
         raise ValueError(f"目录中没有找到支持格式的文件 (支持: {', '.join(supported_extensions)})")
     
+    # 清理所有文档中的UTF-16 surrogate字符
+    for doc in all_documents:
+        if hasattr(doc, 'page_content'):
+            doc.page_content = _clean_surrogate_characters(doc.page_content)
+    
     return all_documents
 
 
@@ -319,6 +324,33 @@ def _load_image(file_path: Path) -> List[Document]:
         return converter.convert_image(file_path)
     except Exception as e:
         raise Exception(f"读取图片文件失败: {str(e)}")
+
+
+def _clean_surrogate_characters(text: str) -> str:
+    """
+    清理文本中的UTF-16 surrogate字符
+    
+    PyMuPDF等PDF提取库可能产生UTF-16 surrogate对（如\\ud835\\udf0b），
+    这些字符会导致sentence-transformers等tokenizer崩溃。
+    
+    Args:
+        text: 原始文本
+        
+    Returns:
+        清理后的文本，保留正常中文、英文、数学符号
+    """
+    if not text:
+        return text
+    
+    # 方法：编码为UTF-8时忽略无法编码的字符（surrogate对），
+    # 然后解码回来。这会移除所有非法Unicode字符。
+    try:
+        # 尝试编码为UTF-8，忽略无法编码的字符
+        cleaned = text.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+        return cleaned
+    except Exception:
+        # 如果出现异常，返回原文本
+        return text
 
 
 def get_supported_formats() -> List[str]:

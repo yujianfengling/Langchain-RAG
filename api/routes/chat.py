@@ -1,6 +1,7 @@
 # api/routes/chat.py
 # 聊天接口路由
 
+import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import List
@@ -79,8 +80,12 @@ async def chat_stream_endpoint(request: ChatRequest):
             image_mime_type=request.image_mime_type,
         )
         
+        def sse_generator():
+            for event in generator:
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        
         return StreamingResponse(
-            generator,
+            sse_generator(),
             media_type="text/event-stream",
         )
     except Exception as e:
