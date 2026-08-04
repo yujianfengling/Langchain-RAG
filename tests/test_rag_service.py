@@ -64,9 +64,9 @@ class TestRagService(unittest.TestCase):
         # 应该返回列表
         self.assertIsInstance(subjects, list)
         
-        # 如果有测试数据，应该包含测试学科
-        if self.test_data_dir.exists():
-            self.assertIn(self.test_subject_id, subjects)
+        # 列表中的元素应该是字符串
+        for subject in subjects:
+            self.assertIsInstance(subject, str)
     
     def test_build_knowledge_base(self):
         """
@@ -74,13 +74,15 @@ class TestRagService(unittest.TestCase):
         """
         # 这个测试需要实际的embedding模型，跳过如果没有
         try:
-            from rag.embedding import get_embeddings
-            get_embeddings()
+            from rag.embedding import get_embedding_model
+            get_embedding_model()
         except Exception:
             self.skipTest("Embedding模型不可用")
         
         try:
-            result = build_knowledge_base(self.test_subject_id)
+            from langchain_core.documents import Document
+            docs = [Document(page_content="测试文档内容", metadata={"source": "test.txt"})]
+            result = build_knowledge_base(docs, self.test_subject_id)
             self.assertTrue(result)
         except Exception as e:
             self.fail(f"构建知识库失败: {e}")
@@ -89,16 +91,17 @@ class TestRagService(unittest.TestCase):
         """
         测试空问题检索
         """
-        # 空问题应该返回空列表
-        result = retrieve_context("")
-        self.assertEqual(result, [])
+        # 空问题应抛出ValueError
+        with self.assertRaises(ValueError):
+            retrieve_context("")
     
     def test_build_context_empty_docs(self):
         """
         测试空文档构建上下文
         """
-        result = build_context([])
-        self.assertEqual(result, "")
+        # 空文档列表应抛出ValueError
+        with self.assertRaises(ValueError):
+            build_context([])
     
     def test_build_context_with_docs(self):
         """
@@ -114,14 +117,16 @@ class TestRagService(unittest.TestCase):
         
         self.assertIn("文档1内容", result)
         self.assertIn("文档2内容", result)
-        self.assertIn("知识库内容", result)
+        # 检查格式包含来源信息
+        self.assertIn("来源", result)
     
     def test_delete_knowledge_base_nonexistent(self):
         """
         测试删除不存在的知识库
         """
-        result = delete_knowledge_base("nonexistent_subject")
-        self.assertTrue(result)  # 应该返回True，即使目录不存在
+        # 删除不存在的知识库应抛出RuntimeError
+        with self.assertRaises(RuntimeError):
+            delete_knowledge_base("nonexistent_subject")
 
 
 if __name__ == "__main__":

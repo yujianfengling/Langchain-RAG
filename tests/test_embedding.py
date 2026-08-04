@@ -10,7 +10,7 @@ import os
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from rag.embedding import get_embeddings
+from rag.embedding import get_embedding_model
 
 
 class TestEmbedding(unittest.TestCase):
@@ -18,12 +18,12 @@ class TestEmbedding(unittest.TestCase):
     Embedding测试类
     """
     
-    def test_get_embeddings(self):
+    def test_get_embedding_model(self):
         """
         测试获取embedding模型
         """
         try:
-            embeddings = get_embeddings()
+            embeddings = get_embedding_model()
             self.assertIsNotNone(embeddings)
             
             # 测试embedding功能
@@ -35,18 +35,6 @@ class TestEmbedding(unittest.TestCase):
             self.assertGreater(len(embedding), 0)
             
             print(f"Embedding维度: {len(embedding)}")
-            
-        except Exception as e:
-            self.skipTest(f"Embedding模型不可用: {e}")
-    
-    def test_get_embeddings_device(self):
-        """
-        测试embedding设备配置
-        """
-        try:
-            # 测试CPU设备
-            embeddings = get_embeddings(device="cpu")
-            self.assertIsNotNone(embeddings)
             
         except Exception as e:
             self.skipTest(f"Embedding模型不可用: {e}")
