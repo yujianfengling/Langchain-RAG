@@ -18,3 +18,4 @@ rank-bm25
 faiss-cpu
 Pillow>=9.0.0
 pytesseract>=0.3.10
+PyMuPDF>=1.23.0
