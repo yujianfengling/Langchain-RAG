@@ -25,7 +25,7 @@ from .log_config import LogConfig
 from .service_config import ServiceConfig
 
 # 应用版本
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.1"
 
 # 全局超时配置（秒）
 LLM_REQUEST_TIMEOUT: int = int(os.getenv("LLM_REQUEST_TIMEOUT", "120"))
