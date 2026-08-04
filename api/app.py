@@ -148,6 +148,25 @@ except Exception as e:
 _VECTOR_STORE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "vector_store")
 
 
+@app.get("/")
+async def root():
+    """
+    根路径欢迎接口
+
+    返回：
+    {
+        "service": "智慧教育RAG系统",
+        "version": "2.2.1",
+        "status": "running"
+    }
+    """
+    return {
+        "service": "智慧教育RAG系统",
+        "version": APP_VERSION,
+        "status": "running",
+    }
+
+
 @app.get("/health")
 async def health_check():
     """
