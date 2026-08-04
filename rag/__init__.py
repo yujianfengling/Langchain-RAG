@@ -7,13 +7,17 @@ v2.0 更新：
 - RRF融合排序
 - 语义感知切分
 - Rerank重排序
+
+v2.3.0 更新：
+- 架构重构：新增 loaders 目录，统一文档加载器接口
+- 支持 TXT、PDF、图片等多种格式
 """
 
 # 版本信息
-__version__ = "2.0.0"
+__version__ = "2.3.0"
 
 # 模块导入
-from .document import load_document, load_documents
+from .document import load_document, load_documents, get_supported_extensions
 from .embedding import get_embedding_model, embed_documents, embed_query
 from .text_splitter import split_documents, split_text
 from .vector_store import (
@@ -53,6 +57,7 @@ __all__ = [
     # 文档加载
     "load_document",
     "load_documents",
+    "get_supported_extensions",
     
     # 文本分割
     "split_documents",

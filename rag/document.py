@@ -1,388 +1,155 @@
 """
-文档加载模块
-负责加载各种格式的文档并转换为LangChain Document对象
-支持格式：txt, md, pdf, docx, jpg, jpeg, png, webp
+RAG 模块 - 文档处理
+重构版本：作为路由层，调用 loaders 中的各个 Loader
+保持 V2.2.1 的公共接口完全兼容
 """
 
-import os
+from typing import List, Optional, Dict, Any, Union
 from pathlib import Path
-from typing import List, Optional, Union
+import logging
 
-# 尝试导入LangChain Document对象
-try:
-    from langchain_core.documents import Document
-    LANGCHAIN_AVAILABLE = True
-except ImportError:
-    LANGCHAIN_AVAILABLE = False
-    # 创建一个简单的Document替代类
-    class Document:
-        """LangChain Document的简单替代类"""
-        def __init__(self, page_content: str, metadata: Optional[dict] = None):
-            self.page_content = page_content
-            self.metadata = metadata or {}
-        
-        def __repr__(self):
-            return f"Document(page_content='{self.page_content[:50]}...', metadata={self.metadata})"
+# 导入新的 Loader 架构
+from .loaders import (
+    get_loader_for_file,
+    BaseLoader,
+    LoadResult,
+    TextLoader,
+    PdfLoader,
+    ImageLoader,
+)
 
-# 尝试导入各种文档加载器
-LOADER_AVAILABLE = {}
+logger = logging.getLogger(__name__)
 
-try:
-    from langchain_community.document_loaders import TextLoader
-    LOADER_AVAILABLE['txt'] = True
-except ImportError:
-    LOADER_AVAILABLE['txt'] = False
-
-try:
-    from langchain_community.document_loaders import UnstructuredMarkdownLoader
-    LOADER_AVAILABLE['md'] = True
-except ImportError:
-    LOADER_AVAILABLE['md'] = False
-
-try:
-    from langchain_community.document_loaders import PyPDFLoader
-    LOADER_AVAILABLE['pdf'] = True
-except ImportError:
-    LOADER_AVAILABLE['pdf'] = False
-
-try:
-    from langchain_community.document_loaders import Docx2txtLoader
-    LOADER_AVAILABLE['docx'] = True
-except ImportError:
-    LOADER_AVAILABLE['docx'] = False
-
-# 尝试导入多模态图片处理模块
-try:
-    from .multimodal import MultimodalDocumentConverter
-    MULTIMODAL_AVAILABLE = True
-except ImportError:
-    MULTIMODAL_AVAILABLE = False
+# 为了保持兼容性，重新导出这些类
+__all__ = [
+    'BaseLoader',
+    'LoadResult',
+    'TextLoader',
+    'PdfLoader',
+    'ImageLoader',
+    'load_document',
+    'load_documents',
+    'load_documents_from_directory',
+    'get_supported_extensions',
+]
 
 
-def load_document(file_path: Union[str, Path]) -> List[Document]:
+def load_document(file_path: Union[str, Path]) -> List[Any]:
     """
     加载单个文档文件
     
+    保持 V2.2.1 的接口兼容性。
+    
     Args:
-        file_path: 文档文件路径（绝对路径或相对路径）
+        file_path: 文件路径
         
     Returns:
-        Document对象列表（一个文档可能被分割成多个Document）
+        文档列表
         
     Raises:
-        FileNotFoundError: 文件不存在
         ValueError: 不支持的文件格式
-        Exception: 加载失败
+        FileNotFoundError: 文件不存在
     """
-    file_path = Path(file_path)
-    
-    # 检查文件是否存在
-    if not file_path.exists():
-        raise FileNotFoundError(f"文件不存在: {file_path}")
-    
-    # 获取文件扩展名
-    file_ext = file_path.suffix.lower()
-    
-    # 根据文件类型选择加载器
-    if file_ext == '.txt':
-        return _load_txt(file_path)
-    elif file_ext == '.md':
-        return _load_markdown(file_path)
-    elif file_ext == '.pdf':
-        return _load_pdf(file_path)
-    elif file_ext == '.docx':
-        return _load_docx(file_path)
-    elif file_ext in {'.jpg', '.jpeg', '.png', '.webp'}:
-        return _load_image(file_path)
-    else:
-        raise ValueError(f"不支持的文件格式: {file_ext}")
+    try:
+        # 获取对应的 Loader
+        loader = get_loader_for_file(file_path)
+        
+        # 使用 Loader 加载
+        result = loader.load(file_path)
+        
+        if result.success:
+            logger.info(f"成功加载文档: {file_path}, {len(result.documents)} 个文档")
+            return result.documents
+        else:
+            logger.error(f"加载文档失败: {file_path}, 错误: {result.error_message}")
+            raise ValueError(result.error_message)
+            
+    except Exception as e:
+        logger.error(f"加载文档异常: {file_path}, 错误: {str(e)}")
+        raise
 
 
-def load_documents(directory: Union[str, Path]) -> List[Document]:
+def load_documents(file_paths: List[Union[str, Path]]) -> List[Any]:
     """
-    加载目录下的所有支持格式的文档
+    批量加载多个文档文件
+    
+    保持 V2.2.1 的接口兼容性。
     
     Args:
-        directory: 目录路径（绝对路径或相对路径）
+        file_paths: 文件路径列表
         
     Returns:
-        所有文档的Document对象列表
-        
-    Raises:
-        FileNotFoundError: 目录不存在
-        ValueError: 目录中没有支持格式的文件
+        所有文档的列表
     """
-    directory = Path(directory)
-    
-    # 检查目录是否存在
-    if not directory.exists():
-        raise FileNotFoundError(f"目录不存在: {directory}")
-    
-    # 支持的文件扩展名
-    supported_extensions = {'.txt', '.md', '.pdf', '.docx', '.jpg', '.jpeg', '.png', '.webp'}
-    
-    # 查找所有支持的文件
     all_documents = []
-    found_files = False
     
-    # 遍历目录中的所有文件
-    for file_path in directory.rglob('*'):
-        if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
-            found_files = True
-            try:
-                documents = load_document(file_path)
-                all_documents.extend(documents)
-                print(f"[OK] 成功加载: {file_path.name} ({len(documents)}个文档)")
-            except Exception as e:
-                print(f"[FAIL] 加载失败: {file_path.name} - {str(e)}")
+    for file_path in file_paths:
+        try:
+            documents = load_document(file_path)
+            all_documents.extend(documents)
+        except Exception as e:
+            logger.warning(f"跳过文件 {file_path}: {str(e)}")
+            continue
     
-    if not found_files:
-        raise ValueError(f"目录中没有找到支持格式的文件 (支持: {', '.join(supported_extensions)})")
-    
-    # 清理所有文档中的UTF-16 surrogate字符
-    for doc in all_documents:
-        if hasattr(doc, 'page_content'):
-            doc.page_content = _clean_surrogate_characters(doc.page_content)
-    
+    logger.info(f"批量加载完成: {len(file_paths)} 个文件, {len(all_documents)} 个文档")
     return all_documents
 
 
-def _load_txt(file_path: Path) -> List[Document]:
+def load_documents_from_directory(
+    directory: Union[str, Path],
+    recursive: bool = True
+) -> List[Any]:
     """
-    加载TXT文件
+    从目录加载所有支持的文档
+    
+    保持 V2.2.1 的接口兼容性。
     
     Args:
-        file_path: TXT文件路径
+        directory: 目录路径
+        recursive: 是否递归搜索子目录
         
     Returns:
-        Document对象列表
+        所有文档的列表
     """
-    if LOADER_AVAILABLE.get('txt'):
-        # 使用LangChain的TextLoader
-        loader = TextLoader(str(file_path), encoding='utf-8')
-        return loader.load()
+    directory = Path(directory)
+    
+    if not directory.exists():
+        logger.warning(f"目录不存在: {directory}")
+        return []
+    
+    if not directory.is_dir():
+        logger.warning(f"不是目录: {directory}")
+        return []
+    
+    all_documents = []
+    supported_extensions = get_supported_extensions()
+    
+    # 获取所有支持的文件
+    if recursive:
+        files = [f for f in directory.rglob("*") if f.is_file() and f.suffix.lower() in supported_extensions]
     else:
-        # 降级方案：直接读取文件
+        files = [f for f in directory.glob("*") if f.is_file() and f.suffix.lower() in supported_extensions]
+    
+    # 加载每个文件
+    for file_path in files:
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            metadata = {
-                'source': str(file_path),
-                'file_name': file_path.name,
-                'file_type': 'txt'
-            }
-            
-            return [Document(page_content=content, metadata=metadata)]
+            documents = load_document(file_path)
+            all_documents.extend(documents)
         except Exception as e:
-            raise Exception(f"读取TXT文件失败: {str(e)}")
-
-
-def _load_markdown(file_path: Path) -> List[Document]:
-    """
-    加载Markdown文件
+            logger.warning(f"跳过文件 {file_path}: {str(e)}")
+            continue
     
-    Args:
-        file_path: Markdown文件路径
-        
-    Returns:
-        Document对象列表
-    """
-    if LOADER_AVAILABLE.get('md'):
-        try:
-            # 使用LangChain的UnstructuredMarkdownLoader
-            loader = UnstructuredMarkdownLoader(str(file_path))
-            return loader.load()
-        except Exception as e:
-            # 降级方案：直接读取文件
-            print(f"Markdown加载器失败，使用降级方案: {e}")
-            return _load_txt(file_path)
-    else:
-        # 降级方案：直接读取文件
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            metadata = {
-                'source': str(file_path),
-                'file_name': file_path.name,
-                'file_type': 'md'
-            }
-            
-            return [Document(page_content=content, metadata=metadata)]
-        except Exception as e:
-            raise Exception(f"读取Markdown文件失败: {str(e)}")
+    logger.info(f"从目录 {directory} 加载了 {len(all_documents)} 个文档")
+    return all_documents
 
 
-def _load_pdf(file_path: Path) -> List[Document]:
+def get_supported_extensions() -> List[str]:
     """
-    加载PDF文件
+    获取所有支持的文件扩展名
     
-    Args:
-        file_path: PDF文件路径
-        
-    Returns:
-        Document对象列表（每页一个Document）
-    """
-    if LOADER_AVAILABLE.get('pdf'):
-        # 使用LangChain的PyPDFLoader
-        loader = PyPDFLoader(str(file_path))
-        return loader.load()
-    else:
-        # 降级方案：尝试使用pdfplumber
-        try:
-            import pdfplumber
-            
-            documents = []
-            with pdfplumber.open(file_path) as pdf:
-                for i, page in enumerate(pdf.pages):
-                    content = page.extract_text()
-                    if content:
-                        metadata = {
-                            'source': str(file_path),
-                            'file_name': file_path.name,
-                            'file_type': 'pdf',
-                            'page': i + 1,
-                            'total_pages': len(pdf.pages)
-                        }
-                        documents.append(Document(page_content=content, metadata=metadata))
-            
-            if not documents:
-                raise Exception("PDF文件无法提取文本内容")
-            
-            return documents
-            
-        except ImportError:
-            raise Exception("PDF加载需要安装langchain-community或pdfplumber包")
-        except Exception as e:
-            raise Exception(f"读取PDF文件失败: {str(e)}")
-
-
-def _load_docx(file_path: Path) -> List[Document]:
-    """
-    加载DOCX文件
-    
-    Args:
-        file_path: DOCX文件路径
-        
-    Returns:
-        Document对象列表
-    """
-    if LOADER_AVAILABLE.get('docx'):
-        # 使用LangChain的Docx2txtLoader
-        loader = Docx2txtLoader(str(file_path))
-        return loader.load()
-    else:
-        # 降级方案：尝试使用docx2txt
-        try:
-            import docx2txt
-            
-            content = docx2txt.process(str(file_path))
-            if not content:
-                raise Exception("DOCX文件无法提取文本内容")
-            
-            metadata = {
-                'source': str(file_path),
-                'file_name': file_path.name,
-                'file_type': 'docx'
-            }
-            
-            return [Document(page_content=content, metadata=metadata)]
-            
-        except ImportError:
-            raise Exception("DOCX加载需要安装langchain-community或docx2txt包")
-        except Exception as e:
-            raise Exception(f"读取DOCX文件失败: {str(e)}")
-
-
-def _load_image(file_path: Path) -> List[Document]:
-    """
-    加载图片文件
-    
-    Args:
-        file_path: 图片文件路径
-        
-    Returns:
-        Document对象列表
-        
-    Raises:
-        Exception: 加载失败
-    """
-    if not MULTIMODAL_AVAILABLE:
-        raise Exception("图片加载需要多模态模块（rag.multimodal）")
-    
-    try:
-        # 尝试使用MultimodalService（推荐）
-        try:
-            from services.multimodal_service import get_multimodal_service
-            multimodal_service = get_multimodal_service()
-            converter = MultimodalDocumentConverter(multimodal_service=multimodal_service)
-        except Exception as e:
-            print(f"无法初始化MultimodalService，使用传统方法: {e}")
-            converter = MultimodalDocumentConverter()
-        
-        return converter.convert_image(file_path)
-    except Exception as e:
-        raise Exception(f"读取图片文件失败: {str(e)}")
-
-
-def _clean_surrogate_characters(text: str) -> str:
-    """
-    清理文本中的UTF-16 surrogate字符
-    
-    PyMuPDF等PDF提取库可能产生UTF-16 surrogate对（如\\ud835\\udf0b），
-    这些字符会导致sentence-transformers等tokenizer崩溃。
-    
-    Args:
-        text: 原始文本
-        
-    Returns:
-        清理后的文本，保留正常中文、英文、数学符号
-    """
-    if not text:
-        return text
-    
-    # 方法：编码为UTF-8时忽略无法编码的字符（surrogate对），
-    # 然后解码回来。这会移除所有非法Unicode字符。
-    try:
-        # 尝试编码为UTF-8，忽略无法编码的字符
-        cleaned = text.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
-        return cleaned
-    except Exception:
-        # 如果出现异常，返回原文本
-        return text
-
-
-def get_supported_formats() -> List[str]:
-    """
-    获取支持的文件格式列表
+    保持 V2.2.1 的接口兼容性。
     
     Returns:
-        支持的文件扩展名列表
+        支持的扩展名列表
     """
-    return ['.txt', '.md', '.pdf', '.docx', '.jpg', '.jpeg', '.png', '.webp']
-
-
-def check_loader_status() -> dict:
-    """
-    检查文档加载器的可用状态
-    
-    Returns:
-        各格式加载器的状态字典
-    """
-    status = {}
-    for fmt, available in LOADER_AVAILABLE.items():
-        status[fmt] = {
-            'available': available,
-            'loader': f"{fmt.upper()}Loader" if available else "降级方案"
-        }
-    
-    # 添加图片格式状态
-    image_formats = ['.jpg', '.jpeg', '.png', '.webp']
-    for fmt in image_formats:
-        status[fmt] = {
-            'available': MULTIMODAL_AVAILABLE,
-            'loader': 'MultimodalImageLoader' if MULTIMODAL_AVAILABLE else '不可用'
-        }
-    
-    return status
+    return ['.txt', '.pdf', '.jpg', '.jpeg', '.png', '.webp']
