@@ -116,6 +116,7 @@ class ImageAdapter:
         """
         metadata = {
             'type': 'image',
+            'modality': 'image',
             'page': element.page,
             'bbox': list(element.bbox),
             'confidence': element.confidence,
@@ -133,6 +134,9 @@ class ImageAdapter:
             metadata['image_width'] = content.get('width', 0)
             metadata['image_height'] = content.get('height', 0)
             metadata['image_xref'] = content.get('xref', 0)
+            # 添加 image_path 字段（如果存在）
+            if 'image_path' in content:
+                metadata['image_path'] = content['image_path']
         
         # 添加额外元数据
         if element.metadata:

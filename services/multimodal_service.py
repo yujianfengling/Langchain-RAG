@@ -42,7 +42,7 @@ class MultimodalService:
                 logger.warning(f"无法初始化视觉模型提供商: {e}")
                 self.vision_provider = None
     
-    def describe_image(self, image_path: str, mime_type: Optional[str] = None, prompt: Optional[str] = None) -> str:
+    def describe_image(self, image_path: str, mime_type: Optional[str] = None, prompt: Optional[str] = None) -> Dict[str, Any]:
         """
         生成图片描述
         
@@ -52,7 +52,7 @@ class MultimodalService:
             prompt: 自定义提示词，如果为None则使用默认提示词
         
         Returns:
-            图片描述文本
+            包含 answer, model, latency, retries 的字典
         
         Raises:
             ValueError: 如果视觉模型不可用或调用失败
@@ -94,13 +94,9 @@ class MultimodalService:
             }
         ]
         
-        # 调用视觉模型
-        try:
-            result = self.vision_provider.vision(messages)
-            return result.get("answer", "")
-        except Exception as e:
-            logger.error(f"视觉模型调用失败: {e}")
-            raise ValueError(f"图片描述生成失败: {e}")
+        # 调用视觉模型（timeout通过provider内部处理）
+        result = self.vision_provider.vision(messages)
+        return result
     
     def _detect_mime_type(self, image_path: str) -> str:
         """检测图片MIME类型"""
@@ -136,24 +132,31 @@ class MultimodalService:
             image_path: 图片文件路径
         
         Returns:
-            包含description、ocr_text、model_used等的字典
+            包含description、ocr_text、model_used、vision_status、retries等的字典
         """
         result = {
             "description": "",
             "ocr_text": "",
             "model_used": self.vision_provider.model_name if self.vision_provider else "unknown",
-            "error": None
+            "error": None,
+            "vision_status": "pending",  # pending / success / failed / skipped
+            "retries": 0,
+            "error_type": None
         }
         
         # 检查文件是否存在
         if not os.path.exists(image_path):
             result["error"] = "图片文件不存在"
+            result["vision_status"] = "skipped"
+            result["error_type"] = "file_not_found"
             return result
         
         # 检查文件大小（20MB限制）
         file_size = os.path.getsize(image_path)
         if file_size > 20 * 1024 * 1024:
             result["error"] = f"图片文件过大（{file_size / 1024 / 1024:.1f}MB > 20MB）"
+            result["vision_status"] = "skipped"
+            result["error_type"] = "file_too_large"
             return result
         
         # 检查图片尺寸（新增安全限制）
@@ -165,11 +168,15 @@ class MultimodalService:
                 # 检查最大边长
                 if width > MAX_IMAGE_DIMENSION or height > MAX_IMAGE_DIMENSION:
                     result["error"] = f"图片尺寸 {width}x{height} 超过限制（最大边长 {MAX_IMAGE_DIMENSION}px）"
+                    result["vision_status"] = "skipped"
+                    result["error_type"] = "dimension_exceeded"
                     return result
                 
                 # 检查总像素数
                 if width * height > MAX_IMAGE_PIXELS:
                     result["error"] = f"图片像素数 {width * height} 超过限制（最大 {MAX_IMAGE_PIXELS} 像素）"
+                    result["vision_status"] = "skipped"
+                    result["error_type"] = "pixels_exceeded"
                     return result
                 
                 logger.info(f"[Multimodal] image={Path(image_path).name}, size={file_size/1024:.1f}KB, dimensions={width}x{height}")
@@ -183,27 +190,50 @@ class MultimodalService:
         start_time = time.time()
         
         try:
-            result["description"] = self.describe_image(image_path)
+            vision_result = self.describe_image(image_path)
             latency = time.time() - start_time
             
-            logger.info(f"[Multimodal] model={result['model_used']}, latency={latency:.2f}s, "
-                       f"caption_length={len(result['description'])}, fallback=False")
+            result["description"] = vision_result.get("answer", "")
+            result["retries"] = vision_result.get("retries", 0)
+            result["vision_status"] = "success"
+            
+            logger.info(
+                f"[Multimodal] Vision调用成功, image={Path(image_path).name}, "
+                f"model={result['model_used']}, latency={latency:.2f}s, "
+                f"retries={result['retries']}, caption_length={len(result['description'])}"
+            )
         except Exception as e:
             latency = time.time() - start_time
-            logger.warning(f"[Multimodal] vision_failed, latency={latency:.2f}s, trying OCR fallback")
             
             # 区分错误类型
             error_msg = str(e).lower()
             if "timeout" in error_msg or "超时" in error_msg:
                 user_error = "图片理解服务响应超时，请稍后重试"
+                result["error_type"] = "timeout"
             elif "api_key" in error_msg or "authentication" in error_msg:
                 user_error = "图片理解服务认证失败，请检查配置"
+                result["error_type"] = "auth_error"
             elif "quota" in error_msg or "limit" in error_msg:
                 user_error = "图片理解服务配额已用尽，请稍后重试"
+                result["error_type"] = "quota_exceeded"
+            elif "429" in error_msg:
+                user_error = "图片理解服务请求频率超限，请稍后重试"
+                result["error_type"] = "rate_limit"
+            elif "网络" in error_msg or "network" in error_msg or "connection" in error_msg:
+                user_error = "图片理解服务网络连接失败"
+                result["error_type"] = "network_error"
             else:
                 user_error = "图片理解服务暂时不可用，请稍后重试"
+                result["error_type"] = "unknown"
             
             result["error"] = user_error
+            result["vision_status"] = "failed"
+            
+            logger.warning(
+                f"[Multimodal] Vision调用失败, image={Path(image_path).name}, "
+                f"error_type={result['error_type']}, latency={latency:.2f}s, "
+                f"降级为OCR fallback"
+            )
         
         # 尝试OCR提取文本（作为辅助）
         try:
@@ -251,8 +281,14 @@ class MultimodalService:
             "caption": extraction_result["description"],
             "model_used": extraction_result["model_used"],
             "file_type": self._detect_mime_type(image_path),
-            "error": extraction_result["error"]
+            "error": extraction_result["error"],
+            "vision_status": extraction_result.get("vision_status", "unknown"),
+            "vision_retries": extraction_result.get("retries", 0),
         }
+        
+        # 仅在失败时记录error_type
+        if extraction_result.get("error_type"):
+            metadata["vision_error_type"] = extraction_result["error_type"]
         
         return {
             "page_content": page_content,

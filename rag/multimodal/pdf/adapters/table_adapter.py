@@ -124,6 +124,7 @@ class TableAdapter:
         """
         metadata = {
             'type': 'table',
+            'modality': 'table',
             'page': element.page,
             'bbox': list(element.bbox),
             'confidence': element.confidence,

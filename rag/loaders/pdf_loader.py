@@ -36,6 +36,8 @@ class PdfLoader(BaseLoader):
         self.use_new_architecture = use_new_architecture
         self._analyzer = None
         self._adapter = None
+        self._image_extractor = None
+        self._enricher = None
     
     @property
     def analyzer(self):
@@ -52,6 +54,22 @@ class PdfLoader(BaseLoader):
             from ..multimodal.pdf.adapters import DocumentAdapter
             self._adapter = DocumentAdapter()
         return self._adapter
+    
+    @property
+    def image_extractor(self):
+        """获取图片提取器（延迟加载）"""
+        if self._image_extractor is None:
+            from ..multimodal.pdf.extractors.image_extractor import ImageExtractor
+            self._image_extractor = ImageExtractor()
+        return self._image_extractor
+    
+    @property
+    def enricher(self):
+        """获取多模态文档增强器（延迟加载）"""
+        if self._enricher is None:
+            from ..enrichment import MultimodalEnricher
+            self._enricher = MultimodalEnricher()
+        return self._enricher
     
     def supports(self, file_path: Union[str, Path]) -> bool:
         """判断是否支持该文件"""
@@ -99,6 +117,9 @@ class PdfLoader(BaseLoader):
                 # 降级到旧架构
                 return self._load_with_legacy_architecture(file_path)
             
+            # 提取图片文件（如果有）
+            elements = self._extract_images_from_elements(elements, file_path)
+            
             # 使用 DocumentAdapter 转换为 Document
             documents = self.adapter.adapt(elements, file_path)
             
@@ -107,12 +128,89 @@ class PdfLoader(BaseLoader):
                 # 降级到旧架构
                 return self._load_with_legacy_architecture(file_path)
             
+            # 使用 MultimodalEnricher 增强文档
+            try:
+                documents = self.enricher.enrich(documents)
+                logger.info(f"文档增强完成: {len(documents)} 个文档")
+            except Exception as e:
+                logger.warning(f"文档增强失败，保留原始文档: {str(e)}")
+                # 增强失败时保留原始文档
+            
             logger.info(f"PDF 加载成功（新架构）: {file_path}, {len(documents)} 个文档")
             return self._create_success_result(documents)
             
         except Exception as e:
             logger.warning(f"新架构加载失败，降级到旧架构: {str(e)}")
             return self._load_with_legacy_architecture(file_path)
+    
+    def _extract_images_from_elements(self, elements: list, file_path: Path) -> list:
+        """
+        从元素列表中提取图片文件
+        
+        Args:
+            elements: PDFElement 列表
+            file_path: PDF 文件路径
+            
+        Returns:
+            更新后的元素列表
+        """
+        from ..multimodal.pdf.models import ElementType
+        
+        # 筛选出图片元素
+        image_elements = [e for e in elements if e.type == ElementType.IMAGE]
+        
+        if not image_elements:
+            return elements
+        
+        try:
+            # 使用 ImageExtractor 提取图片
+            # 调用 extract_all 方法，参数顺序为 (pdf_path, image_elements)
+            image_paths = self.image_extractor.extract_all(file_path, image_elements)
+            
+            # 按页面分组图片元素
+            page_groups = {}
+            for element in image_elements:
+                page_num = element.page
+                if page_num not in page_groups:
+                    page_groups[page_num] = []
+                page_groups[page_num].append(element)
+            
+            # 按页面顺序映射路径
+            path_index = 0
+            enhanced_dict = {}
+            for page_num in sorted(page_groups.keys()):
+                page_elements = page_groups[page_num]
+                for element in page_elements:
+                    if path_index < len(image_paths):
+                        # 为元素添加 image_path
+                        element.content['image_path'] = str(image_paths[path_index])
+                        element.content['extraction_method'] = 'image_extractor'
+                        enhanced_dict[element.content.get('xref')] = element
+                        path_index += 1
+            
+            # 更新原始元素列表
+            result_elements = []
+            for element in elements:
+                if element.type == ElementType.IMAGE:
+                    # 获取xref
+                    xref = None
+                    if hasattr(element, 'content') and isinstance(element.content, dict):
+                        xref = element.content.get('xref')
+                    
+                    # 如果找到增强元素，则替换
+                    if xref is not None and xref in enhanced_dict:
+                        result_elements.append(enhanced_dict[xref])
+                    else:
+                        result_elements.append(element)
+                else:
+                    result_elements.append(element)
+            
+            logger.info(f"提取了 {len(image_paths)} 个图片文件")
+            return result_elements
+            
+        except Exception as e:
+            logger.warning(f"图片提取失败，继续处理: {str(e)}")
+            return elements
     
     def _load_with_legacy_architecture(self, file_path: Path) -> LoadResult:
         """

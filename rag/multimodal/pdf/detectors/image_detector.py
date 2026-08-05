@@ -44,7 +44,13 @@ class ImageDetector:
                     bbox = self._get_image_bbox(page, xref)
                     
                     # 获取图片信息
-                    image_info = page.get_image_info(xref)
+                    image_info_list = page.get_image_info(xref)
+                    
+                    # get_image_info返回列表，取第一个元素
+                    if isinstance(image_info_list, list) and len(image_info_list) > 0:
+                        image_info = image_info_list[0]
+                    else:
+                        image_info = image_info_list
                     
                     element = PDFElement(
                         type=ElementType.IMAGE,

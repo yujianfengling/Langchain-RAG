@@ -1,14 +1,78 @@
 """
 模型服务模块
 提供统一的AI模型调用接口，支持多个模型提供商
+V2.3.1 Phase 2.4.4: 添加重试机制、可配置超时
 """
 import time
+import random
 import requests
 import logging
 from typing import Optional, List, Dict, Any
 from config.models import get_model_config, get_model_api_key, get_default_model
 
 logger = logging.getLogger(__name__)
+
+# Vision API 重试配置
+VISION_MAX_RETRIES = 3
+VISION_DEFAULT_TIMEOUT = 60  # 秒
+VISION_RETRY_BACKOFF_BASE = 1.0  # 指数退避基数（秒）
+VISION_RETRY_BACKOFF_MAX = 10.0  # 最大退避时间（秒）
+VISION_RETRY_JITTER = 0.5  # 随机抖动范围（秒）
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    """
+    判断错误是否可重试
+    
+    可重试的错误：
+    - requests.exceptions.Timeout（超时）
+    - requests.exceptions.ConnectionError（网络连接错误）
+    - HTTP 429（请求过多）
+    - HTTP 5xx（服务端错误）
+    
+    不可重试的错误：
+    - HTTP 400（请求参数错误）
+    - HTTP 401（认证失败）
+    - HTTP 403（权限不足）
+    - ValueError（参数错误、模型不支持等）
+    """
+    if isinstance(exc, requests.exceptions.Timeout):
+        return True
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status_code = exc.response.status_code if exc.response is not None else 0
+        # 429 和 5xx 可重试
+        if status_code == 429 or status_code >= 500:
+            return True
+        # 400, 401, 403 不可重试
+        return False
+    # ValueError 等业务错误不可重试
+    if isinstance(exc, ValueError):
+        return False
+    return False
+
+
+def _get_error_type(exc: Exception) -> str:
+    """获取简化的错误类型（用于metadata和日志，不包含敏感信息）"""
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "timeout"
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "network_error"
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status_code = exc.response.status_code if exc.response is not None else 0
+        if status_code == 429:
+            return "rate_limit"
+        if status_code >= 500:
+            return f"server_error_{status_code}"
+        if status_code == 400:
+            return "bad_request"
+        if status_code == 401:
+            return "auth_error"
+        if status_code == 403:
+            return "permission_denied"
+        return f"http_error_{status_code}"
+    return "unknown_error"
 
 class ModelProvider:
     """模型提供商基类"""
@@ -52,17 +116,24 @@ class ModelProvider:
     
     def _call_openai_compatible_api(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
         """
-        调用OpenAI兼容的API
+        调用OpenAI兼容的API（带重试机制）
         
         Args:
             messages: 消息列表
-            **kwargs: 其他参数
+            **kwargs: 其他参数，支持:
+                - timeout: 请求超时时间（秒），默认使用VISION_DEFAULT_TIMEOUT
+                - max_retries: 最大重试次数，默认VISION_MAX_RETRIES
+                - temperature: 温度参数
+                - max_tokens: 最大token数
         
         Returns:
-            API响应
+            API响应，包含 answer, model, model_display_name, latency, usage, retries
         """
         if not self.api_key:
             raise ValueError(f"模型 {self.model_name} 未配置API密钥")
+        
+        timeout = kwargs.get("timeout", VISION_DEFAULT_TIMEOUT)
+        max_retries = kwargs.get("max_retries", VISION_MAX_RETRIES)
         
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -78,37 +149,97 @@ class ModelProvider:
         
         url = f"{self.config['base_url']}/chat/completions"
         
-        try:
-            start_time = time.time()
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
-            latency = time.time() - start_time
+        last_error = None
+        total_latency = 0.0
+        
+        for attempt in range(max_retries):
+            try:
+                start_time = time.time()
+                response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+                latency = time.time() - start_time
+                total_latency += latency
+                
+                response.raise_for_status()
+                data = response.json()
+                
+                # 解析响应
+                if "choices" in data and len(data["choices"]) > 0:
+                    answer = data["choices"][0]["message"]["content"]
+                else:
+                    raise ValueError(f"模型 {self.model_name} 返回格式异常")
+                
+                if attempt > 0:
+                    logger.info(
+                        f"[Vision] API调用成功 (第{attempt + 1}次尝试), "
+                        f"model={self.model_name}, latency={latency:.2f}s, "
+                        f"total_latency={total_latency:.2f}s"
+                    )
+                
+                return {
+                    "answer": answer,
+                    "model": self.model_name,
+                    "model_display_name": self.config["name"],
+                    "latency": latency,
+                    "usage": data.get("usage", {}),
+                    "retries": attempt,  # 记录重试次数
+                }
+                
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, 
+                    requests.exceptions.HTTPError) as e:
+                last_error = e
+                error_type = _get_error_type(e)
+                
+                # 检查是否可重试
+                if not _is_retryable_error(e):
+                    logger.error(
+                        f"[Vision] API调用遇到不可重试错误: {error_type}, "
+                        f"model={self.model_name}, attempt={attempt + 1}/{max_retries}"
+                    )
+                    raise
+                
+                # 最后一次尝试失败，不再等待
+                if attempt < max_retries - 1:
+                    # 指数退避 + 随机抖动
+                    backoff = min(
+                        VISION_RETRY_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, VISION_RETRY_JITTER),
+                        VISION_RETRY_BACKOFF_MAX
+                    )
+                    logger.warning(
+                        f"[Vision] API调用失败: {error_type}, "
+                        f"model={self.model_name}, attempt={attempt + 1}/{max_retries}, "
+                        f"等待{backoff:.1f}s后重试"
+                    )
+                    time.sleep(backoff)
+                else:
+                    logger.error(
+                        f"[Vision] API调用最终失败: {error_type}, "
+                        f"model={self.model_name}, 已用尽{max_retries}次尝试, "
+                        f"total_latency={total_latency:.2f}s"
+                    )
             
-            response.raise_for_status()
-            data = response.json()
+            except ValueError as e:
+                # 业务错误（返回格式异常等）不重试
+                logger.error(f"[Vision] API响应解析失败: {str(e)}, model={self.model_name}")
+                raise
             
-            # 解析响应
-            if "choices" in data and len(data["choices"]) > 0:
-                answer = data["choices"][0]["message"]["content"]
+            except Exception as e:
+                # 未知错误不重试
+                logger.error(f"[Vision] API调用遇到未知错误: {str(e)}, model={self.model_name}")
+                raise
+        
+        # 所有重试都失败
+        if isinstance(last_error, requests.exceptions.Timeout):
+            raise ValueError(f"模型 {self.config['name']} 响应超时（{timeout}秒），已重试{max_retries}次")
+        elif isinstance(last_error, requests.exceptions.ConnectionError):
+            raise ValueError(f"模型 {self.config['name']} 网络连接失败，已重试{max_retries}次")
+        elif isinstance(last_error, requests.exceptions.HTTPError):
+            status_code = last_error.response.status_code if last_error.response is not None else 0
+            if status_code == 429:
+                raise ValueError(f"模型 {self.config['name']} 请求频率超限(429)，已重试{max_retries}次")
             else:
-                raise ValueError(f"模型 {self.model_name} 返回格式异常")
-            
-            return {
-                "answer": answer,
-                "model": self.model_name,
-                "model_display_name": self.config["name"],
-                "latency": latency,
-                "usage": data.get("usage", {}),
-            }
-            
-        except requests.exceptions.Timeout:
-            logger.error(f"调用模型 {self.model_name} API超时（30秒）")
-            raise ValueError(f"模型 {self.config['name']} 响应超时，请稍后重试")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"调用模型 {self.model_name} API失败: {str(e)}")
-            raise ValueError(f"模型 {self.config['name']} 调用失败: {str(e)}")
-        except Exception as e:
-            logger.error(f"处理模型 {self.model_name} 响应失败: {str(e)}")
-            raise
+                raise ValueError(f"模型 {self.config['name']} 服务端错误({status_code})，已重试{max_retries}次")
+        else:
+            raise ValueError(f"模型 {self.config['name']} 调用失败，已重试{max_retries}次")
 
 
 class OpenAICompatibleProvider(ModelProvider):
