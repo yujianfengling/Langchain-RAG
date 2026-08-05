@@ -78,3 +78,16 @@ config.json
 
 # CodeBuddy椤圭洰鏁版嵁
 .codebuddy/
+  
+# ====== 测试产物与临时文件 ======  
+data/temp_*/  
+data/*_RawData.json  
+data/*_raw_results.json  
+phase*_output*.txt  
+phase*_verify.py  
+test_v*.py  
+test_rag_effect*.py  
+*_load_stats.json  
+  
+# ====== 构建产物（根目录） ======  
+V2.*_RC_*.md  
