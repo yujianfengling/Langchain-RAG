@@ -156,11 +156,18 @@ def build_subject_knowledge(subject_id: str, source_path: str) -> Dict[str, Any]
         if not docs_path.is_dir():
             raise KnowledgeServiceError(f"路径不是目录: {source_path}")
         
-        # 加载文档
-        documents = load_documents(docs_path)
+        # 收集目录下的所有文件路径
+        supported_extensions = {'.txt', '.md', '.pdf', '.docx', '.png', '.jpg', '.jpeg', '.webp'}
+        file_paths = [
+            f for f in docs_path.iterdir()
+            if f.is_file() and f.suffix.lower() in supported_extensions
+        ]
         
-        if not documents:
+        if not file_paths:
             raise KnowledgeServiceError(f"目录中没有找到支持格式的文件: {source_path}")
+        
+        # 加载文档
+        documents = load_documents(file_paths)
         
         # 构建知识库
         build_knowledge_base(
@@ -483,11 +490,18 @@ def rebuild_subject_knowledge(subject_id: str) -> Dict[str, Any]:
         if not subject_dir.exists():
             raise KnowledgeServiceError(f"学科目录不存在: {subject_id}")
         
-        # 加载文档
-        documents = load_documents(subject_dir)
+        # 收集目录下的所有文件路径
+        supported_extensions = {'.txt', '.md', '.pdf', '.docx', '.png', '.jpg', '.jpeg', '.webp'}
+        file_paths = [
+            f for f in subject_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in supported_extensions
+        ]
         
-        if not documents:
+        if not file_paths:
             raise KnowledgeServiceError(f"目录中没有找到支持格式的文件")
+        
+        # 加载文档
+        documents = load_documents(file_paths)
         
         # 删除旧知识库
         persist_directory = _resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}")
