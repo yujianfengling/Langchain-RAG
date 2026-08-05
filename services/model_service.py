@@ -155,7 +155,10 @@ class ModelProvider:
         for attempt in range(max_retries):
             try:
                 start_time = time.time()
-                response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+                # 手动UTF-8编码请求体，避免requests在latin-1下编码中文报错
+                import json as _json
+                _body = _json.dumps(payload, ensure_ascii=False).encode('utf-8')
+                response = requests.post(url, headers=headers, data=_body, timeout=timeout)
                 latency = time.time() - start_time
                 total_latency += latency
                 
@@ -254,21 +257,10 @@ class OpenAICompatibleProvider(ModelProvider):
     def vision(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         """
         视觉理解（多模态）实现
-        
-        Args:
-            messages: 多模态消息列表
-            **kwargs: 其他参数
-        
-        Returns:
-            响应字典
-        
-        Raises:
-            ValueError: 如果模型不支持视觉功能
+        直接调用API，让API自己判断是否支持图片输入。
+        如果模型不支持，API会返回错误，由调用方处理降级。
         """
-        # 检查模型是否支持视觉
-        if not self.config.get('is_vision', False):
-            raise ValueError(f"模型 {self.model_name} 不是视觉模型，不支持视觉功能")
-        
+        # 不再检查 is_vision 标记，直接尝试调用
         return self._call_openai_compatible_api(messages, **kwargs)
 
 

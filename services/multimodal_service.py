@@ -33,14 +33,52 @@ class MultimodalService:
         self._ensure_vision_provider()
     
     def _ensure_vision_provider(self):
-        """确保视觉模型提供商已初始化"""
-        if self.vision_provider is None:
-            try:
+        """
+        确保视觉模型提供商已初始化。
+        环境变量 VISION_MODE 控制模式：
+        - "vision"：使用视觉模型（默认）
+        - "ocr"：直接使用OCR，跳过Vision调用
+        """
+        import os
+        mode = os.getenv("VISION_MODE", "vision").lower()
+        
+        if mode == "ocr":
+            logger.info("[Multimodal] VISION_MODE=ocr，跳过Vision模型，直接使用OCR")
+            self.vision_provider = None
+            return
+        
+        if self.vision_provider is not None:
+            return
+        
+        # 1. 优先尝试 qwen-vision（专用视觉模型）
+        try:
+            from config.models import get_model_api_key
+            api_key = get_model_api_key("qwen-vision")
+            if api_key:
                 self.vision_provider = get_model_provider("qwen-vision")
-                logger.info("自动初始化通义千问视觉模型提供商")
-            except Exception as e:
-                logger.warning(f"无法初始化视觉模型提供商: {e}")
-                self.vision_provider = None
+                logger.info("[Multimodal] 使用 qwen-vision 视觉模型")
+                return
+        except Exception:
+            pass
+        
+        # 2. 回退到默认模型（MiMo等，使用vision_model_name如果有的话）
+        try:
+            from services.model_service import OpenAICompatibleProvider
+            default_provider = get_model_provider()
+            vision_model = default_provider.config.get("vision_model_name")
+            if vision_model and vision_model != default_provider.model_name:
+                vision_config = {**default_provider.config, "model_name": vision_model}
+                self.vision_provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+                self.vision_provider.model_name = vision_model
+                self.vision_provider.config = vision_config
+                self.vision_provider.api_key = default_provider.api_key
+                logger.info(f"[Multimodal] qwen-vision 未配置，使用 {vision_model} 作为视觉模型")
+            else:
+                self.vision_provider = default_provider
+                logger.info(f"[Multimodal] qwen-vision 未配置，回退到默认模型 {self.vision_provider.model_name} 尝试视觉功能")
+        except Exception as e:
+            logger.warning(f"[Multimodal] 无法初始化视觉模型: {e}")
+            self.vision_provider = None
     
     def describe_image(self, image_path: str, mime_type: Optional[str] = None, prompt: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -184,6 +222,20 @@ class MultimodalService:
             logger.warning("PIL未安装，跳过图片尺寸检查")
         except Exception as e:
             logger.warning(f"图片尺寸检查失败: {e}")
+        
+        # 如果Vision模型未配置，直接跳到OCR
+        if not self.vision_provider:
+            logger.info(f"[Multimodal] Vision模型未配置，直接使用OCR: {Path(image_path).name}")
+            result["vision_status"] = "skipped"
+            result["error_type"] = "no_vision_provider"
+            # 直接走OCR fallback
+            try:
+                from rag.multimodal.image.extractor import ImageExtractor
+                extractor = ImageExtractor()
+                result["ocr_text"] = extractor.extract_text(image_path)
+            except Exception as ocr_err:
+                logger.warning(f"[Multimodal] OCR也失败了: {ocr_err}")
+            return result
         
         # 尝试生成图片描述
         import time

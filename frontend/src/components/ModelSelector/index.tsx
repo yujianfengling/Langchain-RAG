@@ -31,8 +31,8 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onModelChange }) => {
       ]);
       
       setCurrentModel(currentResponse.data);
-      // 后端返回 {models: [...]} 结构，需要取 models 字段
-      const models = availableResponse.data?.models || availableResponse.data || [];
+      // 后端返回 data 即为模型数组
+      const models = availableResponse.data;
       setAvailableModels(Array.isArray(models) ? models : []);
     } catch (error) {
       console.error('加载模型信息失败:', error);

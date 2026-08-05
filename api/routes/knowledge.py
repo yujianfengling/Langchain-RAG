@@ -258,3 +258,68 @@ async def rebuild_knowledge(subject_id: str):
             raise KnowledgeBaseNotFoundError(subject_id)
         else:
             raise RAGServiceError(error_msg)
+
+# ============ 知识图谱接口 ============
+
+@router.get("/knowledge/{subject_id}/graph", response_model=SuccessResponse)
+async def get_knowledge_graph(subject_id: str, node: str = None, depth: int = 1):
+    """
+    获取学科知识图谱
+    
+    - **subject_id**: 学科ID
+    - **node**: 起始节点（可选，None返回全部）
+    - **depth**: 展开深度（默认1）
+    """
+    try:
+        from rag.knowledge_graph import load_knowledge_graph, query_graph, build_knowledge_graph
+        
+        # 检查图谱是否存在
+        existing = load_knowledge_graph(subject_id)
+        if existing is None:
+            raise KnowledgeBaseNotFoundError(subject_id)
+        
+        result = query_graph(subject_id, node=node, depth=depth)
+        return SuccessResponse(
+            data=result,
+            message="获取知识图谱成功",
+        )
+    except KnowledgeBaseNotFoundError:
+        raise
+    except Exception as e:
+        raise RAGServiceError(f"获取知识图谱失败: {str(e)}")
+
+
+@router.post("/knowledge/{subject_id}/graph/build", response_model=SuccessResponse)
+async def build_knowledge_graph_api(subject_id: str):
+    """
+    构建学科知识图谱（从文档中LLM抽取三元组）
+    
+    - **subject_id**: 学科ID
+    """
+    try:
+        from rag.knowledge_graph import build_knowledge_graph
+        
+        graph = build_knowledge_graph(subject_id)
+        return SuccessResponse(
+            data=graph,
+            message=f"知识图谱构建成功：{graph['stats']['node_count']}个节点，{graph['stats']['edge_count']}条边",
+        )
+    except FileNotFoundError as e:
+        raise KnowledgeBaseNotFoundError(subject_id)
+    except Exception as e:
+        raise RAGServiceError(f"构建知识图谱失败: {str(e)}")
+
+
+@router.get("/knowledge/graphs", response_model=SuccessResponse)
+async def list_knowledge_graphs():
+    """
+    列出所有已构建的知识图谱
+    """
+    try:
+        from rag.knowledge_graph import list_graphs
+        return SuccessResponse(
+            data={"graphs": list_graphs()},
+            message="获取图谱列表成功",
+        )
+    except Exception as e:
+        raise RAGServiceError(f"获取图谱列表失败: {str(e)}")
