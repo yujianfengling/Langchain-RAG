@@ -8,19 +8,15 @@ export interface EducationSummaryRequest {
   text: string;
 }
 
-// 知识点总结响应
+// 知识点总结响应（data字段的实际结构）
 export interface EducationSummaryResponse {
-  success: boolean;
-  data: {
-    key_points: Array<{
-      id: number;
-      title: string;
-      description: string;
-    }>;
-    summary: string;
-    model: string;
-  };
-  message: string;
+  key_points: Array<{
+    id: number;
+    title: string;
+    description: string;
+  }>;
+  summary: string;
+  model: string;
 }
 
 // 题目解析请求
@@ -28,15 +24,11 @@ export interface EducationExplainRequest {
   question: string;
 }
 
-// 题目解析响应
+// 题目解析响应（data字段的实际结构）
 export interface EducationExplainResponse {
-  success: boolean;
-  data: {
-    question: string;
-    explanation: string;
-    model: string;
-  };
-  message: string;
+  question: string;
+  explanation: string;
+  model: string;
 }
 
 // 学习建议请求
@@ -47,14 +39,10 @@ export interface EducationAdviceRequest {
   }>;
 }
 
-// 学习建议响应
+// 学习建议响应（data字段的实际结构）
 export interface EducationAdviceResponse {
-  success: boolean;
-  data: {
-    advice: string;
-    model: string;
-  };
-  message: string;
+  advice: string;
+  model: string;
 }
 
 // 生成知识点总结

@@ -12,8 +12,9 @@ MODEL_CONFIG = {
     "mimo": {
         "name": "小米MiMo",
         "base_url": os.getenv("MIMO_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1"),
-        "api_key": "",  # 通过 get_model_api_key() 从环境变量或内置默认值读取
+        "api_key": "",
         "model_name": os.getenv("MIMO_MODEL", "mimo-v2.5-pro"),
+        "vision_model_name": "mimo-v2.5",  # v2.5支持识图，v2.5-pro不支持
     },
     "deepseek": {
         "name": "DeepSeek",
@@ -80,11 +81,29 @@ def get_model_api_key(model_name: str = None) -> str:
     # 1. 优先从环境变量读取
     if env_var:
         api_key = os.getenv(env_var)
-        if api_key:
+        if api_key and _is_valid_api_key(api_key):
             return api_key
 
     # 2. 使用内置默认值
     return _BUILTIN_API_KEYS.get(model_name, "")
+
+
+def _is_valid_api_key(api_key: str) -> bool:
+    """
+    校验API密钥格式是否合法：
+    - 必须为纯ASCII（请求头只能编码latin-1）
+    - 排除占位符（如"你的API密钥填这里"）
+    """
+    if not api_key:
+        return False
+    try:
+        api_key.encode('ascii')
+    except UnicodeEncodeError:
+        return False
+    # 排除常见占位符
+    if "你的" in api_key or "your" in api_key.lower() or "xxx" in api_key.lower():
+        return False
+    return True
 
 
 def get_default_model() -> str:

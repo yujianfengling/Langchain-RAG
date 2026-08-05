@@ -16,13 +16,11 @@ import {
   Spin,
   Empty,
   Typography,
-  Divider,
   List,
 } from 'antd';
 import {
   PlusOutlined,
   DeleteOutlined,
-  UploadOutlined,
   CloudServerOutlined,
   InboxOutlined,
   FileTextOutlined,
@@ -30,16 +28,17 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
+import KnowledgeGraph from '../KnowledgeGraph';
 import { KnowledgeBase, Subject } from '../../types';
 import { getSubjects, createSubject, deleteSubject } from '../../api/subjects';
 import { 
   getKnowledgeBases, 
-  deleteKnowledge, 
   uploadFile, 
   getDocuments, 
   deleteDocument, 
   rebuildKnowledge,
-  getKnowledgeStats 
+  getKnowledgeStats,
+  buildKnowledgeGraph,
 } from '../../api/knowledge';
 
 const { Dragger } = Upload;
@@ -70,8 +69,7 @@ const SubjectDetailView: React.FC<{
       
       if (docsRes.status === 'fulfilled') {
         const docsData = docsRes.value;
-        // 兼容两种格式：直接返回documents数组 或 包在data里
-        setDocuments(docsData?.documents || docsData?.data?.documents || []);
+        setDocuments(docsData?.documents || []);
       }
       if (statsRes.status === 'fulfilled') {
         // API直接返回 {subject_id, status, stats}，无需.data
@@ -129,7 +127,7 @@ const SubjectDetailView: React.FC<{
     }
   };
 
-  // 构建知识库
+  // 构建知识库（构建完成后自动生成知识图谱）
   const handleBuild = async () => {
     if (documents.length === 0) {
       message.warning('请先上传文档');
@@ -140,6 +138,12 @@ const SubjectDetailView: React.FC<{
     try {
       await rebuildKnowledge(subjectId);
       message.success('知识库构建成功');
+      // 构建完成后自动生成知识图谱（失败不阻塞知识库）
+      try {
+        await buildKnowledgeGraph(subjectId);
+      } catch (graphErr) {
+        message.warning('知识库已构建，知识图谱生成失败，可稍后重试');
+      }
       loadData();
       onRefresh();
     } catch (error: any) {
@@ -284,6 +288,9 @@ const SubjectDetailView: React.FC<{
           />
         )}
       </Card>
+
+      {/* 知识图谱 */}
+      <KnowledgeGraph subjectId={subjectId} />
     </div>
   );
 };

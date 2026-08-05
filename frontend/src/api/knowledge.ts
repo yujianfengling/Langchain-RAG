@@ -3,15 +3,17 @@ import { ApiResponse, KnowledgeBase, KnowledgeBuildRequest } from '../types';
 
 /**
  * 获取知识库列表
+ * 后端返回: {subjects: [...]}（无success/data包装）
  */
-export const getKnowledgeBases = async (): Promise<ApiResponse<{ subjects: KnowledgeBase[] }>> => {
+export const getKnowledgeBases = async (): Promise<{ subjects: KnowledgeBase[] }> => {
   return apiClient.get('/knowledge');
 };
 
 /**
  * 获取知识库统计信息
+ * 后端返回: {subject_id, status, stats}（无success/data包装）
  */
-export const getKnowledgeStats = async (subjectId: string): Promise<ApiResponse<KnowledgeBase>> => {
+export const getKnowledgeStats = async (subjectId: string): Promise<KnowledgeBase> => {
   return apiClient.get(`/knowledge/${subjectId}/stats`);
 };
 
@@ -46,8 +48,9 @@ export const uploadFile = async (subjectId: string, file: File): Promise<ApiResp
 
 /**
  * 获取学科文档列表
+ * 后端返回: {subject_id, documents}（无success/data包装）
  */
-export const getDocuments = async (subjectId: string): Promise<ApiResponse<{ subject_id: string; documents: any[] }>> => {
+export const getDocuments = async (subjectId: string): Promise<{ subject_id: string; documents: any[] }> => {
   return apiClient.get(`/knowledge/${subjectId}/documents`);
 };
 
@@ -63,4 +66,25 @@ export const deleteDocument = async (subjectId: string, filename: string): Promi
  */
 export const rebuildKnowledge = async (subjectId: string): Promise<ApiResponse<any>> => {
   return apiClient.post(`/knowledge/${subjectId}/rebuild`);
+};
+
+/**
+ * 获取知识图谱
+ */
+export const getKnowledgeGraph = async (subjectId: string): Promise<ApiResponse<any>> => {
+  return apiClient.get(`/knowledge/${subjectId}/graph`);
+};
+
+/**
+ * 构建知识图谱（LLM抽取三元组）
+ */
+export const buildKnowledgeGraph = async (subjectId: string): Promise<ApiResponse<any>> => {
+  return apiClient.post(`/knowledge/${subjectId}/graph/build`);
+};
+
+/**
+ * 获取图谱列表
+ */
+export const getKnowledgeGraphs = async (): Promise<ApiResponse<{ graphs: any[] }>> => {
+  return apiClient.get('/knowledge/graphs');
 };

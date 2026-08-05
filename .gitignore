@@ -91,3 +91,4 @@ test_rag_effect*.py
   
 # ====== 构建产物（根目录） ======  
 V2.*_RC_*.md  
+data/knowledge_graph/  
