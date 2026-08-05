@@ -199,7 +199,7 @@ class MultimodalEnricher:
                     if (datetime.now() - cache_date).days > 30:
                         return None
                 except ValueError:
-                    pass
+                    logger.warning(f"[Multimodal] 缓存日期解析失败: {created_at}")
             
             logger.info(
                 f"[Multimodal] Vision缓存命中, image={image_path.name}, "
@@ -493,7 +493,8 @@ class MultimodalEnricher:
                 # 如果是字典，尝试转换为Markdown表格
                 try:
                     doc.page_content = self._dict_to_markdown_table(original_page_content)
-                except:
+                except Exception:
+                    logger.warning(f"[Enrichment] 表格转Markdown失败")
                     doc.page_content = "| (表格转换失败) |"
             elif isinstance(original_page_content, str):
                 doc.page_content = original_page_content if original_page_content.strip() else "| (空表格) |"

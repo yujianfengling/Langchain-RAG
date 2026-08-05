@@ -154,7 +154,7 @@ class MultimodalDocumentConverter:
                         logger.info(f"[Multimodal] 缓存已过期: {file_path.name}")
                         return None
                 except ValueError:
-                    pass
+                    logger.warning(f"[Multimodal] 缓存日期解析失败: {created_at}")
             
             # 标记为缓存命中
             metadata = cache_data['metadata']

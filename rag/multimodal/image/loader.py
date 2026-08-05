@@ -5,8 +5,11 @@
 
 import os
 import base64
+import logging
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
+
+logger = logging.getLogger(__name__)
 
 # 尝试导入PIL
 try:
@@ -175,7 +178,7 @@ class ImageLoader:
                 return (base64_data, img.width, img.height)
         except Exception as e:
             # 如果缩放失败，返回原始数据
-            print(f"图片缩放失败，使用原始图片: {e}")
+            logger.warning(f"图片缩放失败，使用原始图片: {e}")
             with open(file_path, 'rb') as f:
                 image_data = f.read()
             base64_data = base64.b64encode(image_data).decode('utf-8')
