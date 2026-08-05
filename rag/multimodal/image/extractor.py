@@ -4,7 +4,10 @@
 """
 
 import os
+import logging
 from typing import Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # 尝试导入pytesseract（OCR）
 try:
@@ -50,7 +53,7 @@ class ImageExtractor:
             text = pytesseract.image_to_string(img, lang='chi_sim+eng')
             return text.strip()
         except Exception as e:
-            print(f"OCR提取失败: {e}")
+            logger.warning(f"OCR提取失败: {e}")
             return ""
     
     def extract_text_from_base64(self, base64_data: str, mime_type: str = "image/jpeg") -> str:
@@ -79,7 +82,7 @@ class ImageExtractor:
             text = pytesseract.image_to_string(img, lang='chi_sim+eng')
             return text.strip()
         except Exception as e:
-            print(f"OCR提取失败: {e}")
+            logger.warning(f"OCR提取失败: {e}")
             return ""
     
     def generate_description(self, base64_data: str, mime_type: str = "image/jpeg") -> str:
@@ -120,7 +123,7 @@ class ImageExtractor:
                 return result.get("answer", "")
                 
             except Exception as e:
-                print(f"MultimodalService生成图片描述失败: {e}")
+                logger.warning(f"MultimodalService生成图片描述失败: {e}")
                 # 回退到vision_model_service
         
         # 使用旧的vision_model_service（向后兼容）
@@ -150,7 +153,7 @@ class ImageExtractor:
                 return response
                 
             except Exception as e:
-                print(f"vision_model_service生成图片描述失败: {e}")
+                logger.warning(f"vision_model_service生成图片描述失败: {e}")
         
         return "图片内容（无法生成描述：未配置视觉模型）"
     

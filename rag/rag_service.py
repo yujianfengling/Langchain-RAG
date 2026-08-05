@@ -540,8 +540,8 @@ def list_available_subjects() -> List[str]:
         for subject_dir in vector_store_base.iterdir():
             if subject_dir.is_dir():
                 subjects.append(_original_subject_id(subject_dir.name))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"遍历知识库目录失败: {e}")
     
     return subjects
 
@@ -674,8 +674,8 @@ def get_knowledge_base_info(subject_id: str) -> Dict[str, Any]:
             vector_store = load_knowledge_base(subject_id)
             collection_info = vector_store._collection.count() if hasattr(vector_store, '_collection') else 0
             info['document_count'] = collection_info
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"获取知识库详情失败: {e}")
         
         return info
         
