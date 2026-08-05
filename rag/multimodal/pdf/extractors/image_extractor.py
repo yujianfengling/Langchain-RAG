@@ -119,12 +119,15 @@ class ImageExtractor:
             if self.output_dir:
                 output_dir = self.output_dir
             else:
-                output_dir = doc.name.parent / "extracted_images"
+                # 将doc.name转换为Path对象
+                pdf_path = Path(doc.name) if isinstance(doc.name, str) else doc.name
+                output_dir = pdf_path.parent / "extracted_images"
             
             output_dir.mkdir(parents=True, exist_ok=True)
             
             # 生成文件名
-            filename = f"{doc.name.stem}_page{page_num}_img{img_index}.{image_ext}"
+            pdf_stem = Path(doc.name).stem if isinstance(doc.name, str) else doc.name.stem
+            filename = f"{pdf_stem}_page{page_num}_img{img_index}.{image_ext}"
             output_path = output_dir / filename
             
             # 保存图片

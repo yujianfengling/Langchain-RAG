@@ -5,7 +5,10 @@ Embedding模块
 """
 
 import os
+import logging
 from typing import List, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 # 确保.env在模型下载前加载（HF_ENDPOINT等环境变量）
 try:
@@ -38,6 +41,109 @@ except ImportError:
 
 # 全局模型缓存
 _embedding_model = None
+
+
+class BatchedHuggingFaceEmbeddings(Embeddings):
+    """
+    支持批量处理的HuggingFace Embeddings包装器
+    解决sentence-transformers 5.6.0与transformers 5.14.1的兼容性问题
+    """
+    
+    def __init__(self, model_name: str, model_kwargs: dict = None, encode_kwargs: dict = None, batch_size: int = 64):
+        """
+        初始化批量Embeddings包装器
+        
+        Args:
+            model_name: 模型名称或路径
+            model_kwargs: 模型参数
+            encode_kwargs: 编码参数
+            batch_size: 批量处理大小
+        """
+        try:
+            from langchain_community.embeddings import HuggingFaceEmbeddings
+            
+            self._batch_size = batch_size
+            self._model = HuggingFaceEmbeddings(
+                model_name=model_name,
+                model_kwargs=model_kwargs or {},
+                encode_kwargs=encode_kwargs or {},
+                show_progress=False
+            )
+            logger.info(f"[Embedding] 创建批量包装器: batch_size={batch_size}")
+        except Exception as e:
+            logger.error(f"[Embedding] 创建包装器失败: {e}")
+            raise
+    
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """
+        批量embedding文档，自动分批处理
+        
+        Args:
+            texts: 文本列表
+            
+        Returns:
+            向量列表
+        """
+        if not texts:
+            return []
+        
+        # 清理文本：确保都是字符串且非空
+        cleaned_texts = []
+        for i, text in enumerate(texts):
+            if text is None:
+                cleaned_texts.append("")
+                logger.warning(f"[Embedding] 文档[{i}]为None，替换为空字符串")
+            elif not isinstance(text, str):
+                cleaned_texts.append(str(text))
+                logger.warning(f"[Embedding] 文档[{i}]非字符串类型，已转换")
+            else:
+                cleaned_texts.append(text)
+        
+        # 分批处理
+        all_embeddings = []
+        total = len(cleaned_texts)
+        
+        for start in range(0, total, self._batch_size):
+            end = min(start + self._batch_size, total)
+            batch = cleaned_texts[start:end]
+            
+            try:
+                batch_embeddings = self._model.embed_documents(batch)
+                all_embeddings.extend(batch_embeddings)
+                
+                if start % (self._batch_size * 5) == 0:  # 每5批输出一次进度
+                    logger.debug(f"[Embedding] 进度: {end}/{total}")
+                    
+            except Exception as e:
+                logger.error(f"[Embedding] 批量处理失败 [{start}:{end}]: {e}")
+                # 尝试逐个处理
+                for text in batch:
+                    try:
+                        single_embedding = self._model.embed_query(text)
+                        all_embeddings.append(single_embedding)
+                    except Exception as e2:
+                        logger.error(f"[Embedding] 单文档处理失败: {e2}")
+                        # 使用零向量作为fallback
+                        all_embeddings.append([0.0] * 512)
+        
+        return all_embeddings
+    
+    def embed_query(self, text: str) -> List[float]:
+        """
+        Embedding单个查询
+        
+        Args:
+            text: 查询文本
+            
+        Returns:
+            向量
+        """
+        if text is None:
+            text = ""
+        elif not isinstance(text, str):
+            text = str(text)
+        
+        return self._model.embed_query(text)
 
 
 def get_embedding_model() -> Embeddings:
@@ -78,13 +184,16 @@ def get_embedding_model() -> Embeddings:
     try:
         # 创建模型实例
         model_kwargs = {'device': 'cpu'}  # 默认使用CPU
-        encode_kwargs = {'normalize_embeddings': True}  # 归一化嵌入
+        encode_kwargs = {
+            'normalize_embeddings': True,  # 归一化嵌入
+        }
         
-        _embedding_model = HuggingFaceEmbeddings(
+        # 使用批量包装器，避免sentence-transformers兼容性问题
+        _embedding_model = BatchedHuggingFaceEmbeddings(
             model_name=model_name,
             model_kwargs=model_kwargs,
             encode_kwargs=encode_kwargs,
-            show_progress=False  # 不显示进度条
+            batch_size=64  # 限制批量大小
         )
         
         # 验证模型是否可用

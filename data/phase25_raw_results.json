@@ -1,0 +1,517 @@
+{
+  "pre_build": {
+    "pdf_count": 9,
+    "pdf_files": [
+      "08热力学知识点总结.pdf",
+      "09气体动理论知识点总结.pdf",
+      "14狭义相对论力学基础知识点总结.pdf",
+      "矿《大学物理1》第七章习题解答.pdf",
+      "矿《大学物理1》第三章习题解答.pdf",
+      "矿《大学物理1》第二章习题解答.pdf",
+      "矿《大学物理1》第六章习题解答.pdf",
+      "矿《大学物理1》第四章习题解答.pdf",
+      "矿《大学物理》习题-解答2025.03.pdf"
+    ],
+    "total_images": 146,
+    "cache_valid": 0,
+    "cache_expired": 107,
+    "est_new_calls": 146,
+    "timeout": 60,
+    "max_retries": 3,
+    "cache_writable": true
+  },
+  "rebuild": {
+    "pdf_results": [
+      {
+        "name": "08热力学知识点总结.pdf",
+        "text": 146,
+        "formula": 32,
+        "image": 9,
+        "table": 1,
+        "v_success": 0,
+        "v_cached": 9,
+        "v_failed": 0,
+        "v_skipped": 0,
+        "duration": 0.34,
+        "error": null
+      },
+      {
+        "name": "09气体动理论知识点总结.pdf",
+        "text": 72,
+        "formula": 7,
+        "image": 1,
+        "table": 0,
+        "v_success": 0,
+        "v_cached": 1,
+        "v_failed": 0,
+        "v_skipped": 0,
+        "duration": 0.08,
+        "error": null
+      },
+      {
+        "name": "14狭义相对论力学基础知识点总结.pdf",
+        "text": 129,
+        "formula": 8,
+        "image": 1,
+        "table": 0,
+        "v_success": 0,
+        "v_cached": 1,
+        "v_failed": 0,
+        "v_skipped": 0,
+        "duration": 0.08,
+        "error": null
+      },
+      {
+        "name": "矿《大学物理1》第七章习题解答.pdf",
+        "text": 117,
+        "formula": 76,
+        "image": 2,
+        "table": 0,
+        "v_success": 0,
+        "v_cached": 2,
+        "v_failed": 0,
+        "v_skipped": 0,
+        "duration": 0.09,
+        "error": null
+      },
+      {
+        "name": "矿《大学物理1》第三章习题解答.pdf",
+        "text": 110,
+        "formula": 48,
+        "image": 5,
+        "table": 0,
+        "v_success": 0,
+        "v_cached": 5,
+        "v_failed": 0,
+        "v_skipped": 0,
+        "duration": 0.09,
+        "error": null
+      },
+      {
+        "name": "矿《大学物理1》第二章习题解答.pdf",
+        "text": 112,
+        "formula": 16,
+        "image": 20,
+        "table": 0,
+        "v_success": 0,
+        "v_cached": 20,
+        "v_failed": 0,
+        "v_skipped": 0,
+        "duration": 0.24,
+        "error": null
+      },
+      {
+        "name": "矿《大学物理1》第六章习题解答.pdf",
+        "text": 32,
+        "formula": 11,
+        "image": 9,
+        "table": 0,
+        "v_success": 0,
+        "v_cached": 9,
+        "v_failed": 0,
+        "v_skipped": 0,
+        "duration": 0.14,
+        "error": null
+      },
+      {
+        "name": "矿《大学物理1》第四章习题解答.pdf",
+        "text": 143,
+        "formula": 75,
+        "image": 3,
+        "table": 1,
+        "v_success": 0,
+        "v_cached": 3,
+        "v_failed": 0,
+        "v_skipped": 0,
+        "duration": 0.13,
+        "error": null
+      },
+      {
+        "name": "矿《大学物理》习题-解答2025.03.pdf",
+        "text": 1334,
+        "formula": 297,
+        "image": 96,
+        "table": 4,
+        "v_success": 0,
+        "v_cached": 96,
+        "v_failed": 0,
+        "v_skipped": 0,
+        "duration": 1.15,
+        "error": null
+      }
+    ],
+    "text_count": 2196,
+    "formula_count": 570,
+    "image_count": 146,
+    "table_count": 6,
+    "total_count": 2918,
+    "faiss_count": 2918,
+    "bm25_count": 2909,
+    "vision_stats": {
+      "success": 0,
+      "cached": 146,
+      "failed": 0,
+      "skipped": 0,
+      "total": 146
+    },
+    "vision_failures": [],
+    "duration": 29.47
+  },
+  "image_stats": {
+    "total": 146,
+    "valid_path": 146,
+    "has_desc": 146,
+    "has_ocr": 146,
+    "has_model": 146,
+    "has_status": 146,
+    "s_success": 0,
+    "s_cached": 146,
+    "s_failed": 0,
+    "s_skipped": 0,
+    "failed_details": []
+  },
+  "table_stats": {
+    "total": 6,
+    "has_desc": 6,
+    "has_ocr": 6,
+    "has_table_content": 6
+  },
+  "retrieval": {
+    "questions": [
+      {
+        "query": "什么是参考系",
+        "expected": "text",
+        "related_hit": true,
+        "modality_hit": true,
+        "top_modalities": [
+          "text",
+          "text",
+          "text",
+          "image",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 345.1
+      },
+      {
+        "query": "惯性定律的内容",
+        "expected": "text",
+        "related_hit": true,
+        "modality_hit": true,
+        "top_modalities": [
+          "text",
+          "text",
+          "text",
+          "text",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 14.0
+      },
+      {
+        "query": "热力学第一定律",
+        "expected": "text",
+        "related_hit": true,
+        "modality_hit": true,
+        "top_modalities": [
+          "text",
+          "text",
+          "text",
+          "text",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 16.8
+      },
+      {
+        "query": "简谐振动的定义",
+        "expected": "text",
+        "related_hit": true,
+        "modality_hit": true,
+        "top_modalities": [
+          "text",
+          "text",
+          "image",
+          "text",
+          "image"
+        ],
+        "result_count": 17,
+        "duration_ms": 15.4
+      },
+      {
+        "query": "光的干涉条件",
+        "expected": "text",
+        "related_hit": true,
+        "modality_hit": true,
+        "top_modalities": [
+          "text",
+          "text",
+          "text",
+          "text",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 15.9
+      },
+      {
+        "query": "牛顿第二定律公式",
+        "expected": "formula",
+        "related_hit": true,
+        "modality_hit": false,
+        "top_modalities": [
+          "text",
+          "text",
+          "text",
+          "image",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 15.9
+      },
+      {
+        "query": "动能公式",
+        "expected": "formula",
+        "related_hit": true,
+        "modality_hit": false,
+        "top_modalities": [
+          "text",
+          "text",
+          "image",
+          "text",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 13.6
+      },
+      {
+        "query": "万有引力定律公式",
+        "expected": "formula",
+        "related_hit": true,
+        "modality_hit": false,
+        "top_modalities": [
+          "image",
+          "image",
+          "image",
+          "text",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 16.5
+      },
+      {
+        "query": "库仑定律",
+        "expected": "formula",
+        "related_hit": true,
+        "modality_hit": false,
+        "top_modalities": [
+          "text",
+          "text",
+          "text",
+          "text",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 13.1
+      },
+      {
+        "query": "理想气体状态方程",
+        "expected": "formula",
+        "related_hit": true,
+        "modality_hit": false,
+        "top_modalities": [
+          "text",
+          "text",
+          "text",
+          "text",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 16.9
+      },
+      {
+        "query": "电路图",
+        "expected": "image",
+        "related_hit": true,
+        "modality_hit": true,
+        "top_modalities": [
+          "image",
+          "image",
+          "image",
+          "image",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 12.9
+      },
+      {
+        "query": "实验装置图",
+        "expected": "image",
+        "related_hit": true,
+        "modality_hit": true,
+        "top_modalities": [
+          "image",
+          "image",
+          "image",
+          "image",
+          "image"
+        ],
+        "result_count": 20,
+        "duration_ms": 14.4
+      },
+      {
+        "query": "光路图",
+        "expected": "image",
+        "related_hit": true,
+        "modality_hit": true,
+        "top_modalities": [
+          "text",
+          "text",
+          "image",
+          "text",
+          "image"
+        ],
+        "result_count": 20,
+        "duration_ms": 10.9
+      },
+      {
+        "query": "力学受力分析图",
+        "expected": "image",
+        "related_hit": true,
+        "modality_hit": true,
+        "top_modalities": [
+          "image",
+          "image",
+          "text",
+          "image",
+          "image"
+        ],
+        "result_count": 16,
+        "duration_ms": 13.9
+      },
+      {
+        "query": "波形示意图",
+        "expected": "image",
+        "related_hit": true,
+        "modality_hit": true,
+        "top_modalities": [
+          "image",
+          "text",
+          "text",
+          "text",
+          "image"
+        ],
+        "result_count": 20,
+        "duration_ms": 11.4
+      },
+      {
+        "query": "物理常数表",
+        "expected": "table",
+        "related_hit": true,
+        "modality_hit": false,
+        "top_modalities": [
+          "text",
+          "image",
+          "text",
+          "image",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 12.0
+      },
+      {
+        "query": "实验数据",
+        "expected": "table",
+        "related_hit": true,
+        "modality_hit": true,
+        "top_modalities": [
+          "text",
+          "text",
+          "text",
+          "text",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 14.8
+      },
+      {
+        "query": "单位换算表",
+        "expected": "table",
+        "related_hit": true,
+        "modality_hit": false,
+        "top_modalities": [
+          "text",
+          "text",
+          "text",
+          "text",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 13.9
+      },
+      {
+        "query": "物理量的定义",
+        "expected": "table",
+        "related_hit": true,
+        "modality_hit": false,
+        "top_modalities": [
+          "text",
+          "image",
+          "image",
+          "image",
+          "image"
+        ],
+        "result_count": 20,
+        "duration_ms": 15.9
+      },
+      {
+        "query": "测量数据汇总",
+        "expected": "table",
+        "related_hit": true,
+        "modality_hit": false,
+        "top_modalities": [
+          "text",
+          "text",
+          "text",
+          "text",
+          "text"
+        ],
+        "result_count": 20,
+        "duration_ms": 13.3
+      }
+    ],
+    "related_hit_rate": 1.0,
+    "modality_hit_rate": 0.55,
+    "total": 20
+  },
+  "cache_verify": {
+    "second_total": 2917,
+    "second_text": 2195,
+    "second_formula": 570,
+    "second_image": 146,
+    "second_table": 6,
+    "second_v_success": 0,
+    "second_v_cached": 146,
+    "second_v_failed": 0,
+    "second_v_skipped": 0,
+    "doc_count_match": false,
+    "first_total": 2918,
+    "new_vision_calls": 0,
+    "all_cached": true
+  },
+  "acceptance": {
+    "A1_9pdf_processed": true,
+    "A2_all_types_exist": true,
+    "A3_formula_not_zero": true,
+    "A4_image_path_100pct": true,
+    "A5_success_cached_desc": true,
+    "A6_images_in_faiss": true,
+    "A7_tables_in_faiss": true,
+    "A8_retrieval_hit": true,
+    "A9_second_build_zero_calls": true,
+    "A10_pytest_pass": false
+  },
+  "formula_ok": true,
+  "all_pass": false,
+  "total_time": 44.80325436592102,
+  "timestamp": "2026-08-05T11:19:02.680959"
+}

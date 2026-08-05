@@ -15,6 +15,10 @@ logger = logging.getLogger(__name__)
 # 图片描述缓存目录
 IMAGE_DESCRIPTION_CACHE_DIR = Path("data/cache/image_descriptions")
 
+# Vision缓存版本标识
+# 当Prompt、模型或处理逻辑变更时，更新此版本号以使旧缓存失效
+VISION_PROMPT_VERSION = "v1.0"
+
 # 尝试导入LangChain Document
 try:
     from langchain_core.documents import Document
@@ -84,10 +88,43 @@ class MultimodalDocumentConverter:
                 hash_md5.update(chunk)
         return hash_md5.hexdigest()
     
-    def _load_from_cache(self, file_hash: str, file_path: Path) -> Optional[Document]:
-        """从缓存加载图片描述"""
+    def _compute_cache_key(self, file_path: Path) -> str:
+        """
+        计算复合缓存键
+        
+        缓存键 = hash(file_content + provider + model + prompt_version)
+        
+        这确保：
+        1. 不同图片文件有不同的缓存
+        2. 不同Provider/模型有不同的缓存
+        3. Prompt版本变化时缓存失效
+        """
+        file_hash = self._compute_file_hash(file_path)
+        
+        # 获取当前Provider和模型信息
+        provider_name = "unknown"
+        model_name = "unknown"
+        if self.multimodal_service and self.multimodal_service.vision_provider:
+            provider_name = self.multimodal_service.vision_provider.__class__.__name__
+            model_name = getattr(self.multimodal_service.vision_provider, 'model_name', 'unknown')
+        
+        # 组合所有因素生成最终缓存键
+        composite_key = f"{file_hash}_{provider_name}_{model_name}_{VISION_PROMPT_VERSION}"
+        return hashlib.md5(composite_key.encode()).hexdigest()
+    
+    def _load_from_cache(self, cache_key: str, file_path: Path) -> Optional[Document]:
+        """
+        从缓存加载图片描述
+        
+        Args:
+            cache_key: 复合缓存键
+            file_path: 图片文件路径（用于日志）
+        
+        Returns:
+            缓存的Document对象，或None（缓存未命中）
+        """
         try:
-            cache_file = IMAGE_DESCRIPTION_CACHE_DIR / f"{file_hash}.json"
+            cache_file = IMAGE_DESCRIPTION_CACHE_DIR / f"{cache_key}.json"
             if not cache_file.exists():
                 return None
             
@@ -96,51 +133,90 @@ class MultimodalDocumentConverter:
             
             # 验证缓存数据完整性
             if not cache_data.get('page_content') or not cache_data.get('metadata'):
-                logger.warning(f"缓存数据不完整: {cache_file}")
+                logger.warning(f"[Multimodal] 缓存数据不完整: {cache_file}")
                 return None
             
-            # 检查缓存是否过期（可选，例如30天）
+            # 检查缓存版本是否匹配
+            cached_version = cache_data.get('metadata', {}).get('cache_prompt_version')
+            if cached_version != VISION_PROMPT_VERSION:
+                logger.info(
+                    f"[Multimodal] 缓存版本不匹配: cached={cached_version}, "
+                    f"current={VISION_PROMPT_VERSION}, file={file_path.name}"
+                )
+                return None
+            
+            # 检查缓存是否过期（30天）
             created_at = cache_data.get('created_at', '')
             if created_at:
                 try:
                     cache_date = datetime.fromisoformat(created_at)
                     if (datetime.now() - cache_date).days > 30:
-                        logger.info(f"缓存已过期: {cache_file}")
+                        logger.info(f"[Multimodal] 缓存已过期: {file_path.name}")
                         return None
                 except ValueError:
                     pass
             
-            logger.info(f"图片描述缓存命中: {file_path.name}")
+            # 标记为缓存命中
+            metadata = cache_data['metadata']
+            metadata['vision_status'] = 'cached'
+            
+            logger.info(
+                f"[Multimodal] Vision缓存命中, image={file_path.name}, "
+                f"model={metadata.get('model_used', 'unknown')}"
+            )
             return Document(
                 page_content=cache_data['page_content'],
-                metadata=cache_data['metadata']
+                metadata=metadata
             )
         except Exception as e:
-            logger.warning(f"读取缓存失败: {e}")
+            logger.warning(f"[Multimodal] 读取缓存失败: {e}")
             return None
     
-    def _save_to_cache(self, file_hash: str, file_path: Path, doc: Document) -> None:
-        """保存图片描述到缓存"""
+    def _save_to_cache(self, cache_key: str, file_path: Path, doc: Document) -> None:
+        """
+        保存图片描述到缓存
+        
+        Args:
+            cache_key: 复合缓存键
+            file_path: 图片文件路径
+            doc: 要缓存的Document对象
+        """
         try:
+            # 仅缓存成功的结果
+            vision_status = doc.metadata.get('vision_status', 'unknown')
+            if vision_status not in ('success',):
+                logger.debug(
+                    f"[Multimodal] 跳过缓存: status={vision_status}, "
+                    f"image={file_path.name}"
+                )
+                return
+            
             # 确保缓存目录存在
             IMAGE_DESCRIPTION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
             
-            cache_file = IMAGE_DESCRIPTION_CACHE_DIR / f"{file_hash}.json"
+            # 在metadata中添加缓存版本标识
+            metadata_copy = dict(doc.metadata)
+            metadata_copy['cache_prompt_version'] = VISION_PROMPT_VERSION
+            
+            cache_file = IMAGE_DESCRIPTION_CACHE_DIR / f"{cache_key}.json"
             cache_data = {
-                'file_hash': file_hash,
+                'cache_key': cache_key,
                 'filename': file_path.name,
                 'model': doc.metadata.get('model_used', ''),
                 'page_content': doc.page_content,
-                'metadata': doc.metadata,
+                'metadata': metadata_copy,
                 'created_at': datetime.now().isoformat()
             }
             
             with open(cache_file, 'w', encoding='utf-8') as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
             
-            logger.info(f"图片描述已缓存: {file_path.name}")
+            logger.info(
+                f"[Multimodal] Vision结果已缓存, image={file_path.name}, "
+                f"model={metadata_copy.get('model_used', 'unknown')}"
+            )
         except Exception as e:
-            logger.warning(f"保存缓存失败: {e}")
+            logger.warning(f"[Multimodal] 保存缓存失败: {e}")
             # 缓存失败不影响正常流程
     
     def convert_image(self, file_path: Path) -> List[Document]:
@@ -163,9 +239,9 @@ class MultimodalDocumentConverter:
         # 优先使用MultimodalService
         if self.multimodal_service:
             try:
-                # 计算文件hash并检查缓存
-                file_hash = self._compute_file_hash(file_path)
-                cached_doc = self._load_from_cache(file_hash, file_path)
+                # 计算复合缓存键（包含文件hash + provider + model + prompt_version）
+                cache_key = self._compute_cache_key(file_path)
+                cached_doc = self._load_from_cache(cache_key, file_path)
                 
                 if cached_doc:
                     return [cached_doc]
@@ -179,8 +255,8 @@ class MultimodalDocumentConverter:
                     metadata=doc_data['metadata']
                 )
                 
-                # 保存到缓存
-                self._save_to_cache(file_hash, file_path, doc)
+                # 仅保存成功结果到缓存
+                self._save_to_cache(cache_key, file_path, doc)
                 
                 return [doc]
                 

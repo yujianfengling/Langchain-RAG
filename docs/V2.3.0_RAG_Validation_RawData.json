@@ -1,0 +1,533 @@
+{
+  "phase2": {
+    "pdf_count": 9,
+    "document_count": 2917,
+    "chunk_count": 2917,
+    "embedding_time": 0.0,
+    "faiss_build_time": 0.0,
+    "bm25_build_time": 0.0,
+    "total_time": 23.548043727874756,
+    "pdf_files": [
+      "08热力学知识点总结.pdf",
+      "09气体动理论知识点总结.pdf",
+      "14狭义相对论力学基础知识点总结.pdf",
+      "矿《大学物理1》第七章习题解答.pdf",
+      "矿《大学物理1》第三章习题解答.pdf",
+      "矿《大学物理1》第二章习题解答.pdf",
+      "矿《大学物理1》第六章习题解答.pdf",
+      "矿《大学物理1》第四章习题解答.pdf",
+      "矿《大学物理》习题-解答2025.03.pdf"
+    ]
+  },
+  "phase3": [
+    {
+      "id": "T1",
+      "category": "普通文本",
+      "question": "牛顿第二定律是什么？",
+      "expected_keywords": [
+        "力",
+        "质量",
+        "加速度",
+        "F=ma",
+        "牛顿"
+      ],
+      "answer": "[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf [hybrid] (相关度: 0.83)]\n第二章牛顿运动定律\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf [hybrid] (相关度: 0.68)]\n利用牛顿定律建立方程：d(),d\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf [hybrid] (相关度: 0.61)]\n解：(1) 设物体质量为m,取图中所示的自然坐标,按牛顿定律,有\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf [hybrid] (相关度: 0.60)]\n从不同惯性系考察同一物体的运动，其加速度相同。四、牛顿运动定律具有伽利略变换的不变性\n\n---\n\n...",
+      "sources": [
+        {
+          "content_preview": "第二章牛顿运动定律",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 0
+        },
+        {
+          "content_preview": "利用牛顿定律建立方程：d(),d",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 3
+        },
+        {
+          "content_preview": "解：(1) 设物体质量为m,取图中所示的自然坐标,按牛顿定律,有",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 5
+        },
+        {
+          "content_preview": "从不同惯性系考察同一物体的运动，其加速度相同。四、牛顿运动定律具有伽利略变换的不变性",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf",
+          "type": "text",
+          "page": 0
+        },
+        {
+          "content_preview": "§ 8.9 热力学第二定律一、热力学第二定律热力学第一定律给出了能量在相互转化过程中遵循的规律，但并未限定过程进行的方向。观察与实验表明，自然界中一切与热现象有关的宏观过程都是不可逆的，是有方向性的。...",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\08热力学知识点总结.pdf",
+          "type": "text",
+          "page": 5
+        }
+      ],
+      "hit_correct_pdf": true,
+      "contains_formula": false,
+      "contains_image": false,
+      "contains_table": false,
+      "retrieval_time": 0.2448282241821289,
+      "keyword_hit_count": 4
+    },
+    {
+      "id": "T2",
+      "category": "普通文本",
+      "question": "什么是动量守恒定律？",
+      "expected_keywords": [
+        "动量",
+        "守恒",
+        "系统",
+        "外力"
+      ],
+      "answer": "[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第四章习题解答.pdf [hybrid] (相关度: 0.90)]\n由动量守恒定律\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf [hybrid] (相关度: 0.81)]\n系统相对论动量守恒定律为：\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf [vector] (相关度: 0.70)]\n可以证明，该公式保证动量守恒定律在洛伦兹变换下，对任何惯性系都保持不变性。3.相对论质点动力学基本方程当有外力作用在质点上时, 由相对论动量表达式, 可得相对论力学的基本方程：\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第三章习题解答.pdf [hybrid] (相关度: 0.69...",
+      "sources": [
+        {
+          "content_preview": "由动量守恒定律",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第四章习题解答.pdf",
+          "type": "text",
+          "page": 1
+        },
+        {
+          "content_preview": "系统相对论动量守恒定律为：",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf",
+          "type": "text",
+          "page": 2
+        },
+        {
+          "content_preview": "可以证明，该公式保证动量守恒定律在洛伦兹变换下，对任何惯性系都保持不变性。3.相对论质点动力学基本方程当有外力作用在质点上时, 由相对论动量表达式, 可得相对论力学的基本方程：",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf",
+          "type": "text",
+          "page": 2
+        },
+        {
+          "content_preview": "由机械能守恒定律，有",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第三章习题解答.pdf",
+          "type": "text",
+          "page": 2
+        },
+        {
+          "content_preview": "§ 14.5狭义相对论质点动力学简介一、相对论质量和动量1. 质速关系为保证动量守恒定律在洛伦兹变换下保持不变，则质点的质量m 不再是一个与速率v 无关的常量，",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf",
+          "type": "text",
+          "page": 2
+        }
+      ],
+      "hit_correct_pdf": true,
+      "contains_formula": false,
+      "contains_image": false,
+      "contains_table": false,
+      "retrieval_time": 0.12752890586853027,
+      "keyword_hit_count": 4
+    },
+    {
+      "id": "F1",
+      "category": "公式问题",
+      "question": "抛体运动的公式是什么？",
+      "expected_keywords": [
+        "抛体",
+        "公式",
+        "初速度",
+        "重力",
+        "g"
+      ],
+      "answer": "[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf [vector] (相关度: 0.60)]\n解：由公式\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf [vector] (相关度: 0.58)]\n[公式] | 原始: 坐标轴重合，以-0.8c 的速度沿公共轴xx运动。则在S系测得该圆面积为7.2cm2。解：在S系中观测此圆时，与平行方向上的线度将收缩为 | 页码: 41 | 类型: expression\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第六章习题解答.pdf [vector] (相关度: 0.57)]\n[公式] | 原始: 1. 一物体作简谐振动，其速度最大值vm=0.03 m/s，其振幅A=2cm。若t=0 时，物体位于平衡位置且向x 轴的负方向运动。求： | 页码:...",
+      "sources": [
+        {
+          "content_preview": "解：由公式",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "text",
+          "page": 50
+        },
+        {
+          "content_preview": "[公式] | 原始: 坐标轴重合，以-0.8c 的速度沿公共轴xx运动。则在S系测得该圆面积为7.2cm2。解：在S系中观测此圆时，与平行方向上的线度将收缩为 | 页码: 41 | 类型: e...",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "formula",
+          "page": 40
+        },
+        {
+          "content_preview": "[公式] | 原始: 1. 一物体作简谐振动，其速度最大值vm=0.03 m/s，其振幅A=2cm。若t=0 时，物体位于平衡位置且向x 轴的负方向运动。求： | 页码: 1 | 类型: equati...",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第六章习题解答.pdf",
+          "type": "formula",
+          "page": 0
+        },
+        {
+          "content_preview": "[公式] | 原始: 1. 一物体作简谐振动，其速度最大值vm=0.03 m/s，其振幅A=2cm。若t=0 时，物体位于平衡位置且向x 轴的负方向运动。求： | 页码: 33 | 类型: equat...",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "formula",
+          "page": 32
+        },
+        {
+          "content_preview": "[公式] | 原始: 以平衡位置为坐标原点O，设物体达到最远处坐标为xmax，合外力在过程中做功为 | 页码: 3 | 类型: expression",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第三章习题解答.pdf",
+          "type": "formula",
+          "page": 2
+        }
+      ],
+      "hit_correct_pdf": true,
+      "contains_formula": true,
+      "contains_image": false,
+      "contains_table": false,
+      "retrieval_time": 0.15173935890197754,
+      "keyword_hit_count": 2
+    },
+    {
+      "id": "F2",
+      "category": "公式问题",
+      "question": "简谐运动的位移公式是什么？",
+      "expected_keywords": [
+        "简谐",
+        "位移",
+        "振幅",
+        "角频率",
+        "余弦",
+        "正弦"
+      ],
+      "answer": "[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf [hybrid] (相关度: 0.70)]\n沿铅垂线做简谐运动。以A 的平衡位置为坐标原点，取坐标轴正向向下，如图所示。A\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第六章习题解答.pdf [vector] (相关度: 0.66)]\n[公式] | 原始: 4. 已知两谐振动的运动方程：x1 = 3cos 10t +π | 页码: 3 | 类型: trigonometric\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf [vector] (相关度: 0.65)]\n[公式] | 原始: 4. 已知两谐振动的运动方程：x1 = 3cos 10t +π | 页码: 35 | 类型: trigonometric\n\n---\n\n[来源: E:\\WORKBUDD...",
+      "sources": [
+        {
+          "content_preview": "沿铅垂线做简谐运动。以A 的平衡位置为坐标原点，取坐标轴正向向下，如图所示。A",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 0
+        },
+        {
+          "content_preview": "[公式] | 原始: 4. 已知两谐振动的运动方程：x1 = 3cos 10t +π | 页码: 3 | 类型: trigonometric",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第六章习题解答.pdf",
+          "type": "formula",
+          "page": 2
+        },
+        {
+          "content_preview": "[公式] | 原始: 4. 已知两谐振动的运动方程：x1 = 3cos 10t +π | 页码: 35 | 类型: trigonometric",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "formula",
+          "page": 34
+        },
+        {
+          "content_preview": "[公式] | 原始: 1. 一物体作简谐振动，其速度最大值vm=0.03 m/s，其振幅A=2cm。若t=0 时，物体位于平衡位置且向x 轴的负方向运动。求： | 页码: 1 | 类型: equati...",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第六章习题解答.pdf",
+          "type": "formula",
+          "page": 0
+        },
+        {
+          "content_preview": "[公式] | 原始: 1. 一物体作简谐振动，其速度最大值vm=0.03 m/s，其振幅A=2cm。若t=0 时，物体位于平衡位置且向x 轴的负方向运动。求： | 页码: 33 | 类型: equat...",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "formula",
+          "page": 32
+        }
+      ],
+      "hit_correct_pdf": true,
+      "contains_formula": true,
+      "contains_image": false,
+      "contains_table": false,
+      "retrieval_time": 0.13752436637878418,
+      "keyword_hit_count": 1
+    },
+    {
+      "id": "I1",
+      "category": "图片/图表",
+      "question": "实验装置图说明什么？",
+      "expected_keywords": [
+        "实验",
+        "装置",
+        "图",
+        "测量"
+      ],
+      "answer": "[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第三章习题解答.pdf [bm25]]\n(3) 该弹簧的弹性力是保守力吗？为什么？解：(1)由功的定义，力F 所作的功为\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\08热力学知识点总结.pdf [hybrid]]\n实验表明，在一般温度范围内，气体的CV，CP 和γ都近似为常量。\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf [vector]]\n解：取A、B 为研究对象，A、B 受力如图。(1) 按图有\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\08热力学知识点总结.pdf [hybrid]]\n[公式] | 原始: 实验表明，在一般温度范围内，气体的CV，CP 和γ都近似为常量。 | 页码: 4 | 类型: expressi...",
+      "sources": [
+        {
+          "content_preview": "(3) 该弹簧的弹性力是保守力吗？为什么？解：(1)由功的定义，力F 所作的功为",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第三章习题解答.pdf",
+          "type": "text",
+          "page": 0
+        },
+        {
+          "content_preview": "实验表明，在一般温度范围内，气体的CV，CP 和γ都近似为常量。",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\08热力学知识点总结.pdf",
+          "type": "text",
+          "page": 3
+        },
+        {
+          "content_preview": "解：取A、B 为研究对象，A、B 受力如图。(1) 按图有",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 0
+        },
+        {
+          "content_preview": "[公式] | 原始: 实验表明，在一般温度范围内，气体的CV，CP 和γ都近似为常量。 | 页码: 4 | 类型: expression",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\08热力学知识点总结.pdf",
+          "type": "formula",
+          "page": 3
+        },
+        {
+          "content_preview": "解：(1) 设物体质量为m,取图中所示的自然坐标,按牛顿定律,有",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 5
+        }
+      ],
+      "hit_correct_pdf": true,
+      "contains_formula": true,
+      "contains_image": false,
+      "contains_table": false,
+      "retrieval_time": 0.09009790420532227,
+      "keyword_hit_count": 2
+    },
+    {
+      "id": "I2",
+      "category": "图片/图表",
+      "question": "电路图中各元件如何连接？",
+      "expected_keywords": [
+        "电路",
+        "元件",
+        "连接",
+        "串联",
+        "并联"
+      ],
+      "answer": "[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第七章习题解答.pdf [vector] (相关度: 0.54)]\n3. 一平面简谐波沿x 轴正向传播，其振幅为A，频率为ν，波速为u。设t = t＇时刻的波形曲线如图所示。求：\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第七章习题解答.pdf [vector] (相关度: 0.53)]\n[公式] | 原始: 3. 一平面简谐波沿x 轴正向传播，其振幅为A，频率为ν，波速为u。设t = t＇时刻的波形曲线如图所示。求： | 页码: 2 | 类型: equation\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf [vector] (相关度: 0.53)]\n[公式] | 原始: 3. 一平面简谐波沿x 轴正向传播，其振幅为A，频率为ν，波速为u。设t = t＇时刻的波形曲线...",
+      "sources": [
+        {
+          "content_preview": "3. 一平面简谐波沿x 轴正向传播，其振幅为A，频率为ν，波速为u。设t = t＇时刻的波形曲线如图所示。求：",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第七章习题解答.pdf",
+          "type": "text",
+          "page": 1
+        },
+        {
+          "content_preview": "[公式] | 原始: 3. 一平面简谐波沿x 轴正向传播，其振幅为A，频率为ν，波速为u。设t = t＇时刻的波形曲线如图所示。求： | 页码: 2 | 类型: equation",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第七章习题解答.pdf",
+          "type": "formula",
+          "page": 1
+        },
+        {
+          "content_preview": "[公式] | 原始: 3. 一平面简谐波沿x 轴正向传播，其振幅为A，频率为ν，波速为u。设t = t＇时刻的波形曲线如图所示。求： | 页码: 38 | 类型: equation",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "formula",
+          "page": 37
+        },
+        {
+          "content_preview": "5. 如图，一列平面简谐横波沿着x 轴负方向传播，波长为�，角频率为�。P 点距离原点为�，已知P 点的振幅为A，�0 = 0 时P 点的位移�/2, 速度方向指向平衡位置。",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第七章习题解答.pdf",
+          "type": "text",
+          "page": 2
+        },
+        {
+          "content_preview": "5．电工元件真空管中的真空度为1.33×10-3Pa，试求在27℃时单位体积中的分子数及分子碰撞自由程（设分子的有效直径3.0×10-10m）。",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "text",
+          "page": 51
+        }
+      ],
+      "hit_correct_pdf": true,
+      "contains_formula": true,
+      "contains_image": false,
+      "contains_table": false,
+      "retrieval_time": 0.1540699005126953,
+      "keyword_hit_count": 0
+    },
+    {
+      "id": "TB1",
+      "category": "表格问题",
+      "question": "实验数据中各变量的变化规律是什么？",
+      "expected_keywords": [
+        "数据",
+        "变化",
+        "规律",
+        "变量"
+      ],
+      "answer": "[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf [hybrid] (相关度: 0.65)]\nCp 的规律变化，C 是个常量。求气体\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第四章习题解答.pdf [vector] (相关度: 0.57)]\n(2)t 到t+dt 过程中，由动量定理，有\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf [vector] (相关度: 0.57)]\n从不同惯性系考察同一物体的运动，其加速度相同。四、牛顿运动定律具有伽利略变换的不变性\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf [vector] (相关度: 0.56)]\n分离变量：d()d ,lvvglxx...",
+      "sources": [
+        {
+          "content_preview": "Cp 的规律变化，C 是个常量。求气体",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "text",
+          "page": 44
+        },
+        {
+          "content_preview": "(2)t 到t+dt 过程中，由动量定理，有",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第四章习题解答.pdf",
+          "type": "text",
+          "page": 4
+        },
+        {
+          "content_preview": "从不同惯性系考察同一物体的运动，其加速度相同。四、牛顿运动定律具有伽利略变换的不变性",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf",
+          "type": "text",
+          "page": 0
+        },
+        {
+          "content_preview": "分离变量：d()d ,lvvglxx",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 3
+        },
+        {
+          "content_preview": "系统相对论动量守恒定律为：",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf",
+          "type": "text",
+          "page": 2
+        }
+      ],
+      "hit_correct_pdf": true,
+      "contains_formula": false,
+      "contains_image": false,
+      "contains_table": false,
+      "retrieval_time": 0.14341092109680176,
+      "keyword_hit_count": 3
+    },
+    {
+      "id": "TB2",
+      "category": "表格问题",
+      "question": "物理常数表中光速是多少？",
+      "expected_keywords": [
+        "光速",
+        "常数",
+        "3×10^8",
+        "299792458"
+      ],
+      "answer": "[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf [vector] (相关度: 0.64)]\n求：(1) t时刻物体的速率；\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf [vector] (相关度: 0.62)]\n[公式] | 原始: 6. 光滑的水平桌面上放置一半径为R的固定圆环，物体紧贴环的内侧作圆周运动，其摩擦因数为μ，开始时物体的速率为v0。 | 页码: 11 | 类型: expression\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf [vector] (相关度: 0.62)]\n[公式] | 原始: 6. 光滑的水平桌面上放置一半径为R的固定圆环，物体紧贴环的内侧作圆周运动，其摩擦因数为μ，开始时物体的速率为v0。 | 页码: 6 | 类型: expressio...",
+      "sources": [
+        {
+          "content_preview": "求：(1) t时刻物体的速率；",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 5
+        },
+        {
+          "content_preview": "[公式] | 原始: 6. 光滑的水平桌面上放置一半径为R的固定圆环，物体紧贴环的内侧作圆周运动，其摩擦因数为μ，开始时物体的速率为v0。 | 页码: 11 | 类型: expression",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "formula",
+          "page": 10
+        },
+        {
+          "content_preview": "[公式] | 原始: 6. 光滑的水平桌面上放置一半径为R的固定圆环，物体紧贴环的内侧作圆周运动，其摩擦因数为μ，开始时物体的速率为v0。 | 页码: 6 | 类型: expression",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "formula",
+          "page": 5
+        },
+        {
+          "content_preview": "6. 光滑的水平桌面上放置一半径为R的固定圆环，物体紧贴环的内侧作圆周运动，其摩擦因数为μ，开始时物体的速率为v0。",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 5
+        },
+        {
+          "content_preview": "(2) 当物体的速率从v0减少到1/2v0时,由上式可得所需的时间为",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 6
+        }
+      ],
+      "hit_correct_pdf": true,
+      "contains_formula": true,
+      "contains_image": false,
+      "contains_table": false,
+      "retrieval_time": 0.13872051239013672,
+      "keyword_hit_count": 0
+    },
+    {
+      "id": "C1",
+      "category": "综合问题",
+      "question": "结合公式和实验图解释自由落体运动的物理过程。",
+      "expected_keywords": [
+        "自由落体",
+        "公式",
+        "实验",
+        "重力",
+        "加速度"
+      ],
+      "answer": "[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf [vector] (相关度: 0.64)]\n物体在这段时间内所经过的路程\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf [vector] (相关度: 0.63)]\n解：(1) 设物体质量为m,取图中所示的自然坐标,按牛顿定律,有\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf [vector] (相关度: 0.62)]\n从不同惯性系考察同一物体的运动，其加速度相同。四、牛顿运动定律具有伽利略变换的不变性\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第六章习题解答.pdf [vector] (相关度: 0.62)]\n[公式] | 原始: 1. ...",
+      "sources": [
+        {
+          "content_preview": "物体在这段时间内所经过的路程",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "text",
+          "page": 11
+        },
+        {
+          "content_preview": "解：(1) 设物体质量为m,取图中所示的自然坐标,按牛顿定律,有",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 5
+        },
+        {
+          "content_preview": "从不同惯性系考察同一物体的运动，其加速度相同。四、牛顿运动定律具有伽利略变换的不变性",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf",
+          "type": "text",
+          "page": 0
+        },
+        {
+          "content_preview": "[公式] | 原始: 1. 一物体作简谐振动，其速度最大值vm=0.03 m/s，其振幅A=2cm。若t=0 时，物体位于平衡位置且向x 轴的负方向运动。求： | 页码: 1 | 类型: equati...",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第六章习题解答.pdf",
+          "type": "formula",
+          "page": 0
+        },
+        {
+          "content_preview": "(2) 波源和观察者同时运动，代入公式",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "text",
+          "page": 39
+        }
+      ],
+      "hit_correct_pdf": true,
+      "contains_formula": true,
+      "contains_image": false,
+      "contains_table": false,
+      "retrieval_time": 0.16776108741760254,
+      "keyword_hit_count": 2
+    },
+    {
+      "id": "C2",
+      "category": "综合问题",
+      "question": "根据牛顿定律分析斜面上物体的受力情况。",
+      "expected_keywords": [
+        "牛顿",
+        "斜面",
+        "受力",
+        "重力",
+        "摩擦",
+        "分解"
+      ],
+      "answer": "[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf [hybrid] (相关度: 0.71)]\n解：(1) 设物体质量为m,取图中所示的自然坐标,按牛顿定律,有\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf [hybrid] (相关度: 0.67)]\n从不同惯性系考察同一物体的运动，其加速度相同。四、牛顿运动定律具有伽利略变换的不变性\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf [hybrid] (相关度: 0.64)]\n利用牛顿定律建立方程：d(),d\n\n---\n\n[来源: E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf [vector] (相关度: 0.63)]\n解：体系对称，选取中点O...",
+      "sources": [
+        {
+          "content_preview": "解：(1) 设物体质量为m,取图中所示的自然坐标,按牛顿定律,有",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 5
+        },
+        {
+          "content_preview": "从不同惯性系考察同一物体的运动，其加速度相同。四、牛顿运动定律具有伽利略变换的不变性",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\14狭义相对论力学基础知识点总结.pdf",
+          "type": "text",
+          "page": 0
+        },
+        {
+          "content_preview": "利用牛顿定律建立方程：d(),d",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第二章习题解答.pdf",
+          "type": "text",
+          "page": 3
+        },
+        {
+          "content_preview": "解：体系对称，选取中点O 为参考点。整个过程中在有心力的作用下，系统的角动量守恒。达到最大伸长量时，速度v 垂直于弹簧，因此",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理》习题-解答2025.03.pdf",
+          "type": "text",
+          "page": 23
+        },
+        {
+          "content_preview": "伸长，现以恒力F 将物体自平衡位置开始向右拉动，试求此系统所具有的最大势能。",
+          "source": "E:\\WORKBUDDY\\Game\\git_text\\data\\subjects\\大学物理\\矿《大学物理1》第三章习题解答.pdf",
+          "type": "text",
+          "page": 2
+        }
+      ],
+      "hit_correct_pdf": true,
+      "contains_formula": false,
+      "contains_image": false,
+      "contains_table": false,
+      "retrieval_time": 0.11367201805114746,
+      "keyword_hit_count": 1
+    }
+  ],
+  "timestamp": "2026-08-04T16:34:21.369888"
+}

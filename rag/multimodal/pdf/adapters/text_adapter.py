@@ -82,6 +82,7 @@ class TextAdapter:
         """
         metadata = {
             'type': 'text',
+            'modality': 'text',
             'page': element.page,
             'bbox': list(element.bbox),
             'confidence': element.confidence,

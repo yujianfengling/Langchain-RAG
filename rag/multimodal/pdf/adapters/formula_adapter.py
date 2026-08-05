@@ -119,6 +119,7 @@ class FormulaAdapter:
         """
         metadata = {
             'type': 'formula',
+            'modality': 'formula',
             'page': element.page,
             'bbox': list(element.bbox),
             'confidence': element.confidence,
