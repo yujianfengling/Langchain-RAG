@@ -38,7 +38,8 @@ from .rag_service import (
     get_knowledge_base_info,
     delete_knowledge_base,
     rebuild_knowledge_base,
-    check_rag_service_status
+    check_rag_service_status,
+    get_rag_readiness
 )
 
 # 向后兼容别名（健康检查使用）
@@ -46,7 +47,11 @@ check_rag_health = check_rag_service_status
 
 # 混合检索模块（可选导入）
 try:
-    from .hybrid_retriever import build_index as build_hybrid_index, retrieve as hybrid_retrieve
+    from .hybrid_retriever import (
+        build_index as build_hybrid_index,
+        retrieve as hybrid_retrieve,
+        get_retrieval_diagnostics,
+    )
     from .bm25_retriever import BM25Retriever, reciprocal_rank_fusion
     HYBRID_AVAILABLE = True
 except ImportError:
@@ -87,10 +92,12 @@ __all__ = [
     "delete_knowledge_base",
     "rebuild_knowledge_base",
     "check_rag_service_status",
-    
+    "get_rag_readiness",
+
     # 混合检索（可选）
     "build_hybrid_index",
     "hybrid_retrieve",
+    "get_retrieval_diagnostics",
     "BM25Retriever",
     "reciprocal_rank_fusion",
 ]

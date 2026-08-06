@@ -2,8 +2,11 @@
 # 学科管理业务服务层
 
 import json
+import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # 项目根目录（services/ 的上一级）
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -162,18 +165,26 @@ def delete_subject(subject_id: str) -> Dict[str, Any]:
     """
     try:
         subjects = _load_subjects()
-        
+
         # 查找并删除学科
         for i, subject in enumerate(subjects):
             if subject.get("id") == subject_id:
                 deleted_subject = subjects.pop(i)
                 _save_subjects(subjects)
+
+                # 联动清理学科关联数据（FAISS/BM25/资料目录），不阻断学科记录删除
+                try:
+                    from services.knowledge_service import cleanup_subject_data
+                    cleanup_subject_data(subject_id)
+                except Exception as e:
+                    logger.error(f"删除学科关联数据失败: {str(e)}")
+
                 return {
                     "success": True,
                     "deleted_subject": deleted_subject,
                     "message": f"学科 {subject_id} 已删除"
                 }
-        
+
         raise SubjectServiceError(f"学科不存在: {subject_id}")
     except SubjectServiceError:
         raise

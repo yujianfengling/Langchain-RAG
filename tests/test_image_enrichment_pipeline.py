@@ -176,11 +176,13 @@ class TestImageEnrichmentPipeline(unittest.TestCase):
         # 验证 metadata 没有更新（错误时保留原Document）
         self.assertNotIn("description", enriched_doc.metadata)
         self.assertNotIn("ocr_text", enriched_doc.metadata)
-        self.assertNotIn("model_used", enriched_doc.metadata)
-        
+        # 失败降级路径会记录实际尝试的 provider 与模型（真实模型名）
+        self.assertEqual(enriched_doc.metadata.get("provider_used"), "qwen-vision")
+        self.assertEqual(enriched_doc.metadata.get("model_used"), "qwen-vl-plus")
+
         # 验证 page_content 没有更新
         self.assertEqual(enriched_doc.page_content, "[图片] 尺寸: 100x80")
-        
+
         # 验证 VisionProvider 被调用
         self.mock_provider.analyze_image.assert_called_once_with(str(self.test_image))
     
@@ -210,11 +212,13 @@ class TestImageEnrichmentPipeline(unittest.TestCase):
         # 验证 metadata 没有更新（异常时保留原Document）
         self.assertNotIn("description", enriched_doc.metadata)
         self.assertNotIn("ocr_text", enriched_doc.metadata)
-        self.assertNotIn("model_used", enriched_doc.metadata)
-        
+        # 异常路径同样记录 provider_used / model_used（不缺失）
+        self.assertEqual(enriched_doc.metadata.get("provider_used"), "qwen-vision")
+        self.assertEqual(enriched_doc.metadata.get("model_used"), "qwen-vl-plus")
+
         # 验证 page_content 没有更新
         self.assertEqual(enriched_doc.page_content, "[图片] 尺寸: 100x80")
-        
+
         # 验证 VisionProvider 被调用
         self.mock_provider.analyze_image.assert_called_once_with(str(self.test_image))
     

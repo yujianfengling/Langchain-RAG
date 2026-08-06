@@ -3,7 +3,7 @@ import axios, { AxiosInstance, AxiosResponse } from 'axios';
 // 创建axios实例
 const apiClient: AxiosInstance = axios.create({
   baseURL: '/api', // Vite代理会处理这个
-  timeout: 30000,
+  timeout: 120000, // 120s：大知识库检索+embedding冷加载+LLM生成可能超过30s
   headers: {
     'Content-Type': 'application/json',
   },

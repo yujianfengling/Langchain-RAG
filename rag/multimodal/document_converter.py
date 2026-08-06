@@ -182,13 +182,16 @@ class MultimodalDocumentConverter:
             doc: 要缓存的Document对象
         """
         try:
-            # 仅缓存成功的结果
+            # 仅缓存成功且描述非空的结果
             vision_status = doc.metadata.get('vision_status', 'unknown')
             if vision_status not in ('success',):
                 logger.debug(
                     f"[Multimodal] 跳过缓存: status={vision_status}, "
                     f"image={file_path.name}"
                 )
+                return
+            if not (doc.metadata.get('description') or doc.metadata.get('caption')):
+                logger.info(f"[Multimodal] 跳过缓存: description为空, image={file_path.name}")
                 return
             
             # 确保缓存目录存在

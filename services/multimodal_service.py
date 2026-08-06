@@ -4,9 +4,10 @@
 """
 
 import base64
+import json
 import logging
 import os
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
 from services.model_service import ModelProvider, get_model_provider
 
@@ -152,16 +153,15 @@ class MultimodalService:
         return mime_types.get(ext, 'image/jpeg')
     
     def _get_default_image_prompt(self) -> str:
-        """获取默认的图片描述提示词"""
+        """获取默认的图片描述提示词（要求结构化JSON输出）"""
         return (
-            "请详细描述这张教育图片的内容，包括：\n"
-            "1. 图片类型（图表/公式/实验图/教材插图/示意图等）\n"
-            "2. 主要内容和关键信息\n"
-            "3. 教育意义和应用场景\n"
-            "4. 如果有文字，请提取出来\n"
-            "用中文回答，保持客观准确。"
+            "请分析这张教育图片，仅返回一个JSON对象，不要输出任何其他内容。\n"
+            '格式：{"description": "图片内容的中文描述，包含类型与关键信息", '
+            '"ocr_text": "图片中出现的文字，逐字提取，没有文字则为空字符串"}\n'
+            "要求：description 需描述图片类型（图表/公式/实验图/教材插图/示意图等）、主要内容和关键信息。"
         )
-    
+
+
     def extract_text_from_image(self, image_path: str) -> Dict[str, Any]:
         """
         从图片中提取文本和描述
@@ -172,10 +172,19 @@ class MultimodalService:
         Returns:
             包含description、ocr_text、model_used、vision_status、retries等的字典
         """
+        # provider_used: 供应商键名（如 qwen-vision）；model_used: 真实模型名（如 qwen-vl-plus）
+        provider_used = ""
+        model_used = ""
+        if self.vision_provider:
+            provider_used = getattr(self.vision_provider, "model_name", "") or ""
+            _cfg = getattr(self.vision_provider, "config", None) or {}
+            model_used = _cfg.get("model_name", "") or provider_used
+
         result = {
             "description": "",
             "ocr_text": "",
-            "model_used": self.vision_provider.model_name if self.vision_provider else "unknown",
+            "provider_used": provider_used,
+            "model_used": model_used,
             "error": None,
             "vision_status": "pending",  # pending / success / failed / skipped
             "retries": 0,
@@ -244,59 +253,73 @@ class MultimodalService:
         try:
             vision_result = self.describe_image(image_path)
             latency = time.time() - start_time
-            
-            result["description"] = vision_result.get("answer", "")
+
+            # 解析结构化JSON响应（description + ocr_text）
+            model_desc, model_ocr = parse_vision_json_response(vision_result.get("answer", ""))
+            result["description"] = model_desc
+            result["ocr_text"] = model_ocr
             result["retries"] = vision_result.get("retries", 0)
             result["vision_status"] = "success"
-            
+
             logger.info(
                 f"[Multimodal] Vision调用成功, image={Path(image_path).name}, "
-                f"model={result['model_used']}, latency={latency:.2f}s, "
-                f"retries={result['retries']}, caption_length={len(result['description'])}"
+                f"provider={result['provider_used']}, model={result['model_used']}, "
+                f"latency={latency:.2f}s, retries={result['retries']}, "
+                f"caption_length={len(model_desc)}, ocr_length={len(model_ocr)}"
             )
         except Exception as e:
             latency = time.time() - start_time
-            
-            # 区分错误类型
-            error_msg = str(e).lower()
-            if "timeout" in error_msg or "超时" in error_msg:
-                user_error = "图片理解服务响应超时，请稍后重试"
-                result["error_type"] = "timeout"
-            elif "api_key" in error_msg or "authentication" in error_msg:
-                user_error = "图片理解服务认证失败，请检查配置"
-                result["error_type"] = "auth_error"
-            elif "quota" in error_msg or "limit" in error_msg:
-                user_error = "图片理解服务配额已用尽，请稍后重试"
-                result["error_type"] = "quota_exceeded"
-            elif "429" in error_msg:
-                user_error = "图片理解服务请求频率超限，请稍后重试"
-                result["error_type"] = "rate_limit"
-            elif "网络" in error_msg or "network" in error_msg or "connection" in error_msg:
-                user_error = "图片理解服务网络连接失败"
-                result["error_type"] = "network_error"
-            else:
-                user_error = "图片理解服务暂时不可用，请稍后重试"
-                result["error_type"] = "unknown"
-            
+
+            # 优先读取结构化错误（ModelAPIError 保留 status_code/error_type），避免字符串猜测丢失信息
+            status_code = getattr(e, "status_code", None)
+            error_type = getattr(e, "error_type", None)
+
+            # 区分错误类型（关键词兜底，仅当无结构化信息时）
+            if error_type is None:
+                error_msg = str(e).lower()
+                if "timeout" in error_msg or "超时" in error_msg:
+                    error_type = "timeout"
+                elif "api_key" in error_msg or "authentication" in error_msg or "unauthorized" in error_msg:
+                    error_type = "invalid_api_key"
+                elif "quota" in error_msg or "limit" in error_msg:
+                    error_type = "quota_exceeded"
+                elif "429" in error_msg:
+                    error_type = "rate_limited"
+                elif "403" in error_msg or "forbidden" in error_msg:
+                    error_type = "forbidden"
+                elif "404" in error_msg or "not found" in error_msg:
+                    error_type = "model_not_found"
+                elif "400" in error_msg or "invalid" in error_msg:
+                    error_type = "invalid_request"
+                elif "连接" in error_msg or "connection" in error_msg or "network" in error_msg:
+                    error_type = "connection_error"
+                else:
+                    error_type = "unknown"
+
+            result["error_type"] = error_type
+            result["http_status"] = status_code
+            user_error = "图片理解服务暂时不可用，请稍后重试"
             result["error"] = user_error
             result["vision_status"] = "failed"
-            
+
             logger.warning(
                 f"[Multimodal] Vision调用失败, image={Path(image_path).name}, "
-                f"error_type={result['error_type']}, latency={latency:.2f}s, "
-                f"降级为OCR fallback"
+                f"error_type={error_type}, http_status={status_code}, "
+                f"provider={result['provider_used']}, model={result['model_used']}, "
+                f"latency={latency:.2f}s, 降级为OCR fallback"
             )
         
-        # 尝试OCR提取文本（作为辅助）
-        try:
-            from rag.multimodal.image.extractor import ImageExtractor
-            extractor = ImageExtractor()
-            result["ocr_text"] = extractor.extract_text(image_path)
-            
-            if result["ocr_text"]:
-                logger.info(f"[Multimodal] OCR_success, text_length={len(result['ocr_text'])}")
-        except Exception as e:
-            logger.warning(f"OCR文本提取失败: {e}")
+        # 尝试OCR提取文本（仅当模型未返回ocr_text时作为辅助）
+        if not result["ocr_text"]:
+            try:
+                from rag.multimodal.image.extractor import ImageExtractor
+                extractor = ImageExtractor()
+                result["ocr_text"] = extractor.extract_text(image_path)
+
+                if result["ocr_text"]:
+                    logger.info(f"[Multimodal] OCR_success, text_length={len(result['ocr_text'])}")
+            except Exception as e:
+                logger.warning(f"OCR文本提取失败: {e}")
         
         return result
     
@@ -331,13 +354,15 @@ class MultimodalService:
             "filename": filename,
             "ocr_result": extraction_result["ocr_text"],
             "caption": extraction_result["description"],
-            "model_used": extraction_result["model_used"],
+            "provider_used": extraction_result.get("provider_used") or "",
+            "model_used": extraction_result.get("model_used") or "",
             "file_type": self._detect_mime_type(image_path),
             "error": extraction_result["error"],
             "vision_status": extraction_result.get("vision_status", "unknown"),
             "vision_retries": extraction_result.get("retries", 0),
+            "http_status": extraction_result.get("http_status"),
         }
-        
+
         # 仅在失败时记录error_type
         if extraction_result.get("error_type"):
             metadata["vision_error_type"] = extraction_result["error_type"]
@@ -357,6 +382,38 @@ def get_multimodal_service() -> MultimodalService:
     if _multimodal_service is None:
         _multimodal_service = MultimodalService()
     return _multimodal_service
+
+def parse_vision_json_response(raw: str) -> Tuple[str, str]:
+    """
+    解析Vision模型的结构化JSON响应。
+
+    支持：
+    - 标准JSON字符串
+    - Markdown代码块包裹的JSON（```json ... ```）
+    解析失败时安全降级返回 ("", "")，不抛异常。
+
+    Returns:
+        (description, ocr_text)
+    """
+    if not raw:
+        return "", ""
+    text = raw.strip()
+    # 剥离 Markdown 代码块
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return str(data.get("description", "") or ""), str(data.get("ocr_text", "") or "")
+    except (ValueError, TypeError):
+        pass
+    return "", ""
+
 
 def describe_image(image_path: str, **kwargs) -> str:
     """便捷函数：生成图片描述"""

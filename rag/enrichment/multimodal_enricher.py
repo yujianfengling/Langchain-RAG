@@ -86,44 +86,49 @@ class QwenVisionProvider(VisionProvider):
         result = {
             "description": "",
             "ocr_text": "",
-            "model_used": "qwen-vision",
+            "provider_used": "qwen-vision",
+            "model_used": "qwen-vl-plus",
             "error": None
         }
-        
+
         # 检查MultimodalService是否可用
         if not self._multimodal_service:
             result["error"] = "MultimodalService不可用"
             return result
-        
+
         # 检查文件是否存在
         if not Path(image_path).exists():
             result["error"] = f"图像文件不存在: {image_path}"
             return result
-        
+
         try:
             # 调用MultimodalService的process_image_to_document方法
             doc_data = self._multimodal_service.process_image_to_document(image_path)
-            
+
             # 提取结果
             metadata = doc_data.get("metadata", {})
             result["description"] = metadata.get("caption", "")
             result["ocr_text"] = metadata.get("ocr_result", "")
-            result["model_used"] = metadata.get("model_used", "qwen-vision")
+            # provider_used/model_used 从实际处理结果取真实值（不做模糊硬编码覆盖）
+            result["provider_used"] = metadata.get("provider_used") or "qwen-vision"
+            result["model_used"] = metadata.get("model_used") or "qwen-vl-plus"
             result["vision_status"] = metadata.get("vision_status", "unknown")
             result["vision_retries"] = metadata.get("vision_retries", 0)
-            
+            result["http_status"] = metadata.get("http_status")
+
             if metadata.get("vision_error_type"):
                 result["vision_error_type"] = metadata["vision_error_type"]
-            
+
             if metadata.get("error"):
                 result["error"] = metadata["error"]
-                
+
         except Exception as e:
             logger.error(f"QwenVisionProvider分析图像失败: {e}")
             result["error"] = str(e)
             result["vision_status"] = "failed"
             result["vision_error_type"] = "exception"
-        
+            result["http_status"] = getattr(e, "status_code", None)
+
         return result
 
 
@@ -218,9 +223,13 @@ class MultimodalEnricher:
         try:
             vision_status = metadata.get('vision_status', 'unknown')
             logger.debug(f"[Multimodal] _save_to_cache called: status={vision_status}, image={image_path.name}")
-            
+
+            # 仅缓存成功且 description 非空的结果
             if vision_status != 'success':
                 logger.info(f"[Multimodal] 跳过缓存: status={vision_status}, image={image_path.name}")
+                return
+            if not metadata.get('description'):
+                logger.info(f"[Multimodal] 跳过缓存: description为空, image={image_path.name}")
                 return
             
             IMAGE_DESCRIPTION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -401,24 +410,31 @@ class MultimodalEnricher:
             doc.page_content = cached_data['page_content']
             doc.metadata["description"] = cached_metadata.get("description", "")
             doc.metadata["ocr_text"] = cached_metadata.get("ocr_text", "")
-            doc.metadata["model_used"] = cached_metadata.get("model_used", "")
+            doc.metadata["provider_used"] = cached_metadata.get("provider_used") or "qwen-vision"
+            doc.metadata["model_used"] = cached_metadata.get("model_used") or "qwen-vl-plus"
             doc.metadata["vision_status"] = "cached"
             doc.metadata["vision_retries"] = 0
             return doc
-        
+
         # Step 2: 缓存未命中，调用VisionProvider
         if self.vision_provider:
             try:
                 vision_result = self.vision_provider.analyze_image(image_path)
-                
+
+                # 统一记录 provider_used / model_used（真实值，失败时也不缺失）
+                doc.metadata["provider_used"] = vision_result.get("provider_used") or "qwen-vision"
+                doc.metadata["model_used"] = vision_result.get("model_used") or "qwen-vl-plus"
+
                 # 记录vision_status
                 vision_status = vision_result.get("vision_status", "unknown")
                 doc.metadata["vision_status"] = vision_status
                 doc.metadata["vision_retries"] = vision_result.get("vision_retries", 0)
-                
+                if vision_result.get("http_status") is not None:
+                    doc.metadata["vision_http_status"] = vision_result["http_status"]
+
                 if vision_result.get("vision_error_type"):
                     doc.metadata["vision_error_type"] = vision_result["vision_error_type"]
-                
+
                 # 检查是否有错误
                 if vision_result.get("error"):
                     logger.warning(
@@ -426,29 +442,30 @@ class MultimodalEnricher:
                         f"status={vision_status}, error={vision_result['error']}"
                     )
                     return doc
-                
+
                 # 将结果写回metadata
                 doc.metadata["description"] = vision_result.get("description", "")
                 doc.metadata["ocr_text"] = vision_result.get("ocr_text", "")
-                doc.metadata["model_used"] = vision_result.get("model_used", "qwen-vision")
-                
+
                 # 更新page_content
                 self._update_page_content_with_vision(doc, vision_result)
-                
+
                 # Step 3: 保存成功结果到缓存
                 self._save_to_cache(cache_key, image_path_obj, doc.page_content, doc.metadata)
-                
+
                 logger.info(
                     f"[Multimodal] Vision增强完成, image={image_path_obj.name}, "
                     f"status={vision_status}, retries={vision_result.get('vision_retries', 0)}"
                 )
-                
+
             except Exception as e:
                 logger.warning(f"[Multimodal] 调用VisionProvider异常: {e}")
                 doc.metadata["vision_status"] = "failed"
                 doc.metadata["vision_error_type"] = "exception"
+                doc.metadata["provider_used"] = doc.metadata.get("provider_used") or "qwen-vision"
+                doc.metadata["model_used"] = doc.metadata.get("model_used") or "qwen-vl-plus"
                 return doc
-        
+
         return doc
     
     def _enrich_table_document(self, doc: Any) -> Any:

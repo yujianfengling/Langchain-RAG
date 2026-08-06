@@ -15,6 +15,7 @@ v2.1 更新：
 import os
 import pickle
 import logging
+import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -31,6 +32,65 @@ _bm25_retrievers: Dict[str, BM25Retriever] = {}
 
 # BM25索引持久化根目录（使用绝对路径）
 _BM25_INDEX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "bm25_index")
+
+# ============ 检索诊断状态（线程安全） ============
+# retrieval_mode: hybrid_ready | vector_only | bm25_degraded | unavailable
+# fallback_reason: embedding_load_failed | faiss_index_missing | vector_search_failed | None
+_retrieval_lock = threading.Lock()
+_retrieval_info: Dict[str, Any] = {
+    "retrieval_mode": "unavailable",
+    "vector_available": False,
+    "bm25_available": False,
+    "vector_result_count": 0,
+    "bm25_result_count": 0,
+    "fallback_reason": None,
+}
+
+
+def get_retrieval_diagnostics() -> Dict[str, Any]:
+    """
+    获取最近一次混合检索的诊断信息（线程安全）
+
+    Returns:
+        {
+            "retrieval_mode": "hybrid_ready"|"vector_only"|"bm25_degraded"|"unavailable",
+            "vector_available": bool,
+            "bm25_available": bool,
+            "vector_result_count": int,
+            "bm25_result_count": int,
+            "fallback_reason": str|None,
+        }
+    """
+    with _retrieval_lock:
+        return dict(_retrieval_info)
+
+
+def _reset_retrieval_diagnostics() -> None:
+    """重置检索诊断（每次检索前调用）"""
+    with _retrieval_lock:
+        _retrieval_info.update({
+            "retrieval_mode": "unavailable",
+            "vector_available": False,
+            "bm25_available": False,
+            "vector_result_count": 0,
+            "bm25_result_count": 0,
+            "fallback_reason": None,
+        })
+
+
+def _finalize_retrieval_mode() -> None:
+    """根据可用性计算最终retrieval_mode"""
+    with _retrieval_lock:
+        vector_ok = _retrieval_info["vector_available"]
+        bm25_ok = _retrieval_info["bm25_available"]
+        if vector_ok and bm25_ok:
+            _retrieval_info["retrieval_mode"] = "hybrid_ready"
+        elif vector_ok and not bm25_ok:
+            _retrieval_info["retrieval_mode"] = "vector_only"
+        elif not vector_ok and bm25_ok:
+            _retrieval_info["retrieval_mode"] = "bm25_degraded"
+        else:
+            _retrieval_info["retrieval_mode"] = "unavailable"
 
 
 def _get_bm25_index_path(subject_id: str) -> Path:
@@ -169,13 +229,24 @@ def retrieve(
         - retrieval_type: "vector" | "bm25" | "hybrid"
     """
     result_lists = []
-    
-    # 1. 向量检索
+    _reset_retrieval_diagnostics()
+
+    # 1. 向量检索（返回 (results, reason)；reason为None表示成功）
     if use_vector:
-        vector_results = _vector_search(query, subject_id, top_k, threshold)
-        result_lists.append(vector_results)
-        logger.debug(f"向量检索: {len(vector_results)}个结果")
-    
+        vector_results, vector_reason = _vector_search(query, subject_id, top_k, threshold)
+        if vector_reason is not None:
+            # 向量检索不可用：明确记录降级原因，不参与融合
+            with _retrieval_lock:
+                _retrieval_info["vector_available"] = False
+                _retrieval_info["fallback_reason"] = vector_reason
+            logger.warning(f"向量检索不可用，降级为关键词检索: reason={vector_reason}")
+        else:
+            with _retrieval_lock:
+                _retrieval_info["vector_available"] = True
+                _retrieval_info["vector_result_count"] = len(vector_results)
+            result_lists.append(vector_results)
+            logger.debug(f"向量检索: {len(vector_results)}个结果")
+
     # 2. BM25检索（如果内存中没有，尝试从磁盘自动加载）
     if use_bm25:
         if subject_id not in _bm25_retrievers:
@@ -183,29 +254,38 @@ def retrieve(
         if subject_id in _bm25_retrievers:
             bm25_results = _bm25_search(query, subject_id, top_k)
             result_lists.append(bm25_results)
+            with _retrieval_lock:
+                _retrieval_info["bm25_available"] = True
+                _retrieval_info["bm25_result_count"] = len(bm25_results)
             logger.debug(f"BM25检索: {len(bm25_results)}个结果")
-    
+        else:
+            with _retrieval_lock:
+                _retrieval_info["bm25_available"] = False
+
     # 3. 结果融合
     if not result_lists:
+        _finalize_retrieval_mode()
         return []
-    
+
     if len(result_lists) == 1:
         # 单路检索，直接返回
         fused = result_lists[0][:top_k]
     else:
         # 多路检索，RRF融合
         fused = reciprocal_rank_fusion(result_lists, k=rrf_k)[:top_k]
-    
+
+    _finalize_retrieval_mode()
+
     # 4. 格式化输出
     formatted = []
     for item in fused:
         doc = item.get('document')
         if not doc:
             continue
-        
+
         content = doc.page_content if hasattr(doc, 'page_content') else str(doc)
         metadata = doc.metadata if hasattr(doc, 'metadata') else {}
-        
+
         formatted.append({
             'content': content,
             'source': metadata.get('source', metadata.get('file_name', '未知来源')),
@@ -215,7 +295,7 @@ def retrieve(
             'original_scores': item.get('original_scores', {}),
             'metadata': metadata
         })
-    
+
     return formatted
 
 
@@ -224,53 +304,69 @@ def _vector_search(
     subject_id: str,
     top_k: int,
     threshold: float
-) -> List[Dict[str, Any]]:
-    """执行向量检索"""
+):
+    """
+    执行向量检索
+
+    Returns:
+        (results, reason)：reason为None表示成功；否则为降级原因
+        （embedding_load_failed | faiss_index_missing | vector_search_failed）
+    """
+    from .embedding import get_embedding_status
+
+    # 获取Embedding模型（失败时快速返回明确原因，不静默）
     try:
         from .embedding import get_embedding_model
         embeddings = get_embedding_model()
-        safe_name = _safe_dir_name(subject_id)
-        vector_store = GlobalFAISS.get(safe_name, embeddings)
-        if vector_store is None:
-            return []
+    except Exception:
+        emb_state = get_embedding_status()
+        reason = emb_state.get("error_type") or "embedding_load_failed"
+        logger.warning(f"向量检索跳过（Embedding不可用）: reason={reason}")
+        return [], reason
+
+    safe_name = _safe_dir_name(subject_id)
+    vector_store = GlobalFAISS.get(safe_name, embeddings)
+    if vector_store is None:
+        return [], "faiss_index_missing"
+
+    try:
         results = vector_store.similarity_search(query, k=top_k)
-        
-        formatted = []
-        for i, result in enumerate(results):
-            content = ""
-            source = ""
-            metadata = {}
-            
-            if isinstance(result, dict):
-                content = result.get('content', result.get('text', ''))
-                source = result.get('source', result.get('metadata', {}).get('source', ''))
-                score = result.get('score', result.get('similarity', 0))
-                metadata = result.get('metadata', {})
-            elif hasattr(result, 'page_content'):
-                content = result.page_content
-                source = result.metadata.get('source', result.metadata.get('file_name', ''))
-                score = result.metadata.get('score', 0)
-                metadata = result.metadata
-            elif isinstance(result, tuple) and len(result) >= 2:
-                content = result[0]
-                score = result[1] if len(result) > 1 else 0
-                source = result[2] if len(result) > 2 else ''
-                if isinstance(source, dict):
-                    metadata = source
-                    source = metadata.get('source', metadata.get('file_name', ''))
-            
-            if content:
-                formatted.append({
-                    'document': _make_simple_doc(content, metadata),
-                    'score': float(score) if score else 0,
-                    'retrieval_type': 'vector'
-                })
-        
-        return formatted
-        
     except Exception as e:
         logger.error(f"向量检索失败: {str(e)}", exc_info=True)
-        return []
+        return [], "vector_search_failed"
+
+    formatted = []
+    for i, result in enumerate(results):
+        content = ""
+        source = ""
+        metadata = {}
+
+        if isinstance(result, dict):
+            content = result.get('content', result.get('text', ''))
+            source = result.get('source', result.get('metadata', {}).get('source', ''))
+            score = result.get('score', result.get('similarity', 0))
+            metadata = result.get('metadata', {})
+        elif hasattr(result, 'page_content'):
+            content = result.page_content
+            source = result.metadata.get('source', result.metadata.get('file_name', ''))
+            score = result.metadata.get('score', 0)
+            metadata = result.metadata
+        elif isinstance(result, tuple) and len(result) >= 2:
+            content = result[0]
+            score = result[1] if len(result) > 1 else 0
+            source = result[2] if len(result) > 2 else ''
+            if isinstance(source, dict):
+                metadata = source
+                source = metadata.get('source', metadata.get('file_name', ''))
+
+        if content:
+            formatted.append({
+                'document': _make_simple_doc(content, metadata),
+                'score': float(score) if score else 0,
+                'retrieval_type': 'vector'
+            })
+
+    return formatted, None
 
 
 def _bm25_search(

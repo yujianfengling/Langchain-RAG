@@ -207,21 +207,51 @@ def delete_subject_knowledge(subject_id: str) -> Dict[str, Any]:
         persist_directory = _resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}")
         if not persist_directory.exists():
             raise KnowledgeServiceError(f"知识库不存在: {subject_id}")
-        
-        # 删除知识库
+
+        # 删除FAISS索引
         delete_knowledge_base(subject_id=subject_id)
-        
+
+        # 删除BM25索引（混合检索索引，与知识库同生命周期）
+        bm25_directory = _resolve_path(f"data/bm25_index/{subject_id}")
+        if bm25_directory.exists():
+            shutil.rmtree(bm25_directory)
+            logger.info(f"BM25索引已删除: {bm25_directory}")
+
+        # 删除学科资料目录（含上传的原始文件与提取图片）
+        subject_data_dir = _resolve_path(f"data/subjects/{subject_id}")
+        if subject_data_dir.exists():
+            shutil.rmtree(subject_data_dir)
+            logger.info(f"学科资料目录已删除: {subject_data_dir}")
+
         return {
             "success": True,
             "subject_id": subject_id,
             "status": "deleted",
         }
-        
+
     except KnowledgeServiceError:
         raise
     except Exception as e:
         logger.error(f"知识库删除异常: {str(e)}", exc_info=True)
         raise KnowledgeServiceError("知识库删除失败，请稍后重试")
+
+
+def cleanup_subject_data(subject_id: str) -> None:
+    """
+    尽力清理学科的全部关联数据（FAISS/BM25/资料目录）。
+
+    供删除学科记录时联动调用；各目录不存在时静默跳过，不抛异常。
+    """
+    for rel in (f"data/vector_store/{_safe_dir_name(subject_id)}",
+                f"data/bm25_index/{subject_id}",
+                f"data/subjects/{subject_id}"):
+        try:
+            p = _resolve_path(rel)
+            if p.exists():
+                shutil.rmtree(p)
+                logger.info(f"清理学科数据: {p}")
+        except Exception as e:
+            logger.warning(f"清理学科数据失败（不阻断删除）: {rel}, {str(e)}")
 
 
 def list_knowledge_bases() -> List[Dict[str, str]]:
