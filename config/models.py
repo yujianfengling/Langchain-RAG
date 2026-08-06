@@ -1,13 +1,13 @@
 # 模型配置文件
 # 统一管理所有AI模型的配置信息
-# 优先级：环境变量(.env) > 此文件内置默认值
+# 密钥仅从环境变量(.env)读取，代码中不含任何凭据
 
 import os
 
 # 默认模型
 DEFAULT_MODEL = "mimo"
 
-# 模型配置（内置真实API参数，clone后无需额外配置即可运行）
+# 模型配置（API密钥需在 .env 中配置）
 MODEL_CONFIG = {
     "mimo": {
         "name": "小米MiMo",
@@ -46,17 +46,6 @@ ENV_VAR_MAPPING = {
     "mimo-vision": "MIMO_API_KEY",  # 复用MiMo API密钥（已弃用）
 }
 
-# 内置默认API密钥（私有仓库，clone后无需配置.env即可运行）
-# 优先级：环境变量 > 此处内置值
-_BUILTIN_API_KEYS = {
-    "mimo": "REDACTED_API_KEY",
-    "deepseek": "REDACTED_API_KEY",
-    "qwen": "",  # 通义千问暂未配置，需用户自行提供
-    "qwen-vision": "",  # 通义千问视觉模型暂未配置，需用户自行提供
-    "mimo-vision": "REDACTED_API_KEY",  # 复用MiMo API密钥（已弃用）
-}
-
-
 def get_model_config(model_name: str = None) -> dict:
     """获取模型配置"""
     if model_name is None:
@@ -71,21 +60,20 @@ def get_model_config(model_name: str = None) -> dict:
 def get_model_api_key(model_name: str = None) -> str:
     """
     获取模型API密钥
-    优先级：环境变量(.env) > 内置默认值
+    仅从环境变量(.env)读取，代码中不含任何凭据
     """
     if model_name is None:
         model_name = DEFAULT_MODEL
 
     env_var = ENV_VAR_MAPPING.get(model_name)
 
-    # 1. 优先从环境变量读取
+    # 仅从环境变量读取
     if env_var:
         api_key = os.getenv(env_var)
         if api_key and _is_valid_api_key(api_key):
             return api_key
 
-    # 2. 使用内置默认值
-    return _BUILTIN_API_KEYS.get(model_name, "")
+    return ""
 
 
 def _is_valid_api_key(api_key: str) -> bool:
