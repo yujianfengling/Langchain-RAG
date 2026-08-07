@@ -323,3 +323,45 @@ async def list_knowledge_graphs():
         )
     except Exception as e:
         raise RAGServiceError(f"获取图谱列表失败: {str(e)}")
+
+
+# ============ 文档查看接口 ============
+
+@router.get("/knowledge/{subject_id}/documents/{filename}/file")
+async def get_document_file(subject_id: str, filename: str):
+    """
+    查看上传的文档（PDF/Word/TXT/MD）
+    
+    - **subject_id**: 学科ID
+    - **filename**: 文件名
+    """
+    from fastapi.responses import FileResponse
+    from services.knowledge_service import get_subject_document_path, KnowledgeServiceError
+    from api.exceptions import ValidationError
+    
+    try:
+        file_path = get_subject_document_path(subject_id, filename)
+        return FileResponse(
+            path=str(file_path),
+            filename=file_path.name,
+            media_type=_guess_mime_type(file_path.suffix),
+            content_disposition_type="inline",  # 内联显示（PDF在浏览器中直接查看）
+        )
+    except KnowledgeServiceError as e:
+        raise ValidationError(str(e))
+
+
+def _guess_mime_type(ext: str) -> str:
+    """根据文件扩展名猜测MIME类型"""
+    mime_map = {
+        '.pdf': 'application/pdf',
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.doc': 'application/msword',
+        '.txt': 'text/plain; charset=utf-8',
+        '.md': 'text/markdown; charset=utf-8',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+    }
+    return mime_map.get(ext.lower(), 'application/octet-stream')

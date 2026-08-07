@@ -1,12 +1,17 @@
 """
 知识图谱构建模块
-负责从文档中抽取知识三元组并构建知识图谱
+负责从文档中提取知识三元组并构建知识图谱
 
 数据模型（参考Operit记忆库设计）：
 - nodes: 节点 = 记忆/知识点
   {id, label, content, type, tags, source, created_at}
 - edges: 边 = 语义链接
   {source, target, relation, weight, description}
+
+v2.1: 三道质量防线
+  防线1：Prompt优化（正负例+粒度控制）
+  防线2：后处理过滤（长度/数值/停用词/孤立节点）
+  防线3：实体归一化（去括号/空格后去重）
 """
 
 import json
@@ -20,32 +25,200 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # ========== 配置 ==========
-# 教育领域Schema（参考GraphRAG设计）
-NODE_TYPES = ["概念", "公式", "定理", "例题", "方法", "人物"]
+NODE_TYPES = ["概念", "公式", "定理", "方法", "人物"]
 RELATION_TYPES = ["包含", "推导", "应用", "属于", "定义", "举例", "前置条件", "相关"]
 
 # 存储目录
 _GRAPH_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "knowledge_graph")
 
-# ========== 三元组抽取 ==========
+# ========== 防线2：后处理过滤 ==========
 
-TRIPLE_EXTRACTION_PROMPT = """你是一名教育领域知识图谱构建专家。请从以下教材内容中提取知识三元组。
+# 停用词：太泛的实体不应进入图谱
+STOPWORD_ENTITIES = {
+    "方法", "问题", "内容", "情况", "部分", "方面", "条件", "过程", "结果",
+    "形式", "方式", "类型", "阶段", "状态", "现象", "原理", "基础", "概念",
+    "教材", "课本", "章节", "知识", "学生", "教师", "老师", "课程",
+}
 
-实体类型（节点类型）：{node_types}
-关系类型（边类型）：{relation_types}
+# 数值+单位模式：匹配具体数据而非概念
+_NUMERIC_PATTERN = re.compile(
+    r'^[\d\s\.\,\×\*\/\-\+\(\)]+'
+    r'(公斤|kg|cm|mm|m|米|厘米|毫米|千米|km|页|学时|分|秒|度|°|%|倍|个|次|元)$',
+    re.IGNORECASE
+)
 
-要求：
-1. 只提取内容中明确提到的知识概念
-2. 三元组格式：(实体A, 关系, 实体B)
-3. 每个三元组必须能独立成立
-4. 如果内容太少无法提取，返回空数组
+# 纯数字
+_PURE_NUMBER = re.compile(r'^[\d\s\.\,\×\*\/\-\+\(\)]+$')
 
-输出格式（严格JSON，不要有其他文字）：
-{{
-  "triples": [
-    {{"subject": "实体A", "predicate": "关系", "object": "实体B", "subject_type": "类型", "object_type": "类型"}}
-  ]
-}}
+
+def _normalize_entity(name: str) -> str:
+    """
+    实体归一化（防线3）
+    - 去除括号内容（如 "欧拉公式（Euler）" → "欧拉公式"）
+    - 去除多余空格
+    - 去除首尾标点
+    """
+    name = name.strip()
+    # 去除中文括号及其内容
+    name = re.sub(r'（[^）]*）', '', name)
+    # 去除英文括号及其内容
+    name = re.sub(r'\([^)]*\)', '', name)
+    # 去除多余空格
+    name = re.sub(r'\s+', '', name)
+    # 去除首尾标点
+    name = name.strip('，。、；：""''《》【】[]{}|/\\·')
+    return name
+
+
+def _is_valid_entity(name: str) -> bool:
+    """
+    判断实体是否有效（防线2）
+    过滤噪音实体，保留真正有意义的知识概念
+    """
+    normalized = _normalize_entity(name)
+    
+    # 太短（<2字符）或太长（>20字符）→ 过滤
+    if len(normalized) < 2 or len(normalized) > 20:
+        return False
+    
+    # 停用词 → 过滤
+    if normalized in STOPWORD_ENTITIES:
+        return False
+    
+    # 纯数字/数值+单位 → 过滤
+    if _PURE_NUMBER.match(normalized):
+        return False
+    if _NUMERIC_PATTERN.match(normalized):
+        return False
+    
+    # 包含明显碎片特征 → 过滤
+    # 纯英文缩写（少于4个字符且全是大写字母，如 "Dept" "Mech"）
+    if re.match(r'^[A-Z]{2,4}$', normalized):
+        return False
+    
+    # 包含电话/邮箱/日期特征 → 过滤
+    if re.search(r'\d{5,}|@|电话|邮箱|教授|副教授|讲师', normalized):
+        return False
+    
+    return True
+
+
+def _filter_and_normalize_graph(nodes: List[Dict], edges: List[Dict]) -> Tuple[List[Dict], List[Dict]]:
+    """
+    后处理过滤（防线2+3）
+    
+    1. 归一化实体名（去括号、去空格）
+    2. 合并归一化后重复的实体
+    3. 过滤无效实体
+    4. 移除孤立节点（无任何边连接）
+    5. 移除自环边（source == target）
+    """
+    # 第1步：建立归一化映射 raw_name → normalized_name
+    name_map: Dict[str, str] = {}
+    for node in nodes:
+        raw = node["id"]
+        normalized = _normalize_entity(raw)
+        if normalized and _is_valid_entity(normalized):
+            # 优先保留较短的标准名称
+            if normalized not in name_map.values():
+                name_map[raw] = normalized
+            else:
+                name_map[raw] = normalized  # 归一化后已存在，合并
+    
+    # 第2步：重建节点（按归一化名去重，合并权重）
+    merged_nodes: Dict[str, Dict] = {}
+    for node in nodes:
+        normalized = name_map.get(node["id"])
+        if not normalized:
+            continue  # 过滤无效实体
+        
+        if normalized in merged_nodes:
+            # 合并权重
+            merged_nodes[normalized]["weight"] = merged_nodes[normalized].get("weight", 1.0) + node.get("weight", 1.0)
+        else:
+            node_copy = node.copy()
+            node_copy["id"] = normalized
+            node_copy["label"] = normalized
+            merged_nodes[normalized] = node_copy
+    
+    # 第3步：重建边（用归一化名，过滤自环）
+    valid_node_ids = set(merged_nodes.keys())
+    filtered_edges = []
+    edge_set = set()
+    
+    for edge in edges:
+        src = name_map.get(edge["source"], edge["source"])
+        tgt = name_map.get(edge["target"], edge["target"])
+        
+        # 自环过滤
+        if src == tgt:
+            continue
+        # 无效节点过滤
+        if src not in valid_node_ids or tgt not in valid_node_ids:
+            continue
+        # 去重
+        edge_key = f"{src}|{edge['relation']}|{tgt}"
+        if edge_key in edge_set:
+            # 已存在，加权
+            for e in filtered_edges:
+                if f"{e['source']}|{e['relation']}|{e['target']}" == edge_key:
+                    e["weight"] = e.get("weight", 1.0) + 1.0
+                    break
+            continue
+        
+        edge_set.add(edge_key)
+        new_edge = edge.copy()
+        new_edge["source"] = src
+        new_edge["target"] = tgt
+        new_edge["description"] = f"{src} {edge['relation']} {tgt}"
+        filtered_edges.append(new_edge)
+    
+    # 第4步：移除孤立节点（没有任何边连接的节点）
+    connected_nodes = set()
+    for e in filtered_edges:
+        connected_nodes.add(e["source"])
+        connected_nodes.add(e["target"])
+    
+    final_nodes = [n for n in merged_nodes.values() if n["id"] in connected_nodes]
+    
+    return final_nodes, filtered_edges
+
+
+# ========== 防线1：优化的三元组抽取Prompt ==========
+
+TRIPLE_EXTRACTION_PROMPT = """你是一名教育知识图谱专家。请从教材内容中提取**学科核心概念**之间的关系。
+
+实体类型：{node_types}
+关系类型：{relation_types}
+
+## 提取规则（严格遵守）
+
+1. **只提取概念/定理/公式/方法级别的实体**，不要提取：
+   - ❌ 具体数值（如"600公斤"、"1×2cm"、"79个字符"）
+   - ❌ 例题中的具体物体描述（如"短木杆"、"长木杆"、"矩形薄板"）
+   - ❌ 太泛的词（如"方法"、"问题"、"内容"、"情况"）
+   - ❌ 章节标题/页码/教师信息
+
+2. **实体名称要求**：
+   - 用最简短的标准名称（如"欧拉公式"而非"欧拉公式·压杆的长度因数"）
+   - 不带括号注释（如"临界力"而非"临界力（Critical Force）"）
+
+3. **每个chunk最多提取5个三元组**，宁缺毋滥
+
+4. **如果内容主要是例题/数据/图片描述/封面信息，返回空数组**
+
+## 正例 ✅
+("欧拉公式", "定义", "临界力") — 两个都是学科核心概念
+("应力状态", "包含", "主应力") — 概念间的层级关系
+("压杆稳定", "前置条件", "材料力学") — 学科依赖关系
+
+## 负例 ❌（不要提取这种）
+("短木杆", "应用", "支承重物") — ❌ 具体例子，不是概念
+("600公斤", "相关", "重量") — ❌ 具体数值
+("横截面为1×2cm", "包含", "高度只有3cm") — ❌ 碎片描述
+
+## 输出格式（严格JSON）：
+{{"triples": [{{"subject": "...", "predicate": "...", "object": "...", "subject_type": "...", "object_type": "..."}}]}}
 
 教材内容：
 {chunk_text}
@@ -54,14 +227,7 @@ TRIPLE_EXTRACTION_PROMPT = """你是一名教育领域知识图谱构建专家�
 
 def _call_llm_for_triples(chunk_text: str, model: str = None) -> List[Dict[str, Any]]:
     """
-    调用LLM抽取三元组
-    
-    Args:
-        chunk_text: 文本块
-        model: 模型名称
-    
-    Returns:
-        三元组列表
+    调用LLM抽取三元组（防线1）
     """
     try:
         from services.model_service import get_model_provider
@@ -70,7 +236,7 @@ def _call_llm_for_triples(chunk_text: str, model: str = None) -> List[Dict[str, 
         prompt = TRIPLE_EXTRACTION_PROMPT.format(
             node_types="、".join(NODE_TYPES),
             relation_types="、".join(RELATION_TYPES),
-            chunk_text=chunk_text[:3000]  # 限制长度
+            chunk_text=chunk_text[:3000]
         )
         
         messages = [
@@ -81,9 +247,19 @@ def _call_llm_for_triples(chunk_text: str, model: str = None) -> List[Dict[str, 
         result = provider.chat(messages, temperature=0.1, max_tokens=2000)
         answer = result.get("answer", "")
         
-        # 解析JSON
         triples = _parse_triple_json(answer)
-        return triples
+        
+        # 额外过滤：对LLM返回的三元组做实体验证
+        filtered = []
+        for t in triples:
+            subj = _normalize_entity(t["subject"])
+            obj = _normalize_entity(t["object"])
+            if _is_valid_entity(subj) and _is_valid_entity(obj) and subj != obj:
+                t["subject"] = subj
+                t["object"] = obj
+                filtered.append(t)
+        
+        return filtered
     except Exception as e:
         logger.warning(f"LLM三元组抽取失败: {e}")
         return []
@@ -94,7 +270,6 @@ def _parse_triple_json(text: str) -> List[Dict[str, Any]]:
     if not text:
         return []
     
-    # 提取JSON部分
     json_match = re.search(r'\{[\s\S]*\}', text)
     if not json_match:
         return []
@@ -102,7 +277,6 @@ def _parse_triple_json(text: str) -> List[Dict[str, Any]]:
     try:
         data = json.loads(json_match.group())
         triples = data.get("triples", [])
-        # 清洗字段
         cleaned = []
         for t in triples:
             subject = str(t.get("subject", "")).strip()
@@ -130,30 +304,22 @@ def _merge_triples_to_graph(
 ) -> Tuple[List[Dict], List[Dict]]:
     """
     将三元组合并为图谱（节点 + 边，实体消歧去重）
-    
-    Args:
-        all_triples: 所有三元组
-        source_info: 来源信息 {document: 页码}
-    
-    Returns:
-        (nodes, edges)
     """
     nodes: Dict[str, Dict] = {}
     edges: List[Dict] = []
-    edge_map: Dict[str, Dict] = {}  # edge_key -> edge 的索引，避免线性扫描
+    edge_map: Dict[str, Dict] = {}
     
     for triple in all_triples:
         subj = triple["subject"]
         obj = triple["object"]
         pred = triple["predicate"]
         
-        # 节点去重
         for name, ntype in [(subj, triple["subject_type"]), (obj, triple["object_type"])]:
             if name not in nodes:
                 nodes[name] = {
                     "id": name,
                     "label": name,
-                    "content": "",  # 后续填充摘要
+                    "content": "",
                     "type": ntype if ntype in NODE_TYPES else "概念",
                     "tags": [],
                     "source": source_info.get("document", ""),
@@ -163,7 +329,6 @@ def _merge_triples_to_graph(
             else:
                 nodes[name]["weight"] = nodes[name].get("weight", 1.0) + 0.5
         
-        # 边去重（同方向同关系），用dict索引O(1)查找
         edge_key = f"{subj}|{pred}|{obj}"
         if edge_key not in edge_map:
             edge = {
@@ -187,15 +352,14 @@ def build_knowledge_graph(
     max_chunks: int = 50
 ) -> Dict[str, Any]:
     """
-    构建学科知识图谱
+    构建学科知识图谱（三道质量防线）
     
-    Args:
-        subject_id: 学科ID
-        model: LLM模型
-        max_chunks: 最多处理的文本块数
-    
-    Returns:
-        图谱数据 {nodes, edges, stats}
+    流程：
+    1. 加载文档 → 切分 → 过滤占位符
+    2. LLM抽取三元组（防线1：Prompt正负例+粒度控制）
+    3. 合并为图谱
+    4. 后处理过滤（防线2+3：归一化/停用词/孤立节点/自环）
+    5. 持久化
     """
     from rag.rag_service import _safe_dir_name, _SUBJECTS_DATA_BASE
     from rag.document import load_documents
@@ -223,7 +387,7 @@ def build_knowledge_graph(
     chunks = split_documents(documents, chunk_size=800, chunk_overlap=100)
     logger.info(f"文档切分为 {len(chunks)} 个文本块")
     
-    # 3. 逐块抽取三元组
+    # 3. 逐块抽取三元组（防线1：Prompt + LLM验证）
     all_triples = []
     source_info = {"document": ", ".join(f.name for f in file_paths)}
     processed = 0
@@ -235,12 +399,11 @@ def build_knowledge_graph(
         content = chunk.page_content if hasattr(chunk, 'page_content') else str(chunk)
         content = content.strip()
         
-        # 过滤无实质内容的块：太短 或 多模态占位符（[图片]/[公式]）
+        # 前置过滤：无实质内容的块
         if len(content) < 15:
             continue
         if content.startswith('[图片]') or content.startswith('[公式]'):
             continue
-        # 过滤纯标题/封面碎片（无概念内容）
         if len(content) < 30 and ('Dept.' in content or '@' in content or '电话' in content or '学时' in content):
             continue
         
@@ -255,7 +418,14 @@ def build_knowledge_graph(
         logger.warning(f"学科 {subject_id} 未能提取到三元组（可能文档以图片/公式为主，文本内容不足）")
     
     # 4. 合并为图谱
-    nodes, edges = _merge_triples_to_graph(all_triples, source_info)
+    raw_nodes, raw_edges = _merge_triples_to_graph(all_triples, source_info)
+    
+    # 5. 后处理过滤（防线2+3）
+    nodes, edges = _filter_and_normalize_graph(raw_nodes, raw_edges)
+    
+    filtered_count = len(raw_nodes) - len(nodes)
+    if filtered_count > 0:
+        logger.info(f"后处理过滤：原始{len(raw_nodes)}节点 → 过滤后{len(nodes)}节点（移除{filtered_count}个噪音节点）")
     
     graph = {
         "subject_id": subject_id,
@@ -267,11 +437,13 @@ def build_knowledge_graph(
             "chunks_processed": processed,
             "total_chunks": len(chunks),
             "triples_extracted": len(all_triples),
+            "nodes_before_filter": len(raw_nodes),
+            "nodes_filtered": filtered_count,
             "created_at": datetime.now().isoformat(),
         }
     }
     
-    # 5. 持久化
+    # 6. 持久化
     _save_graph(subject_id, graph)
     
     return graph
@@ -292,15 +464,7 @@ def _save_graph(subject_id: str, graph: Dict[str, Any]) -> Path:
 
 
 def load_knowledge_graph(subject_id: str) -> Optional[Dict[str, Any]]:
-    """
-    加载学科知识图谱
-    
-    Args:
-        subject_id: 学科ID
-    
-    Returns:
-        图谱数据，不存在返回None
-    """
+    """加载学科知识图谱"""
     from rag.rag_service import _safe_dir_name
     path = Path(_GRAPH_DIR) / f"{_safe_dir_name(subject_id)}.json"
     
@@ -334,20 +498,8 @@ def list_graphs() -> List[Dict[str, Any]]:
     return graphs
 
 
-# ========== 查询接口 ==========
-
 def query_graph(subject_id: str, node: str = None, depth: int = 1) -> Dict[str, Any]:
-    """
-    查询图谱（支持按节点展开）
-    
-    Args:
-        subject_id: 学科ID
-        node: 起始节点（可选，None则返回全部）
-        depth: 展开深度
-    
-    Returns:
-        子图数据
-    """
+    """查询图谱（支持按节点展开）"""
     graph = load_knowledge_graph(subject_id)
     if graph is None:
         return {"nodes": [], "edges": [], "stats": {"node_count": 0, "edge_count": 0}}
@@ -355,7 +507,6 @@ def query_graph(subject_id: str, node: str = None, depth: int = 1) -> Dict[str, 
     if node is None:
         return graph
     
-    # 按节点BFS展开
     visited = {node}
     frontier = {node}
     for _ in range(depth):

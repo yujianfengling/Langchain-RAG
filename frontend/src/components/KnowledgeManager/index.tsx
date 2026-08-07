@@ -26,6 +26,7 @@ import {
   FileTextOutlined,
   BuildOutlined,
   ReloadOutlined,
+  EyeOutlined,
 } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
 import KnowledgeGraph from '../KnowledgeGraph';
@@ -124,6 +125,27 @@ const SubjectDetailView: React.FC<{
       onRefresh();
     } catch (error: any) {
       message.error(error?.response?.data?.detail || '删除失败');
+    }
+  };
+
+  // 查看文档（PDF用iframe弹窗预览，其他格式下载）
+  const [previewDoc, setPreviewDoc] = useState<{ name: string; url: string } | null>(null);
+
+  const handleViewDocument = (filename: string) => {
+    // 严格编码文件名（含括号等特殊字符）
+    const encodedFilename = encodeURIComponent(filename)
+      .replace(/\(/g, '%28')
+      .replace(/\)/g, '%29');
+    const encodedSubject = encodeURIComponent(subjectId);
+    // 直接访问后端8000端口，绕过Vite代理，避免代理对二进制文件的兼容性问题
+    const url = `http://localhost:8000/api/knowledge/${encodedSubject}/documents/${encodedFilename}/file`;
+    
+    // PDF/图片：弹窗预览；Word/TXT：新标签页
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.pdf') || lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.webp')) {
+      setPreviewDoc({ name: filename, url });
+    } else {
+      window.open(url, '_blank');
     }
   };
 
@@ -265,6 +287,13 @@ const SubjectDetailView: React.FC<{
             renderItem={(doc: any) => (
               <List.Item
                 actions={[
+                  <Button
+                    type="link"
+                    icon={<EyeOutlined />}
+                    onClick={() => handleViewDocument(doc.name)}
+                  >
+                    查看
+                  </Button>,
                   <Popconfirm
                     title="确定删除此文档？"
                     onConfirm={() => handleDeleteDocument(doc.name)}
@@ -291,6 +320,27 @@ const SubjectDetailView: React.FC<{
 
       {/* 知识图谱 */}
       <KnowledgeGraph subjectId={subjectId} />
+
+      {/* 文档预览弹窗 */}
+      <Modal
+        title={previewDoc?.name || '文档预览'}
+        open={!!previewDoc}
+        onCancel={() => setPreviewDoc(null)}
+        footer={null}
+        width="80%"
+        style={{ top: 20 }}
+        destroyOnClose
+      >
+        {previewDoc && (
+          <div style={{ width: '100%', height: '70vh' }}>
+            <iframe
+              src={previewDoc.url}
+              style={{ width: '100%', height: '100%', border: 'none' }}
+              title="文档预览"
+            />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };

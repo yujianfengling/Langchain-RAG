@@ -408,6 +408,44 @@ def upload_file_to_subject(subject_id: str, file_content: bytes, filename: str) 
         raise KnowledgeServiceError("文件上传失败，请稍后重试")
 
 
+def get_subject_document_path(subject_id: str, filename: str) -> Path:
+    """
+    获取学科文档的完整路径（带安全校验）
+    
+    Args:
+        subject_id: 学科ID
+        filename: 文件名
+        
+    Returns:
+        文档完整路径
+        
+    Raises:
+        KnowledgeServiceError: 校验失败或文件不存在
+    """
+    # 文件名安全校验
+    valid, err_msg = validate_filename(filename)
+    if not valid:
+        raise KnowledgeServiceError(err_msg)
+
+    # subject_id 安全校验
+    if not re.match(r'^[\w\u4e00-\u9fff-]+$', subject_id):
+        raise KnowledgeServiceError("学科ID格式不合法")
+
+    safe_filename = Path(filename).name
+    file_path = _resolve_path(f"data/subjects/{subject_id}/{safe_filename}")
+    
+    # 二次校验：确保解析后的路径确实在学科目录内
+    subject_dir = _resolve_path(f"data/subjects/{subject_id}")
+    if not str(file_path).startswith(str(subject_dir)):
+        logger.warning(f"路径穿越检测: {filename}")
+        raise KnowledgeServiceError("文件路径不合法")
+
+    if not file_path.exists() or not file_path.is_file():
+        raise KnowledgeServiceError(f"文件不存在: {safe_filename}")
+    
+    return file_path
+
+
 def get_subject_documents(subject_id: str) -> List[Dict[str, Any]]:
     """
     获取学科目录下的所有文档列表
