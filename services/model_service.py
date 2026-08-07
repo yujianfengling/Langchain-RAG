@@ -23,13 +23,13 @@ VISION_RETRY_JITTER = 0.5  # 随机抖动范围（秒）
 def _is_retryable_error(exc: Exception) -> bool:
     """
     判断错误是否可重试
-    
+
     可重试的错误：
     - requests.exceptions.Timeout（超时）
     - requests.exceptions.ConnectionError（网络连接错误）
     - HTTP 429（请求过多）
     - HTTP 5xx（服务端错误）
-    
+
     不可重试的错误：
     - HTTP 400（请求参数错误）
     - HTTP 401（认证失败）
@@ -47,32 +47,63 @@ def _is_retryable_error(exc: Exception) -> bool:
             return True
         # 400, 401, 403 不可重试
         return False
-    # ValueError 等业务错误不可重试
-    if isinstance(exc, ValueError):
+    # 业务错误不可重试
+    if isinstance(exc, (ValueError, ModelAPIError)):
         return False
     return False
 
 
+def _classify_http_error(status_code: int) -> str:
+    """
+    将HTTP状态码映射为精确的错误类型（用户要求的标准分类）
+
+    - invalid_api_key / unauthorized / forbidden / invalid_request / model_not_found
+    - quota_exceeded / rate_limited / server_error / timeout / connection_error
+    """
+    if status_code == 400:
+        return "invalid_request"
+    if status_code == 401:
+        return "invalid_api_key"
+    if status_code == 403:
+        return "forbidden"
+    if status_code == 404:
+        return "model_not_found"
+    if status_code == 429:
+        return "rate_limited"
+    if status_code >= 500:
+        return "server_error"
+    return f"http_error_{status_code}"
+
+
 def _get_error_type(exc: Exception) -> str:
     """获取简化的错误类型（用于metadata和日志，不包含敏感信息）"""
+    # 优先读取结构化错误
+    if isinstance(exc, ModelAPIError):
+        return exc.error_type or "unknown_error"
     if isinstance(exc, requests.exceptions.Timeout):
         return "timeout"
     if isinstance(exc, requests.exceptions.ConnectionError):
-        return "network_error"
+        return "connection_error"
     if isinstance(exc, requests.exceptions.HTTPError):
         status_code = exc.response.status_code if exc.response is not None else 0
-        if status_code == 429:
-            return "rate_limit"
-        if status_code >= 500:
-            return f"server_error_{status_code}"
-        if status_code == 400:
-            return "bad_request"
-        if status_code == 401:
-            return "auth_error"
-        if status_code == 403:
-            return "permission_denied"
-        return f"http_error_{status_code}"
+        return _classify_http_error(status_code)
     return "unknown_error"
+
+
+class ModelAPIError(Exception):
+    """
+    模型API调用结构化异常
+
+    保留HTTP状态码与精确错误类型，避免中间层通过字符串猜测丢失信息。
+    """
+
+    def __init__(self, message: str, status_code: int = None, error_type: str = "unknown"):
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_type = error_type
+
+    def __str__(self):
+        return self.args[0]
 
 class ModelProvider:
     """模型提供商基类"""
@@ -187,19 +218,24 @@ class ModelProvider:
                     "retries": attempt,  # 记录重试次数
                 }
                 
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, 
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
                     requests.exceptions.HTTPError) as e:
                 last_error = e
                 error_type = _get_error_type(e)
-                
+                status_code = getattr(getattr(e, "response", None), "status_code", None) \
+                    if isinstance(e, requests.exceptions.HTTPError) else None
+
                 # 检查是否可重试
                 if not _is_retryable_error(e):
                     logger.error(
-                        f"[Vision] API调用遇到不可重试错误: {error_type}, "
-                        f"model={self.model_name}, attempt={attempt + 1}/{max_retries}"
+                        f"[Vision] API调用遇到不可重试错误: {error_type} "
+                        f"(http={status_code}), model={self.model_name}, "
+                        f"attempt={attempt + 1}/{max_retries}"
                     )
-                    raise
-                
+                    # 结构化抛出，保留HTTP状态码与错误类型（不包含供应商响应正文）
+                    raise ModelAPIError(
+                        f"模型API调用失败: {error_type}", status_code=status_code, error_type=error_type)
+
                 # 最后一次尝试失败，不再等待
                 if attempt < max_retries - 1:
                     # 指数退避 + 随机抖动
@@ -208,41 +244,47 @@ class ModelProvider:
                         VISION_RETRY_BACKOFF_MAX
                     )
                     logger.warning(
-                        f"[Vision] API调用失败: {error_type}, "
+                        f"[Vision] API调用失败: {error_type} (http={status_code}), "
                         f"model={self.model_name}, attempt={attempt + 1}/{max_retries}, "
                         f"等待{backoff:.1f}s后重试"
                     )
                     time.sleep(backoff)
                 else:
                     logger.error(
-                        f"[Vision] API调用最终失败: {error_type}, "
+                        f"[Vision] API调用最终失败: {error_type} (http={status_code}), "
                         f"model={self.model_name}, 已用尽{max_retries}次尝试, "
                         f"total_latency={total_latency:.2f}s"
                     )
-            
+
             except ValueError as e:
                 # 业务错误（返回格式异常等）不重试
                 logger.error(f"[Vision] API响应解析失败: {str(e)}, model={self.model_name}")
-                raise
-            
+                raise ModelAPIError(
+                    f"模型API响应解析失败", status_code=None, error_type="response_parse_error")
+
             except Exception as e:
                 # 未知错误不重试
                 logger.error(f"[Vision] API调用遇到未知错误: {str(e)}, model={self.model_name}")
-                raise
-        
-        # 所有重试都失败
+                raise ModelAPIError(
+                    f"模型API调用未知错误", status_code=None, error_type="unknown")
+
+        # 所有重试都失败（保留状态码的结构化异常）
         if isinstance(last_error, requests.exceptions.Timeout):
-            raise ValueError(f"模型 {self.config['name']} 响应超时（{timeout}秒），已重试{max_retries}次")
+            raise ModelAPIError(
+                f"模型 {self.config['name']} 响应超时（{timeout}秒）",
+                status_code=None, error_type="timeout")
         elif isinstance(last_error, requests.exceptions.ConnectionError):
-            raise ValueError(f"模型 {self.config['name']} 网络连接失败，已重试{max_retries}次")
+            raise ModelAPIError(
+                f"模型 {self.config['name']} 网络连接失败",
+                status_code=None, error_type="connection_error")
         elif isinstance(last_error, requests.exceptions.HTTPError):
             status_code = last_error.response.status_code if last_error.response is not None else 0
-            if status_code == 429:
-                raise ValueError(f"模型 {self.config['name']} 请求频率超限(429)，已重试{max_retries}次")
-            else:
-                raise ValueError(f"模型 {self.config['name']} 服务端错误({status_code})，已重试{max_retries}次")
+            raise ModelAPIError(
+                f"模型 {self.config['name']} 请求失败({status_code})",
+                status_code=status_code, error_type=_classify_http_error(status_code))
         else:
-            raise ValueError(f"模型 {self.config['name']} 调用失败，已重试{max_retries}次")
+            raise ModelAPIError(
+                f"模型 {self.config['name']} 调用失败", status_code=None, error_type="unknown")
 
 
 class OpenAICompatibleProvider(ModelProvider):

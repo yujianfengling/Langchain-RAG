@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Input, Button, List, Avatar, Typography, Space, Spin, Select, message } from 'antd';
+import { Input, Button, List, Avatar, Typography, Space, Spin, Select, Tag, message } from 'antd';
 import { SendOutlined, UserOutlined, RobotOutlined } from '@ant-design/icons';
 import { ChatMessage, Subject } from '../../types';
 import { sendMessage } from '../../api/chat';
+import { getReadyStatus } from '../../api/health';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import './ChatBox.css';
@@ -39,7 +40,40 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
   const [loading, setLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string>('');
   const [selectedModel, setSelectedModel] = useState<string>('mimo');
+  const [retrievalTag, setRetrievalTag] = useState<{ color: string; text: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // 将 /health/ready 状态映射为顶部标签（not_loaded + 索引就绪 = 可用，首次检索自动加载）
+  const applyRetrievalTag = (ready: any) => {
+    const mode = ready?.retrieval_mode;
+    const faissOk = ready?.faiss?.available;
+    const bm25Ok = ready?.bm25?.available;
+    if (mode === 'hybrid_ready' || (mode === 'not_loaded' && faissOk && bm25Ok)) {
+      setRetrievalTag({ color: 'success', text: '混合检索已就绪' });
+    } else if (mode === 'loading') {
+      setRetrievalTag({ color: 'processing', text: '向量检索组件正在加载' });
+    } else if (mode === 'bm25_degraded') {
+      setRetrievalTag({ color: 'warning', text: '向量检索暂不可用，当前仅使用关键词检索，回答质量可能下降' });
+    } else {
+      setRetrievalTag({ color: 'error', text: '知识库检索服务不可用' });
+    }
+  };
+
+  // 加载检索服务状态（失败不阻塞聊天）
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const ready = await getReadyStatus();
+        if (mounted) applyRetrievalTag(ready);
+      } catch (error) {
+        if (mounted) {
+          setRetrievalTag({ color: 'error', text: '知识库检索服务不可用' });
+        }
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   // 模型选项
   const modelOptions = [
@@ -159,6 +193,13 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
       setMessages(prev => [...prev, errorMessage]);
     } finally {
       setLoading(false);
+      // 问答完成后刷新检索状态标签（embedding 首次加载后应变为"混合检索已就绪"）
+      try {
+        const ready = await getReadyStatus();
+        applyRetrievalTag(ready);
+      } catch (e) {
+        /* 状态刷新失败不影响聊天 */
+      }
     }
   };
 
@@ -265,6 +306,11 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
           <Text type="secondary">
             当前学科: {subjects.find(s => s.subject_id === subjectId)?.name || '未选择'}
           </Text>
+          {retrievalTag && (
+            <Tag color={retrievalTag.color} style={{ marginLeft: 8 }}>
+              {retrievalTag.text}
+            </Tag>
+          )}
         </Space>
       </div>
 

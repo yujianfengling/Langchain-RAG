@@ -220,7 +220,7 @@ async def health_check():
     
     # 整体状态：只要配置正常就返回ok
     overall_status = "ok" if services["config"] else "degraded"
-    
+
     return {
         "success": True,
         "data": {
@@ -230,3 +230,38 @@ async def health_check():
         },
         "message": "ok",
     }
+
+
+@app.get("/health/ready")
+@app.get("/api/health/ready")
+async def health_ready():
+    """
+    服务就绪检查（不触发Embedding加载、不调用外部API）
+
+    返回RAG检索模式与Embedding加载状态，供前端区分：
+    - hybrid_ready: FAISS + BM25 + RRF 全部就绪
+    - bm25_degraded: 向量检索不可用，仅关键词检索
+    - loading / not_loaded: 向量检索组件尚未就绪
+    - unavailable: 检索服务不可用
+
+    不返回本地绝对路径、异常堆栈与任何密钥。
+    """
+    try:
+        from rag import get_rag_readiness
+        readiness = get_rag_readiness()
+        return {
+            "success": True,
+            "data": readiness,
+            "message": "ok",
+        }
+    except Exception as e:
+        logger.error(f"Health ready check error: {type(e).__name__}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "data": None,
+                "message": "服务器内部错误，请稍后重试",
+                "request_id": None,
+            },
+        )

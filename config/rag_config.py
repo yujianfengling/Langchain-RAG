@@ -20,6 +20,12 @@ class RAGConfig(BaseConfig):
     # Embedding配置
     embedding_model: str = Field("BAAI/bge-small-zh-v1.5", validation_alias="EMBEDDING_MODEL")
     embedding_device: str = Field("cpu", validation_alias="EMBEDDING_DEVICE")
+
+    # Embedding加载模式 (auto, offline, online)
+    # auto: 显式本地目录 > 本地缓存 > 在线（默认）
+    # offline: 仅本地，不访问网络
+    # online: 允许在线加载（仍优先本地缓存）
+    embedding_load_mode: str = Field("auto", validation_alias="EMBEDDING_LOAD_MODE")
     
     # 知识库隔离模式
     # directory: 每个学科独立目录 data/vector_store/{subject_id}/
@@ -72,6 +78,10 @@ class RAGConfig(BaseConfig):
         # 检查embedding_device
         if self.embedding_device not in ["cpu", "cuda", "mps"]:
             errors.append(f"EMBEDDING_DEVICE无效: {self.embedding_device}，支持: cpu, cuda, mps")
+
+        # 检查embedding_load_mode
+        if self.embedding_load_mode not in ["auto", "offline", "online"]:
+            errors.append(f"EMBEDDING_LOAD_MODE无效: {self.embedding_load_mode}，支持: auto, offline, online")
         
         # 检查isolation_mode
         if self.isolation_mode not in ["directory", "collection"]:
@@ -121,6 +131,7 @@ class RAGConfig(BaseConfig):
             "chunk_overlap": self.chunk_overlap,
             "embedding_model": self.embedding_model,
             "embedding_device": self.embedding_device,
+            "embedding_load_mode": self.embedding_load_mode,
             "isolation_mode": self.isolation_mode
         }
 

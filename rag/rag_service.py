@@ -95,7 +95,11 @@ except ImportError:
 
 # 导入混合检索模块
 try:
-    from .hybrid_retriever import build_index as build_hybrid_index, retrieve as hybrid_retrieve
+    from .hybrid_retriever import (
+        build_index as build_hybrid_index,
+        retrieve as hybrid_retrieve,
+        get_retrieval_diagnostics,
+    )
     HYBRID_AVAILABLE = True
 except ImportError:
     HYBRID_AVAILABLE = False
@@ -366,7 +370,17 @@ def retrieve_context(
                 use_vector=True,
                 rrf_k=rrf_k
             )
-            
+
+            # 读取检索诊断：向量检索不可用时明确降级并跳过依赖Embedding的Rerank
+            diag = get_retrieval_diagnostics()
+            if not diag.get("vector_available", False):
+                mode = diag.get("retrieval_mode", "bm25_degraded")
+                reason = diag.get("fallback_reason") or "unknown"
+                logger.warning(
+                    f"检索降级: retrieval_mode={mode} fallback_reason={reason} "
+                    f"subject={subject_id}")
+                use_rerank = False
+
             # 转换为Document格式
             documents = []
             for item in hybrid_results:
@@ -388,11 +402,11 @@ def retrieve_context(
                     metadata['retrieval_score'] = item.get('score', 0)
                     doc = Document(page_content=item['content'], metadata=metadata)
                     documents.append(doc)
-            
-            # Rerank重排序
+
+            # Rerank重排序（向量检索不可用时跳过，避免依赖Embedding）
             if use_rerank and len(documents) > top_k:
                 documents = rerank_documents(question, documents, top_k)
-            
+
             return documents[:top_k]
         
         # Fallback：仅使用向量检索
@@ -451,9 +465,11 @@ def build_context(documents: List[Document]) -> str:
     try:
         context_parts = []
         
+        # 清理孤立代理字符（PyMuPDF数学符号提取可能产生），避免污染LLM上下文与JSON序列化
+        from .embedding import _sanitize_unicode_text
         for i, doc in enumerate(documents, 1):
             # 获取文档内容
-            content = doc.page_content.strip()
+            content = _sanitize_unicode_text(doc.page_content).strip()
             if not content:
                 continue
             
@@ -685,12 +701,21 @@ def get_knowledge_base_info(subject_id: str) -> Dict[str, Any]:
 
 def check_rag_service_status() -> Dict[str, Any]:
     """
-    检查RAG服务模块的状态
-    
+    检查RAG服务模块的状态（只读，不触发Embedding加载）
+
     Returns:
-        状态信息字典
+        状态信息字典，包含 status 字段（ok/degraded）
     """
+    # 只读Embedding状态，绝不触发模型加载
+    embedding_state = {}
+    try:
+        from .embedding import get_embedding_status
+        embedding_state = get_embedding_status()
+    except Exception:
+        embedding_state = {"status": "unknown"}
+
     status = {
+        'status': 'ok' if LOCAL_MODULES_AVAILABLE else 'degraded',
         'local_modules_available': LOCAL_MODULES_AVAILABLE,
         'langchain_available': LANGCHAIN_AVAILABLE,
         'hybrid_available': HYBRID_AVAILABLE,
@@ -699,6 +724,7 @@ def check_rag_service_status() -> Dict[str, Any]:
         'available_subjects': list_available_subjects(),
         'vector_store_base': _VECTOR_STORE_BASE,
         'version': '2.1',
+        'embedding_status': embedding_state.get('status', 'unknown'),
         'features': {
             'semantic_split': CONFIG_AVAILABLE and settings.USE_SEMANTIC_SPLIT,
             'bm25_retrieval': HYBRID_AVAILABLE and CONFIG_AVAILABLE and settings.USE_BM25,
@@ -707,11 +733,95 @@ def check_rag_service_status() -> Dict[str, Any]:
             'multimodal': MULTIMODAL_AVAILABLE,
         }
     }
-    
+
     if not LOCAL_MODULES_AVAILABLE:
         status['import_error'] = IMPORT_ERROR
-    
+
     if CONFIG_AVAILABLE:
         status['rag_config'] = settings.rag.get_masked_config()
-    
+
     return status
+
+
+def get_rag_readiness() -> Dict[str, Any]:
+    """
+    获取RAG就绪状态（用于 /health/ready）
+
+    不触发Embedding加载、不调用外部API、不返回本地绝对路径与异常堆栈。
+
+    Returns:
+        {
+            "status": "ok"|"degraded"|"loading"|"unavailable",
+            "retrieval_mode": hybrid_ready|vector_only|bm25_degraded|not_loaded|loading|unavailable,
+            "embedding": {status, source, model, error_type},
+            "faiss": {"available": bool},
+            "bm25": {"available": bool},
+        }
+    """
+    from .embedding import get_embedding_status
+
+    emb = get_embedding_status()
+    emb_status = emb.get("status", "not_loaded")
+
+    # FAISS可用性：存在至少一个含 index.faiss 的学科索引（不加载模型）
+    faiss_available = False
+    vector_store_base = Path(_VECTOR_STORE_BASE)
+    try:
+        if vector_store_base.exists():
+            faiss_available = any(
+                p.is_dir() and (p / "index.faiss").exists()
+                for p in vector_store_base.iterdir()
+            )
+    except OSError:
+        faiss_available = False
+
+    # BM25可用性：存在至少一个含 bm25.pkl 的学科索引
+    bm25_available = False
+    bm25_base = Path(os.path.join(_PROJECT_ROOT, "data", "bm25_index"))
+    try:
+        if bm25_base.exists():
+            bm25_available = any(
+                p.is_dir() and (p / "bm25.pkl").exists()
+                for p in bm25_base.iterdir()
+            )
+    except OSError:
+        bm25_available = False
+
+    # retrieval_mode 判定
+    if emb_status == "ready":
+        if faiss_available and bm25_available:
+            retrieval_mode = "hybrid_ready"
+        elif faiss_available:
+            retrieval_mode = "vector_only"
+        elif bm25_available:
+            retrieval_mode = "bm25_degraded"
+        else:
+            retrieval_mode = "unavailable"
+    elif emb_status == "loading":
+        retrieval_mode = "loading"
+    elif emb_status == "failed":
+        retrieval_mode = "bm25_degraded" if bm25_available else "unavailable"
+    else:  # not_loaded
+        retrieval_mode = "not_loaded"
+
+    if retrieval_mode in ("hybrid_ready", "vector_only"):
+        overall = "ok"
+    elif retrieval_mode in ("bm25_degraded", "not_loaded"):
+        overall = "degraded"
+    elif retrieval_mode == "loading":
+        overall = "loading"
+    else:
+        overall = "unavailable"
+
+    return {
+        "status": overall,
+        "retrieval_mode": retrieval_mode,
+        "embedding": {
+            "status": emb_status,
+            "source": emb.get("source"),
+            "model": emb.get("model"),
+            "error_type": emb.get("error_type"),
+        },
+        "faiss": {"available": faiss_available},
+        "bm25": {"available": bm25_available},
+    }

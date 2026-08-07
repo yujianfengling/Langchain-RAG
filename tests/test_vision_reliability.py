@@ -112,39 +112,39 @@ class TestErrorTypeClassification:
         """网络连接错误类型"""
         import requests
         exc = requests.exceptions.ConnectionError("Connection refused")
-        assert _get_error_type(exc) == "network_error"
-    
+        assert _get_error_type(exc) == "connection_error"
+
     def test_429_error_type(self):
         """HTTP 429 错误类型"""
         import requests
         response = MagicMock()
         response.status_code = 429
         exc = requests.exceptions.HTTPError(response=response)
-        assert _get_error_type(exc) == "rate_limit"
-    
+        assert _get_error_type(exc) == "rate_limited"
+
     def test_500_error_type(self):
         """HTTP 500 错误类型"""
         import requests
         response = MagicMock()
         response.status_code = 500
         exc = requests.exceptions.HTTPError(response=response)
-        assert _get_error_type(exc) == "server_error_500"
-    
+        assert _get_error_type(exc) == "server_error"
+
     def test_400_error_type(self):
         """HTTP 400 错误类型"""
         import requests
         response = MagicMock()
         response.status_code = 400
         exc = requests.exceptions.HTTPError(response=response)
-        assert _get_error_type(exc) == "bad_request"
-    
+        assert _get_error_type(exc) == "invalid_request"
+
     def test_401_error_type(self):
         """HTTP 401 错误类型"""
         import requests
         response = MagicMock()
         response.status_code = 401
         exc = requests.exceptions.HTTPError(response=response)
-        assert _get_error_type(exc) == "auth_error"
+        assert _get_error_type(exc) == "invalid_api_key"
 
 
 class TestVisionRetryMechanism:
@@ -365,10 +365,11 @@ class TestVisionRetryMechanism:
         }
         
         messages = [{"role": "user", "content": "test"}]
-        
-        with pytest.raises(ValueError, match="响应超时"):
+
+        from services.model_service import ModelAPIError
+        with pytest.raises(ModelAPIError, match="响应超时"):
             provider._call_openai_compatible_api(messages)
-        
+
         assert mock_post.call_count == 3
         assert mock_sleep.call_count == 2  # 第3次失败后不再sleep
 
