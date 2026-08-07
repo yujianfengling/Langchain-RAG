@@ -7,7 +7,7 @@ import os
 # 默认模型
 DEFAULT_MODEL = "mimo"
 
-# 模型配置（内置真实API参数，clone后无需额外配置即可运行）
+# 模型配置（API密钥优先从环境变量读取，内置值作为团队共享后备）
 MODEL_CONFIG = {
     "mimo": {
         "name": "小米MiMo",
@@ -31,9 +31,9 @@ MODEL_CONFIG = {
     "qwen-vision": {
         "name": "通义千问视觉",
         "base_url": os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-        "api_key": "",  # 通过 get_model_api_key() 从环境变量读取
+        "api_key": "",
         "model_name": os.getenv("DASHSCOPE_VISION_MODEL", "qwen-vl-plus"),
-        "is_vision": True,  # 标记为视觉模型
+        "is_vision": True,
     },
 }
 
@@ -42,18 +42,18 @@ ENV_VAR_MAPPING = {
     "mimo": "MIMO_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "qwen": "DASHSCOPE_API_KEY",
-    "qwen-vision": "DASHSCOPE_API_KEY",  # 通义千问视觉模型使用相同API密钥
-    "mimo-vision": "MIMO_API_KEY",  # 复用MiMo API密钥（已弃用）
+    "qwen-vision": "DASHSCOPE_API_KEY",
+    "mimo-vision": "MIMO_API_KEY",  # 已弃用
 }
 
-# 内置默认API密钥（私有仓库，clone后无需配置.env即可运行）
+# 内置默认API密钥（团队共享，clone后无需配置.env即可运行）
 # 优先级：环境变量 > 此处内置值
 _BUILTIN_API_KEYS = {
     "mimo": "tp-c59wovslcca0jbzoie3b5w96qghcsj2s8mpsveyaxr7sfrt8",
     "deepseek": "sk-c74bc06d30ce493b9abe5bf01c423329",
-    "qwen": "",  # 通义千问暂未配置，需用户自行提供
-    "qwen-vision": "",  # 通义千问视觉模型暂未配置，需用户自行提供
-    "mimo-vision": "tp-c59wovslcca0jbzoie3b5w96qghcsj2s8mpsveyaxr7sfrt8",  # 复用MiMo API密钥（已弃用）
+    "qwen": "",
+    "qwen-vision": "",
+    "mimo-vision": "tp-c59wovslcca0jbzoie3b5w96qghcsj2s8mpsveyaxr7sfrt8",
 }
 
 
@@ -78,13 +78,13 @@ def get_model_api_key(model_name: str = None) -> str:
 
     env_var = ENV_VAR_MAPPING.get(model_name)
 
-    # 1. 优先从环境变量读取
+    # 优先从环境变量读取
     if env_var:
         api_key = os.getenv(env_var)
         if api_key and _is_valid_api_key(api_key):
             return api_key
 
-    # 2. 使用内置默认值
+    # 使用内置默认值
     return _BUILTIN_API_KEYS.get(model_name, "")
 
 
