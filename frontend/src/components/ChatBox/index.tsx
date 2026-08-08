@@ -4,6 +4,7 @@ import { SendOutlined, UserOutlined, RobotOutlined, StopOutlined } from '@ant-de
 import { ChatMessage, Subject, SourceInfo } from '../../types';
 import { sendMessageStream } from '../../api/chat';
 import { getReadyStatus } from '../../api/health';
+import { MessageBubble } from '../AnimateMotion';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import './ChatBox.css';
@@ -275,6 +276,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
         padding: '12px 0',
         border: 'none',
       }}>
+        <MessageBubble delay={0}>
         <div style={{
           display: 'flex',
           alignItems: 'flex-start',
@@ -352,6 +354,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
             )}
           </div>
         </div>
+        </MessageBubble>
       </List.Item>
     );
   };
@@ -393,6 +396,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
         overflow: 'auto',
         padding: '24px',
         background: '#fff',
+        maxHeight: 'calc(100vh - 200px)',
       }}>
         {messages.length === 0 ? (
           <div style={{

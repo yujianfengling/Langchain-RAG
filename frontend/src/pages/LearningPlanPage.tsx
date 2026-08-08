@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import {
   Card, Input, Button, Typography, Space, List, Tag, Timeline,
   Empty, message, Popconfirm,
@@ -248,7 +249,16 @@ const LearningPlanPage: React.FC = () => {
       ) : plans.length === 0 ? (
         <Empty description="暂无学习计划，输入目标生成一个吧" />
       ) : (
-        plans.map(renderPlan)
+        plans.map((plan, index) => (
+          <motion.div
+            key={plan.id}
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: Math.min(index * 0.08, 0.6), duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+          >
+            {renderPlan(plan)}
+          </motion.div>
+        ))
       )}
     </div>
   );

@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Typography, Space } from 'antd';
-import { MessageOutlined, HistoryOutlined } from '@ant-design/icons';
+import { Layout } from 'antd';
+import { MessageOutlined } from '@ant-design/icons';
 import ChatBox from '../components/ChatBox';
 import SubjectSelector from '../components/SubjectSelector';
 import { getSubjects } from '../api/subjects';
 import { Subject } from '../types';
 
-const { Header, Sider, Content } = Layout;
-const { Title } = Typography;
+const { Sider, Content } = Layout;
 
 const ChatPage: React.FC = () => {
   const [selectedSubject, setSelectedSubject] = useState<string>('');
@@ -27,23 +26,23 @@ const ChatPage: React.FC = () => {
   }, []);
 
   return (
-    <Layout style={{ height: '100vh' }}>
+    <Layout style={{ height: '100%' }}>
       {/* 左侧历史对话栏 */}
       <Sider 
-        width={300} 
+        width={260} 
         style={{ 
           background: '#fff',
           borderRight: '1px solid #f0f0f0',
           overflow: 'auto',
         }}
       >
-        <div style={{ padding: '24px' }}>
-          <Title level={4} style={{ marginBottom: '24px' }}>
-            <HistoryOutlined /> 历史对话
-          </Title>
+        <div style={{ padding: '16px' }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: '#0f172a', marginBottom: 12 }}>
+            历史对话
+          </div>
           
           {/* 学科选择器 */}
-          <div style={{ marginBottom: '24px' }}>
+          <div style={{ marginBottom: '16px' }}>
             <SubjectSelector
               value={selectedSubject}
               onChange={setSelectedSubject}
@@ -53,19 +52,20 @@ const ChatPage: React.FC = () => {
           
           {/* 历史对话列表 */}
           <div style={{ 
-            background: '#fafafa',
-            borderRadius: '8px',
+            background: '#f8fafc',
+            borderRadius: '10px',
             padding: '16px',
-            minHeight: '300px',
+            minHeight: '200px',
           }}>
             <div style={{ 
               textAlign: 'center', 
-              color: '#999',
-              padding: '40px 0',
+              color: '#94a3b8',
+              padding: '32px 0',
+              fontSize: 13,
             }}>
-              <MessageOutlined style={{ fontSize: '32px', marginBottom: '16px' }} />
+              <MessageOutlined style={{ fontSize: '28px', marginBottom: '10px', color: '#cbd5e1' }} />
               <div>暂无历史对话</div>
-              <div style={{ fontSize: '12px', marginTop: '8px' }}>
+              <div style={{ marginTop: '6px', fontSize: 12 }}>
                 选择学科后开始提问
               </div>
             </div>
@@ -74,26 +74,14 @@ const ChatPage: React.FC = () => {
       </Sider>
 
       {/* 右侧聊天区域 */}
-      <Layout>
-        <Header style={{ 
-          background: '#fff',
-          padding: '0 24px',
-          borderBottom: '1px solid #f0f0f0',
-          display: 'flex',
-          alignItems: 'center',
-        }}>
-          <Space>
-            <MessageOutlined style={{ fontSize: '20px', color: '#1890ff' }} />
-            <Title level={4} style={{ margin: 0 }}>
-              AI智能问答
-            </Title>
-          </Space>
-        </Header>
-        
+      <Layout style={{ overflow: 'hidden', height: '100%' }}>
         <Content style={{ 
-          padding: '24px',
-          background: '#f5f5f5',
+          padding: '20px',
+          background: '#f8fafc',
           overflow: 'hidden',
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
         }}>
           <ChatBox
             subjectId={selectedSubject}

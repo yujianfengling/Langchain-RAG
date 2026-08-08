@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import {
   Card,
   Row,
@@ -277,7 +278,12 @@ const SubjectDetailView: React.FC<{
           <List
             loading={loading}
             dataSource={documents}
-            renderItem={(doc: any) => (
+            renderItem={(doc: any, index: number) => (
+              <motion.div
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: Math.min(index * 0.05, 0.5), duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+              >
               <List.Item
                 actions={[
                   <Button
@@ -306,6 +312,7 @@ const SubjectDetailView: React.FC<{
                   }
                 />
               </List.Item>
+              </motion.div>
             )}
           />
         )}

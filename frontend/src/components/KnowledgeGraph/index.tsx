@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as echarts from 'echarts';
 import { Button, Card, Empty, Popconfirm, Spin, Tag, Space, Typography, message } from 'antd';
 import { ApiOutlined, ReloadOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { SkeletonCard } from '../AnimateMotion';
 import { getKnowledgeGraph, buildKnowledgeGraph, getKnowledgeGraphStatus } from '../../api/knowledge';
 
 const { Text } = Typography;
@@ -296,8 +297,12 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
       }
     >
       {loading ? (
-        <div style={{ textAlign: 'center', padding: 40 }}>
-          <Spin />
+        <div style={{ padding: 24 }}>
+          <SkeletonCard height={40} />
+          <div style={{ height: 12 }} />
+          <SkeletonCard height={280} />
+          <div style={{ height: 12 }} />
+          <SkeletonCard height={30} width="60%" />
         </div>
       ) : !graph?.nodes?.length ? (
         <Empty

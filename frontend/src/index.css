@@ -370,6 +370,43 @@ body {
   .ant-card { margin-bottom: 12px; }
 }
 
+/* 侧边栏菜单覆盖 */
+.ant-layout-sider {
+  box-shadow: none !important;
+}
+
+.ant-menu-inline {
+  border-right: none !important;
+}
+
+.ant-menu-item {
+  margin: 2px 0 !important;
+  border-radius: 10px !important;
+  height: 42px !important;
+  line-height: 42px !important;
+  padding-left: 14px !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.ant-menu-item:hover {
+  background: #f0fdfa !important;
+}
+
+.ant-menu-item-selected {
+  background: #f0fdfa !important;
+  color: #0f766e !important;
+  font-weight: 600 !important;
+}
+
+.ant-menu-item-selected::after {
+  display: none !important;
+}
+
+/* 页面内容区无padding（由页面自己控制） */
+.ant-layout-content {
+  padding: 0 !important;
+}
+
 /* ============ 过渡动画 ============ */
 .ant-fade-enter { opacity: 0; }
 .ant-fade-enter-active { opacity: 1; transition: opacity 0.25s var(--ease-out); }

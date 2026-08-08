@@ -7,7 +7,7 @@ const { Title, Text, Paragraph } = Typography;
 
 const SettingsPage: React.FC = () => {
   return (
-    <Layout style={{ height: '100vh' }}>
+    <Layout style={{ height: '100%' }}>
       <Header style={{ 
         background: '#fff',
         padding: '0 24px',
