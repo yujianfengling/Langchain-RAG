@@ -288,10 +288,21 @@ def chat_stream(
         }
 
     except AIServiceError as e:
-        yield {"type": "error", "message": str(e)}
+        yield {"type": "error", "message": str(e), "error_type": "service_error"}
     except Exception as e:
-        logger.error(f"流式聊天异常: {e}", exc_info=True)
-        yield {"type": "error", "message": f"处理问题时发生错误: {str(e)}"}
+        # ModelAPIError 携带结构化错误类型，给出清晰错误而非"未知错误"
+        from services.model_service import ModelAPIError
+        if isinstance(e, ModelAPIError):
+            logger.error(f"流式聊天模型调用失败: error_type={e.error_type} status={e.status_code}")
+            yield {
+                "type": "error",
+                "message": str(e),
+                "error_type": e.error_type or "model_error",
+            }
+        else:
+            logger.error(f"流式聊天异常: {e}", exc_info=True)
+            yield {"type": "error", "message": f"处理问题时发生错误: {str(e)}",
+                   "error_type": "unknown"}
 
 
 # ============ 私有辅助函数（chat_service独有的逻辑） ============

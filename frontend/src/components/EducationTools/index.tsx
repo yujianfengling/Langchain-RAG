@@ -16,11 +16,12 @@ import {
   BulbOutlined,
   SendOutlined 
 } from '@ant-design/icons';
-import { 
-  generateSummary, 
-  generateExplanation, 
-  generateAdvice 
+import {
+  generateSummary,
+  generateExplanation,
+  generateAdvice
 } from '../../api/education';
+import SmartNoteTool from '../SmartNoteTool';
 import './index.css';
 
 const { TextArea } = Input;
@@ -253,6 +254,16 @@ const EducationTools: React.FC = () => {
 
   // 标签页配置
   const tabItems = [
+    {
+      key: 'note',
+      label: (
+        <span>
+          <BookOutlined />
+          智能笔记
+        </span>
+      ),
+      children: <SmartNoteTool />,
+    },
     {
       key: 'summary',
       label: (

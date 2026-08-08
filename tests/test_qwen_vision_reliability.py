@@ -85,9 +85,14 @@ class TestVisionConfig(unittest.TestCase):
             os.environ.pop("DASHSCOPE_API_KEY", None)
 
     def test_base_url_and_model_config(self):
-        """默认 Base URL 与模型配置正确（MODEL_CONFIG 在import时求值，故验证默认值）"""
+        """Base URL 与模型配置正确（从 config.models 读取实际值，兼容 .env 覆盖）"""
+        import os
+        from config.models import MODEL_CONFIG
         provider = get_model_provider("qwen-vision")
-        self.assertEqual(provider.config["base_url"], "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        # base_url 可能被 .env 的 DASHSCOPE_BASE_URL 覆盖；校验其与配置中心一致
+        expected_base = MODEL_CONFIG["qwen-vision"]["base_url"]
+        self.assertEqual(provider.config["base_url"], expected_base)
+        self.assertTrue(provider.config["base_url"].startswith("https://"))
         self.assertEqual(provider.config["model_name"], "qwen-vl-plus")
 
 

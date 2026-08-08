@@ -1,17 +1,19 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { Layout, Menu, Typography, Space, ConfigProvider } from 'antd';
-import { 
-  MessageOutlined, 
-  DatabaseOutlined, 
+import {
+  MessageOutlined,
+  DatabaseOutlined,
   SettingOutlined,
   FunctionOutlined,
+  CalendarOutlined,
 } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import ChatPage from './pages/ChatPage';
 import KnowledgePage from './pages/KnowledgePage';
 import SettingsPage from './pages/SettingsPage';
 import EducationPage from './pages/EducationPage';
+import LearningPlanPage from './pages/LearningPlanPage';
 
 const { Header, Content, Footer } = Layout;
 const { Title } = Typography;
@@ -34,6 +36,11 @@ const menuItems = [
     label: <Link to="/education">教学辅助</Link>,
   },
   {
+    key: '/learning',
+    icon: <CalendarOutlined />,
+    label: <Link to="/learning">学习计划</Link>,
+  },
+  {
     key: '/settings',
     icon: <SettingOutlined />,
     label: <Link to="/settings">设置</Link>,
@@ -49,6 +56,7 @@ const App: React.FC = () => {
     if (path.startsWith('/chat')) return '/chat';
     if (path.startsWith('/knowledge')) return '/knowledge';
     if (path.startsWith('/education')) return '/education';
+    if (path.startsWith('/learning')) return '/learning';
     if (path.startsWith('/settings')) return '/settings';
     return '/chat';
   };
@@ -119,6 +127,7 @@ const App: React.FC = () => {
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/knowledge" element={<KnowledgePage />} />
             <Route path="/education" element={<EducationPage />} />
+            <Route path="/learning" element={<LearningPlanPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </Content>
