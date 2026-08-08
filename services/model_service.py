@@ -295,7 +295,123 @@ class OpenAICompatibleProvider(ModelProvider):
     
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
         return self._call_openai_compatible_api(messages, **kwargs)
-    
+
+    def chat_stream(self, messages: List[Dict[str, str]], **kwargs):
+        """
+        真流式对话（SSE / OpenAI 兼容 stream=True）
+
+        逐 chunk 解析模型输出并 yield 文本片段。
+        供应商真实流式输出：每个 token/文本块到达即 yield，不是完整响应后逐字播放。
+
+        Yields:
+            文本片段 str
+
+        Raises:
+            ModelAPIError: 请求失败（结构化错误）
+        """
+        if not self.api_key:
+            raise ModelAPIError("模型未配置API密钥", status_code=None, error_type="invalid_api_key")
+
+        timeout = kwargs.get("timeout", VISION_DEFAULT_TIMEOUT)
+        max_retries = kwargs.get("max_retries", VISION_MAX_RETRIES)
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "model": self.config["model_name"],
+            "messages": messages,
+            "temperature": kwargs.get("temperature", 0.7),
+            "max_tokens": kwargs.get("max_tokens", 2048),
+            "stream": True,
+        }
+
+        url = f"{self.config['base_url']}/chat/completions"
+
+        # debug 日志：仅记录 provider/model/url（不含 Key、不含用户输入）
+        logger.debug(
+            f"[Chat] stream start: provider={self.model_name} model={self.config.get('model_name')} "
+            f"url={url}")
+
+        last_error = None
+        total_latency = 0.0
+
+        for attempt in range(max_retries):
+            try:
+                import json as _json
+                _body = _json.dumps(payload, ensure_ascii=False).encode('utf-8')
+                start_time = time.time()
+                with requests.post(url, headers=headers, data=_body,
+                                   timeout=timeout, stream=True) as resp:
+                    # 非流式错误（4xx/5xx 在 iter_lines 前抛出）
+                    if resp.status_code != 200:
+                        resp.raise_for_status()
+
+                    first_line_seen = False
+                    # 用 bytes 行 + utf-8 解码：避免 decode_unicode 与 bytes delimiter 类型冲突
+                    for raw in resp.iter_lines(decode_unicode=False):
+                        if raw is None:
+                            continue
+                        line = raw.decode('utf-8', errors='ignore').strip()
+                        if not line:
+                            continue
+                        # debug 日志：仅记录首行结构（截断，不含完整内容）
+                        if not first_line_seen:
+                            first_line_seen = True
+                            logger.debug(
+                                f"[Chat] stream first line: provider={self.model_name} "
+                                f"prefix={line[:60]!r}")
+                        # OpenAI SSE: data: {json}
+                        if line.startswith('data: '):
+                            data_str = line[6:].strip()
+                            if data_str == '[DONE]':
+                                break
+                            try:
+                                data = _json.loads(data_str)
+                                choices = data.get("choices", [])
+                                if choices:
+                                    delta = choices[0].get("delta", {})
+                                    content = delta.get("content", "")
+                                    if content:
+                                        yield content
+                            except _json.JSONDecodeError as je:
+                                # 解析失败给明确错误，不静默跳过
+                                logger.warning(
+                                    f"[Chat] SSE JSON 解析失败: provider={self.model_name} "
+                                    f"line_prefix={data_str[:60]!r}")
+                                raise ModelAPIError(
+                                    "模型流式响应格式异常(JSON解析失败)",
+                                    status_code=200, error_type="response_parse_error")
+                return  # 成功结束生成器
+
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
+                    requests.exceptions.HTTPError) as e:
+                last_error = e
+                error_type = _get_error_type(e)
+                status_code = getattr(getattr(e, "response", None), "status_code", None)
+                if not _is_retryable_error(e):
+                    raise ModelAPIError(f"模型API调用失败: {error_type}",
+                                        status_code=status_code, error_type=error_type)
+                if attempt < max_retries - 1:
+                    backoff = min(
+                        VISION_RETRY_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, VISION_RETRY_JITTER),
+                        VISION_RETRY_BACKOFF_MAX)
+                    logger.warning(f"[Chat] 流式调用失败: {error_type}, 等待{backoff:.1f}s重试")
+                    time.sleep(backoff)
+                else:
+                    raise ModelAPIError(f"模型 {self.config['name']} 流式调用失败: {error_type}",
+                                        status_code=status_code, error_type=error_type)
+            except ModelAPIError:
+                raise
+            except Exception as e:
+                # 记录真实原因，不再笼统"未知错误"
+                logger.error(f"[Chat] 流式调用异常: {type(e).__name__}: {str(e)}, "
+                             f"provider={self.model_name}, model={self.config.get('model_name')}")
+                raise ModelAPIError(f"模型流式调用失败: {type(e).__name__}",
+                                    status_code=None, error_type="stream_error")
+
     def vision(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         """
         视觉理解（多模态）实现

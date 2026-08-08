@@ -225,30 +225,38 @@ TRIPLE_EXTRACTION_PROMPT = """你是一名教育知识图谱专家。请从教�
 """
 
 
-def _call_llm_for_triples(chunk_text: str, model: str = None) -> List[Dict[str, Any]]:
+def _call_llm_for_triples(chunk_text: str, model: str = None, chunk_index: int = None) -> List[Dict[str, Any]]:
     """
     调用LLM抽取三元组（防线1）
+
+    Args:
+        chunk_text: 文本块内容
+        model: LLM模型（None 时由 build_knowledge_graph 决定 GRAPH_MODEL/默认）
+        chunk_index: chunk 编号（用于失败定位，可选）
+
+    Returns:
+        三元组列表；失败返回 []（不抛异常，不中断整个任务）
     """
     try:
         from services.model_service import get_model_provider
         provider = get_model_provider(model)
-        
+
         prompt = TRIPLE_EXTRACTION_PROMPT.format(
             node_types="、".join(NODE_TYPES),
             relation_types="、".join(RELATION_TYPES),
             chunk_text=chunk_text[:3000]
         )
-        
+
         messages = [
             {"role": "system", "content": "你是教育知识图谱构建助手，只输出JSON。"},
             {"role": "user", "content": prompt}
         ]
-        
+
         result = provider.chat(messages, temperature=0.1, max_tokens=2000)
         answer = result.get("answer", "")
-        
+
         triples = _parse_triple_json(answer)
-        
+
         # 额外过滤：对LLM返回的三元组做实体验证
         filtered = []
         for t in triples:
@@ -258,27 +266,35 @@ def _call_llm_for_triples(chunk_text: str, model: str = None) -> List[Dict[str, 
                 t["subject"] = subj
                 t["object"] = obj
                 filtered.append(t)
-        
+
         return filtered
     except Exception as e:
-        logger.warning(f"LLM三元组抽取失败: {e}")
+        idx = f" chunk={chunk_index}" if chunk_index is not None else ""
+        logger.warning(f"LLM三元组抽取失败{idx}: {type(e).__name__}: {str(e)[:200]}")
         return []
 
 
 def _parse_triple_json(text: str) -> List[Dict[str, Any]]:
-    """从LLM输出中解析三元组JSON"""
+    """
+    从LLM输出中解析三元组JSON（增强兼容）
+
+    支持：
+    - 标准对象：{"triples": [...]} 或 {"triples":[...]} 带前后解释文字
+    - 顶层数组：[...]
+    - Markdown 代码块包裹（```json ... ```）
+    - 解析失败返回 []，不抛异常
+    """
     if not text:
         return []
-    
-    json_match = re.search(r'\{[\s\S]*\}', text)
-    if not json_match:
-        return []
-    
-    try:
-        data = json.loads(json_match.group())
-        triples = data.get("triples", [])
+
+    def _extract(data) -> List[Dict[str, Any]]:
+        triples = data if isinstance(data, list) else data.get("triples", [])
+        if not isinstance(triples, list):
+            return []
         cleaned = []
         for t in triples:
+            if not isinstance(t, dict):
+                continue
             subject = str(t.get("subject", "")).strip()
             predicate = str(t.get("predicate", "")).strip()
             obj = str(t.get("object", "")).strip()
@@ -291,9 +307,46 @@ def _parse_triple_json(text: str) -> List[Dict[str, Any]]:
                     "object_type": t.get("object_type", "概念"),
                 })
         return cleaned
+
+    # 1. 剥离 markdown 代码块
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+
+    # 2. 优先尝试顶层数组 [ ... ]
+    try:
+        data = json.loads(stripped)
+        if isinstance(data, (dict, list)):
+            return _extract(data)
     except (json.JSONDecodeError, ValueError):
-        logger.warning(f"三元组JSON解析失败: {text[:100]}")
-        return []
+        pass
+
+    # 3. 从文本中提取 JSON 片段（贪婪匹配完整块：对象含内嵌数组/对象）
+    #    优先对象 {"triples":[...]}，其次顶层数组 [...]（取最长匹配，避免截断内嵌）
+    m = re.search(r'\{[\s\S]*\}', stripped)
+    if m:
+        try:
+            data = json.loads(m.group())
+            if isinstance(data, (dict, list)):
+                return _extract(data)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    m = re.search(r'\[[\s\S]*\]', stripped)
+    if m:
+        try:
+            data = json.loads(m.group())
+            if isinstance(data, list):
+                return _extract(data)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    logger.warning(f"三元组JSON解析失败: {text[:100]}")
+    return []
 
 
 # ========== 图谱构建 ==========
@@ -349,71 +402,96 @@ def _merge_triples_to_graph(
 def build_knowledge_graph(
     subject_id: str,
     model: str = None,
-    max_chunks: int = 50
+    max_chunks: int = 50,
+    progress_cb=None
 ) -> Dict[str, Any]:
     """
     构建学科知识图谱（三道质量防线）
-    
+
     流程：
-    1. 加载文档 → 切分 → 过滤占位符
+    1. 直接复用知识库已切分的 chunk（index.pkl 中的 documents 即为 RAG 使用的 chunk，
+       保证 KG 与 RAG 数据完全一致；不重新解析 PDF、不触发 Vision、不重建 Embedding）
     2. LLM抽取三元组（防线1：Prompt正负例+粒度控制）
     3. 合并为图谱
     4. 后处理过滤（防线2+3：归一化/停用词/孤立节点/自环）
-    5. 持久化
+    5. 原子持久化
+
+    Args:
+        subject_id: 学科ID
+        model: LLM模型（优先 GRAPH_MODEL 环境变量，其次该参数，最后全局默认）
+        max_chunks: 最多处理的文本块数（LLM 调用规模保护）
+        progress_cb: 进度回调 (processed_chunks, total_chunks)，可选
     """
-    from rag.rag_service import _safe_dir_name, _SUBJECTS_DATA_BASE
-    from rag.document import load_documents
-    from rag.text_splitter import split_documents
-    
-    subject_dir = Path(os.path.join(_SUBJECTS_DATA_BASE, subject_id))
-    if not subject_dir.exists():
-        raise FileNotFoundError(f"学科目录不存在: {subject_id}")
-    
-    # 1. 加载文档
-    supported_extensions = {'.txt', '.md', '.pdf', '.docx'}
-    file_paths = [
-        f for f in subject_dir.iterdir()
-        if f.is_file() and f.suffix.lower() in supported_extensions
-    ]
-    
-    if not file_paths:
-        raise ValueError(f"学科目录中没有文档: {subject_id}")
-    
-    documents = load_documents(file_paths)
+    import os
+    import pickle
+    from rag.rag_service import _safe_dir_name
+
+    # 独立模型配置：GRAPH_MODEL 优先（不误用聊天模型）
+    if model is None:
+        model = os.getenv("GRAPH_MODEL", None)
+
+    # 1. 复用知识库已切分的 chunk（index.pkl 的 documents 即 RAG 构建时持久化的 split 结果）
+    vs_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                           "data", "vector_store")
+    safe_name = _safe_dir_name(subject_id)
+    index_pkl = os.path.join(vs_base, safe_name, "index.pkl")
+
+    if not os.path.exists(index_pkl):
+        raise FileNotFoundError(f"知识库尚未构建或索引缺失，请先构建知识库: {subject_id}")
+
+    with open(index_pkl, "rb") as f:
+        stored = pickle.load(f)
+    documents = stored.get("documents", [])
     if not documents:
-        raise ValueError("文档加载失败")
-    
-    # 2. 切分文档
-    chunks = split_documents(documents, chunk_size=800, chunk_overlap=100)
-    logger.info(f"文档切分为 {len(chunks)} 个文本块")
-    
+        raise ValueError("知识库中没有可用文档，请先构建知识库")
+
+    # 2. 直接使用已切分的 chunk（不再二次 split → 与 RAG 完全一致）
+    chunks = documents
+    logger.info(f"知识图谱复用知识库 chunk: {len(chunks)} 个（与 RAG 一致）")
+
+    # 过滤纯标题/封面碎片（无概念内容）
+    def _skip(content: str) -> bool:
+        if len(content) < 15:
+            return True
+        if content.startswith('[图片]') or content.startswith('[公式]'):
+            return True
+        if len(content) < 30 and ('Dept.' in content or '@' in content or '电话' in content or '学时' in content):
+            return True
+        return False
+
     # 3. 逐块抽取三元组（防线1：Prompt + LLM验证）
     all_triples = []
-    source_info = {"document": ", ".join(f.name for f in file_paths)}
+    source_info = {"document": safe_name}
     processed = 0
-    
+    total_candidates = len(chunks)
+    failed_chunks = []
+
     for i, chunk in enumerate(chunks):
         if processed >= max_chunks:
             break
-        
+
         content = chunk.page_content if hasattr(chunk, 'page_content') else str(chunk)
         content = content.strip()
-        
+
         # 前置过滤：无实质内容的块
-        if len(content) < 15:
+        if _skip(content):
             continue
-        if content.startswith('[图片]') or content.startswith('[公式]'):
-            continue
-        if len(content) < 30 and ('Dept.' in content or '@' in content or '电话' in content or '学时' in content):
-            continue
-        
+
         processed += 1
-        triples = _call_llm_for_triples(content, model)
+        triples = _call_llm_for_triples(content, model, chunk_index=processed)
+        if not triples:
+            failed_chunks.append(processed)
         all_triples.extend(triples)
-        
+
+        if progress_cb is not None:
+            progress_cb(processed, total_candidates)
+
         if processed % 10 == 0 or i == len(chunks) - 1:
             logger.info(f"已处理 {processed}/{max_chunks} 块，累计 {len(all_triples)} 个三元组")
-    
+
+    if failed_chunks:
+        logger.warning(f"LLM抽取失败/空结果的 chunk 编号: {failed_chunks}")
+
     if not all_triples:
         logger.warning(f"学科 {subject_id} 未能提取到三元组（可能文档以图片/公式为主，文本内容不足）")
     
@@ -450,17 +528,43 @@ def build_knowledge_graph(
 
 
 def _save_graph(subject_id: str, graph: Dict[str, Any]) -> Path:
-    """保存图谱到本地JSON文件"""
+    """
+    原子保存图谱到本地JSON文件
+
+    流程：写 graph_building.tmp → 校验 JSON/结构 → os.replace 原子改名 → graph.json
+    失败：删除 tmp，保留旧 graph.json（不污染）
+    """
     from rag.rag_service import _safe_dir_name
     graph_dir = Path(_GRAPH_DIR)
     graph_dir.mkdir(parents=True, exist_ok=True)
-    
+
     path = graph_dir / f"{_safe_dir_name(subject_id)}.json"
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(graph, f, ensure_ascii=False, indent=2)
-    
-    logger.info(f"知识图谱已保存: {path}")
-    return path
+    tmp_path = graph_dir / f"{_safe_dir_name(subject_id)}_building.tmp"
+
+    try:
+        # 1. 写入临时文件
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(graph, f, ensure_ascii=False, indent=2)
+
+        # 2. 校验（可反序列化 + 结构完整）
+        with open(tmp_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or "nodes" not in data or "edges" not in data:
+            raise ValueError("图谱数据不完整（缺 nodes/edges）")
+
+        # 3. 原子替换
+        os.replace(str(tmp_path), str(path))
+        logger.info(f"知识图谱已保存: {path}")
+        return path
+    except Exception as e:
+        # 失败：删除 tmp，保留旧 graph.json
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        logger.error(f"知识图谱保存失败（旧图谱保留）: {str(e)}")
+        raise
 
 
 def load_knowledge_graph(subject_id: str) -> Optional[Dict[str, Any]]:
@@ -528,3 +632,40 @@ def query_graph(subject_id: str, node: str = None, depth: int = 1) -> Dict[str, 
         "edges": sub_edges,
         "stats": {"node_count": len(sub_nodes), "edge_count": len(sub_edges)},
     }
+
+
+# ============ 后台任务辅助（供路由层使用） ============
+
+# LLM 调用规模保护：单个知识图谱最多处理的文本块数（可通过环境变量覆盖）
+MAX_GRAPH_CHUNKS = int(os.getenv("MAX_GRAPH_CHUNKS", "50"))
+
+
+def submit_graph_build(subject_id: str, model: str = None):
+    """
+    提交知识图谱后台构建任务（异步执行，不阻塞事件循环）
+
+    Returns:
+        (accepted, status)：
+        - accepted=True: 任务已提交（queued/building）
+        - accepted=False: 未接受（已构建中 busy，或学科不存在）
+    """
+    from .task_manager import get_graph_manager
+
+    def _run(sid, progress_cb):
+        # 复用知识库持久化数据，不触发 Vision/重新解析
+        build_knowledge_graph(sid, model=model, max_chunks=MAX_GRAPH_CHUNKS,
+                              progress_cb=progress_cb)
+
+    return get_graph_manager().submit(subject_id, _run)
+
+
+def get_graph_build_status(subject_id: str):
+    """获取知识图谱构建任务状态"""
+    from .task_manager import get_graph_manager
+    return get_graph_manager().get_status(subject_id)
+
+
+def reset_graph_build_manager():
+    """后端重启时调用：将遗留 building/queued 状态恢复为 interrupted"""
+    from .task_manager import get_graph_manager
+    get_graph_manager().reset_stale()

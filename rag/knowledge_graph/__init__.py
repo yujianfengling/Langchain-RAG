@@ -12,6 +12,10 @@ from .graph_builder import (
     load_knowledge_graph,
     list_graphs,
     query_graph,
+    submit_graph_build,
+    get_graph_build_status,
+    reset_graph_build_manager,
+    MAX_GRAPH_CHUNKS,
 )
 
 __all__ = [
@@ -19,4 +23,8 @@ __all__ = [
     "load_knowledge_graph",
     "list_graphs",
     "query_graph",
+    "submit_graph_build",
+    "get_graph_build_status",
+    "reset_graph_build_manager",
+    "MAX_GRAPH_CHUNKS",
 ]

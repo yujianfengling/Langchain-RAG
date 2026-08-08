@@ -82,15 +82,19 @@
 - [x] 知识库持久化与重启后加载（重启不重建即可检索）
 - [x] 前端生产构建（`npm run build` 通过）
 - [x] 健康检查状态区分（`/health/ready` 返回 hybrid_ready / bm25_degraded / not_loaded / unavailable）
+- [x] **Chat 真流式**（SSE + stream=True，逐块输出，支持 model 参数、停止生成、TTFT/耗时统计）
+- [x] **RAG 参考来源结构化显示**（统一 `{id, file_name, page, type}`，前端列表展示，去重限 5 条）
+- [x] **Knowledge Graph 后台生成**（异步线程池，不阻塞事件循环；防重复提交；状态查询接口）
+- [x] **Knowledge Graph 原子保存与进度**（tmp→校验→rename，失败保留旧图谱；进度 current/total 展示）
+- [x] **Knowledge Graph 数据一致性**（直接复用 RAG 已切分 chunk，与知识库完全一致；`GRAPH_MODEL` 独立配置）
 
 ## 当前未完全通过功能
 
 - [ ] **Qwen Vision 真实图片理解**：实现与 Mock 链路已验证，但真实调用返回 401 `invalid_api_key`（`.env` 中 `DASHSCOPE_API_KEY` 无效），需用户配置有效 Key 后重验 1 次
 - [ ] **模型切换接口**：`POST /api/models/switch` 仅返回成功，不真正改变全局状态（实际生效依赖每次请求的 `model` 参数）
-- [ ] **流式问答**：`/chat/stream` 暂不支持 `model` 参数，流式对话固定使用默认模型
-- [ ] **知识图谱**：`rag/knowledge_graph/` 与前端 ECharts 界面代码已存在，但未完成端到端验收（构建会调用 LLM 抽取三元组）
 - [ ] **一键启动脚本**：`start.bat` / `setup.bat` / `stop.bat` 未实现（仅有 `install.ps1` / `install.sh` 安装脚本）
 - [ ] **Reranker**：为轻量实现（复用 Embedding 余弦重排），非独立 Rerank 模型
+- [ ] **知识图谱端到端人工验收**：后台生成链路已实现并通过 Mock 验证，尚未在正式知识库上人工验收（需用户点"生成知识图谱"确认）
 
 ## 测试状态
 
@@ -148,11 +152,18 @@ cp config/env.example .env
 
 1. **修复 Vision 真实调用**：确认/更换有效 `DASHSCOPE_API_KEY`，重跑 1 次真实图片理解验收（实现已就绪）。
 2. **模型切换真正生效**：让 `/api/models/switch` 持久化当前模型，或移除该接口避免误导。
-3. **流式问答支持模型参数**：`/chat/stream` 透传 `model`。
-4. **知识图谱端到端验收**：验证 LLM 三元组抽取 → 索引 → 前端 ECharts 展示链路。
-5. **一键启动脚本**：`start.bat` / `stop.bat`（支持中文路径）。
-6. **Reranker 独立化**：评估引入真实 Rerank 模型，或明确当前轻量实现的边界。
-7. **工程治理**：requirements.txt 锁定版本、缓存目录改为绝对路径、清理 `data_manager.py`/`mindmap_service.py` 等遗留死代码、`test_rag_service` 测试残留清理。
+3. **知识图谱端到端人工验收**：后台生成链路已实现并通过 Mock 验证，在正式知识库上点"生成知识图谱"确认。
+4. **一键启动脚本**：`start.bat` / `stop.bat`（支持中文路径）。
+5. **Reranker 独立化**：评估引入真实 Rerank 模型，或明确当前轻量实现的边界。
+6. **工程治理**：requirements.txt 锁定版本、缓存目录改为绝对路径、清理 `data_manager.py`/`mindmap_service.py` 等遗留死代码、`test_rag_service` 测试残留清理。
+
+## 下一阶段：V2.5 智能学习助手
+
+- 五段式智能笔记
+- 自测题
+- 学习计划基础系统
+
+> 当前 commit 作为 V2.5 开发前回退基线。
 
 ## 版本说明
 

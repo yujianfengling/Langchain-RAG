@@ -183,11 +183,12 @@ def chat_stream(
     history: Optional[List[Dict[str, str]]] = None,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
+    model: Optional[str] = None,
     image_data: Optional[str] = None,
     image_mime_type: Optional[str] = None
 ) -> Generator[Dict[str, Any], None, None]:
     """
-    智能问答流式接口（SSE）
+    智能问答流式接口（SSE，真流式）
 
     Args:
         question: 用户问题
@@ -195,28 +196,34 @@ def chat_stream(
         history: 对话历史
         temperature: 温度参数
         max_tokens: 最大token数
+        model: 模型名称（可选，默认使用配置中的默认模型）
         image_data: 图片数据（base64编码，可选）
         image_mime_type: 图片MIME类型（可选）
 
     Yields:
-        流式事件字典：type=start|chunk|end|error
+        流式事件字典：type=start|delta|done|error
+        - start: {type, model, subject_id, context_used}
+        - delta: {type, content} 真模型流逐块输出
+        - done:  {type, sources, model, elapsed, ttft, full_answer}
+        - error: {type, message}
     """
     start_time = time.time()
+    first_token_time = None
 
     # 依赖检查
     if not LLM_AVAILABLE:
-        yield {"type": "error", "error": f"LLM模块不可用: {_LLM_IMPORT_ERROR}", "latency": time.time() - start_time}
+        yield {"type": "error", "message": f"LLM模块不可用: {_LLM_IMPORT_ERROR}"}
         return
     if not RAG_AVAILABLE:
-        yield {"type": "error", "error": f"RAG模块不可用: {_RAG_IMPORT_ERROR}", "latency": time.time() - start_time}
+        yield {"type": "error", "message": f"RAG模块不可用: {_RAG_IMPORT_ERROR}"}
         return
     if not PROMPTS_AVAILABLE:
-        yield {"type": "error", "error": f"提示词模块不可用: {_PROMPTS_IMPORT_ERROR}", "latency": time.time() - start_time}
+        yield {"type": "error", "message": f"提示词模块不可用: {_PROMPTS_IMPORT_ERROR}"}
         return
 
     # 输入验证
     if not question or not question.strip():
-        yield {"type": "error", "error": "问题不能为空", "latency": time.time() - start_time}
+        yield {"type": "error", "message": "问题不能为空"}
         return
 
     try:
@@ -225,7 +232,7 @@ def chat_stream(
             context_docs = get_rag_context(question, subject_id, _DEFAULT_TOP_K)
             context_used = len(context_docs) > 0
         except AIServiceError as e:
-            yield {"type": "error", "error": str(e), "latency": time.time() - start_time}
+            yield {"type": "error", "message": str(e)}
             return
 
         # 2. 构建上下文 + 来源
@@ -239,90 +246,84 @@ def chat_stream(
         else:
             prompt = get_education_prompt_with_context(question, context)
 
-        # 4. 获取LLM实例 + 模型信息
-        llm = get_llm(temperature=temperature, max_tokens=max_tokens)
-        llm_info = get_llm_provider_info()
-        model_name = llm_info.get("model", "unknown")
+        # 4. 获取Provider（支持请求级模型选择）与真实模型名
+        from services.model_service import get_model_provider, get_model_config
+        provider = get_model_provider(model)
+        provider_config = provider.config
+        model_name = provider_config.get("model_name", model or "mimo")
 
         # 5. 发送start事件
         yield {
             "type": "start",
-            "sources": sources,
             "model": model_name,
             "confidence": "high" if context_used else "medium",
             "context_used": context_used,
             "subject_id": subject_id,
         }
 
-        # 6. 流式调用LLM
+        # 6. 真流式调用LLM（供应商 stream=True 逐块输出）
         full_answer = ""
-        for chunk in _call_llm_stream(llm, prompt):
+        messages = [
+            {"role": "system", "content": _DEFAULT_SYSTEM_MESSAGE},
+            {"role": "user", "content": prompt},
+        ]
+        for chunk in _call_llm_stream(provider, messages, temperature=temperature, max_tokens=max_tokens):
+            if not chunk:
+                continue
+            if first_token_time is None:
+                first_token_time = time.time()
             full_answer += chunk
-            yield {"type": "chunk", "content": chunk}
+            yield {"type": "delta", "content": chunk}
 
-        # 7. 发送end事件
+        ttft = first_token_time - start_time if first_token_time else None
+
+        # 7. 发送done事件（一次性携带来源与统计）
         yield {
-            "type": "end",
+            "type": "done",
+            "sources": sources,
+            "model": model_name,
+            "elapsed": time.time() - start_time,
+            "ttft": ttft,
             "full_answer": full_answer,
-            "latency": time.time() - start_time,
         }
 
     except AIServiceError as e:
-        yield {"type": "error", "error": str(e), "latency": time.time() - start_time}
+        yield {"type": "error", "message": str(e)}
     except Exception as e:
         logger.error(f"流式聊天异常: {e}", exc_info=True)
-        yield {"type": "error", "error": f"处理问题时发生错误: {str(e)}", "latency": time.time() - start_time}
+        yield {"type": "error", "message": f"处理问题时发生错误: {str(e)}"}
 
 
 # ============ 私有辅助函数（chat_service独有的逻辑） ============
 
-def _call_llm_stream(llm: Any, prompt: str) -> Generator[str, None, None]:
+def _call_llm_stream(provider: Any, messages: List[Dict[str, str]], temperature=None, max_tokens=None) -> Generator[str, None, None]:
     """
-    流式调用LLM（chat_service独有，ai_service不提供流式接口）
+    真流式调用LLM（chat_service独有，ai_service不提供流式接口）
 
     Args:
-        llm: LLM实例
-        prompt: 提示词
+        provider: ModelProvider实例（OpenAICompatibleProvider，支持 chat_stream）
+        messages: [{"role": "system"...}, {"role": "user"...}]
+        temperature: 温度参数
+        max_tokens: 最大token数
 
     Yields:
-        文本片段
+        文本片段（供应商流式逐块输出）
+
+    Raises:
+        异常交由调用方处理（ModelAPIError 等）
     """
-    try:
-        from langchain_core.messages import HumanMessage, SystemMessage
+    # 优先使用供应商真流式（stream=True）
+    if hasattr(provider, "chat_stream"):
+        for chunk in provider.chat_stream(messages, temperature=temperature, max_tokens=max_tokens):
+            yield chunk
+        return
 
-        messages = [
-            SystemMessage(content=_DEFAULT_SYSTEM_MESSAGE),
-            HumanMessage(content=prompt),
-        ]
-
-        if hasattr(llm, "stream"):
-            for chunk in llm.stream(messages):
-                yield chunk.content if hasattr(chunk, "content") else str(chunk)
-        else:
-            # 不支持流式，回退为一次性调用并模拟流式输出
-            response = llm.invoke(messages)
-            content = response.content if hasattr(response, "content") else str(response)
-            chunk_size = 10
-            for i in range(0, len(content), chunk_size):
-                yield content[i : i + chunk_size]
-
-    except ImportError:
-        # LangChain不可用，直接调用
-        if hasattr(llm, "stream"):
-            for chunk in llm.stream(prompt):
-                yield str(chunk)
-        else:
-            response = llm.invoke(prompt) if hasattr(llm, "invoke") else llm.generate([prompt])
-            content = ""
-            if hasattr(response, "content"):
-                content = response.content
-            elif hasattr(response, "generations") and response.generations:
-                content = response.generations[0][0].text
-            else:
-                content = str(response)
-            chunk_size = 10
-            for i in range(0, len(content), chunk_size):
-                yield content[i : i + chunk_size]
+    # 兜底：Provider 不支持流式时，非流式调用并按块切分（仅当无 chat_stream 方法时）
+    result = provider.chat(messages, temperature=temperature, max_tokens=max_tokens)
+    content = result.get("answer", "") if isinstance(result, dict) else str(result)
+    chunk_size = 10
+    for i in range(0, len(content), chunk_size):
+        yield content[i : i + chunk_size]
 
 
 def _format_history(history: List[Dict[str, str]], max_turns: int = 5) -> str:

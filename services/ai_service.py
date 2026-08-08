@@ -96,25 +96,42 @@ def build_context_string(context_docs: List) -> str:
 
 def extract_sources(context_docs: List) -> List[Dict[str, Any]]:
     """
-    从上下文文档中提取来源信息
-    
+    从上下文文档中提取来源信息（API 边界统一结构）
+
+    返回稳定结构：
+    {
+        "id": 1,
+        "file_name": "数据结构.pdf",   # 优先取 metadata.file_name，避免绝对路径
+        "page": 12,                    # 无页码时为 None
+        "type": "text",                # modality/type，无则 text
+    }
+
     Args:
         context_docs: 上下文文档列表
-        
+
     Returns:
-        来源信息列表，每个来源包含 filename 和 content
+        来源信息列表
     """
     sources = []
     for i, doc in enumerate(context_docs):
         metadata = doc.metadata if hasattr(doc, 'metadata') else {}
-        filename = metadata.get('source', f'文档_{i+1}')
-        content_preview = doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
-        
+
+        # 优先取 file_name（不含路径）；回退到取 source 的最后一段；再回退到占位
+        file_name = metadata.get('file_name')
+        if not file_name:
+            src = metadata.get('source') or metadata.get('filename') or ''
+            file_name = str(src).split('\\')[-1].split('/')[-1] if src else f'文档_{i+1}'
+
+        page = metadata.get('page')
+        doc_type = metadata.get('type') or metadata.get('modality') or 'text'
+
         sources.append({
-            "filename": filename,
-            "content": content_preview,
+            "id": i + 1,
+            "file_name": file_name,
+            "page": page,
+            "type": doc_type,
         })
-    
+
     return sources
 
 

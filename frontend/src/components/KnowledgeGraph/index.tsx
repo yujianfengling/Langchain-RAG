@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as echarts from 'echarts';
-import { Button, Card, Empty, Spin, Tag, Space, Typography } from 'antd';
-import { ApiOutlined, ReloadOutlined } from '@ant-design/icons';
-import { getKnowledgeGraph } from '../../api/knowledge';
+import { Button, Card, Empty, Popconfirm, Spin, Tag, Space, Typography, message } from 'antd';
+import { ApiOutlined, ReloadOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { getKnowledgeGraph, buildKnowledgeGraph, getKnowledgeGraphStatus } from '../../api/knowledge';
 
 const { Text } = Typography;
 
@@ -46,9 +46,19 @@ const TYPE_COLORS: Record<string, string> = {
 const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstance = useRef<echarts.ECharts | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [loading, setLoading] = useState(true);
+  const [building, setBuilding] = useState(false);
+  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
   const [graph, setGraph] = useState<GraphData | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimer.current) {
+      clearTimeout(pollTimer.current);
+      pollTimer.current = null;
+    }
+  }, []);
 
   const loadGraph = useCallback(async () => {
     setLoading(true);
@@ -68,9 +78,82 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
     }
   }, [subjectId]);
 
+  // 轮询图谱构建状态
+  const pollBuildStatus = useCallback(async () => {
+    try {
+      const res: any = await getKnowledgeGraphStatus(subjectId);
+      const data = res?.data ?? res;
+      const status = data?.status;
+      if (status === 'success') {
+        stopPolling();
+        setBuilding(false);
+        setProgress(null);
+        message.success('知识图谱生成完成');
+        loadGraph();
+      } else if (status === 'failed') {
+        stopPolling();
+        setBuilding(false);
+        setProgress(null);
+        message.error(data?.message || '知识图谱生成失败，请重试');
+      } else {
+        // queued / building：展示进度（不显示假百分比）
+        const current = data?.processed_chunks;
+        const total = data?.total_chunks;
+        if (typeof current === 'number' && typeof total === 'number') {
+          setProgress({ current, total });
+        }
+        pollTimer.current = setTimeout(pollBuildStatus, 2500);
+      }
+    } catch {
+      stopPolling();
+      setBuilding(false);
+      setProgress(null);
+      message.error('查询图谱生成状态失败，请刷新后重试');
+    }
+  }, [subjectId, loadGraph, stopPolling]);
+
+  // 提交图谱构建任务
+  const handleBuild = async () => {
+    setBuilding(true);
+    setProgress(null);
+    try {
+      const res: any = await buildKnowledgeGraph(subjectId);
+      const data = res?.data ?? res;
+      const status = data?.status;
+      if (status === 'queued' || status === 'building') {
+        message.info('知识图谱生成任务已提交，正在后台生成...');
+        pollTimer.current = setTimeout(pollBuildStatus, 2500);
+      } else if (status === 'success') {
+        setBuilding(false);
+        message.success('知识图谱生成完成');
+        loadGraph();
+      } else if (status === 'failed') {
+        setBuilding(false);
+        message.error(data?.message || '知识图谱生成失败');
+      } else {
+        // 409 已构建中 / busy 等
+        setBuilding(false);
+        message.warning(data?.message || '任务未能提交，请稍后再试');
+      }
+    } catch (error: any) {
+      setBuilding(false);
+      const detail = error?.response?.data?.message
+        || error?.response?.data?.detail
+        || '提交知识图谱生成任务失败';
+      // 409 = 已有任务进行中，提示即可
+      if (error?.response?.status === 409) {
+        message.warning(detail);
+      } else {
+        message.error(detail);
+      }
+    }
+  };
+
   useEffect(() => {
     loadGraph();
-  }, [loadGraph]);
+    return () => stopPolling();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadGraph, stopPolling]);
 
   // 渲染图谱
   useEffect(() => {
@@ -176,9 +259,40 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
         </Space>
       }
       extra={
-        <Button size="small" icon={<ReloadOutlined />} onClick={loadGraph} loading={loading}>
-          刷新
-        </Button>
+        <Space>
+          {building ? (
+            <Button size="small" disabled icon={<Spin size="small" />}>
+              {progress && progress.total > 0
+                ? `正在抽取知识关系：${progress.current} / ${progress.total}`
+                : '知识图谱生成中...'}
+            </Button>
+          ) : graph?.nodes?.length ? (
+            <Popconfirm
+              title="生成知识图谱需要调用大模型并可能产生API费用，是否继续？"
+              onConfirm={handleBuild}
+              okText="生成"
+              cancelText="取消"
+            >
+              <Button size="small" icon={<PlayCircleOutlined />}>
+                重新生成
+              </Button>
+            </Popconfirm>
+          ) : (
+            <Popconfirm
+              title="生成知识图谱需要调用大模型并可能产生API费用，是否继续？"
+              onConfirm={handleBuild}
+              okText="生成"
+              cancelText="取消"
+            >
+              <Button size="small" type="primary" icon={<PlayCircleOutlined />}>
+                生成知识图谱
+              </Button>
+            </Popconfirm>
+          )}
+          <Button size="small" icon={<ReloadOutlined />} onClick={loadGraph} loading={loading}>
+            刷新
+          </Button>
+        </Space>
       }
     >
       {loading ? (
@@ -187,7 +301,14 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
         </div>
       ) : !graph?.nodes?.length ? (
         <Empty
-          description="暂无知识图谱，构建知识库时将自动生成"
+          description={
+            <div>
+              <div>暂无知识图谱</div>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                点击右上角"生成知识图谱"手动生成（需先构建知识库）
+              </Text>
+            </div>
+          }
           style={{ padding: 40 }}
         />
       ) : (

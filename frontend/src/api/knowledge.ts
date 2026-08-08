@@ -76,10 +76,17 @@ export const getKnowledgeGraph = async (subjectId: string): Promise<ApiResponse<
 };
 
 /**
- * 构建知识图谱（LLM抽取三元组）
+ * 提交知识图谱构建任务（后台异步，返回 202 Accepted）
  */
 export const buildKnowledgeGraph = async (subjectId: string): Promise<ApiResponse<any>> => {
   return apiClient.post(`/knowledge/${subjectId}/graph/build`);
+};
+
+/**
+ * 查询知识图谱构建任务状态（idle/queued/building/success/failed）
+ */
+export const getKnowledgeGraphStatus = async (subjectId: string): Promise<ApiResponse<any>> => {
+  return apiClient.get(`/knowledge/${subjectId}/graph/status`);
 };
 
 /**

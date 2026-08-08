@@ -32,14 +32,13 @@ import type { UploadProps } from 'antd';
 import KnowledgeGraph from '../KnowledgeGraph';
 import { KnowledgeBase, Subject } from '../../types';
 import { getSubjects, createSubject, deleteSubject } from '../../api/subjects';
-import { 
-  getKnowledgeBases, 
-  uploadFile, 
-  getDocuments, 
-  deleteDocument, 
+import {
+  getKnowledgeBases,
+  uploadFile,
+  getDocuments,
+  deleteDocument,
   rebuildKnowledge,
   getKnowledgeStats,
-  buildKnowledgeGraph,
 } from '../../api/knowledge';
 
 const { Dragger } = Upload;
@@ -149,7 +148,7 @@ const SubjectDetailView: React.FC<{
     }
   };
 
-  // 构建知识库（构建完成后自动生成知识图谱）
+  // 构建知识库（独立操作，不再自动生成知识图谱；图谱由用户单独点击生成）
   const handleBuild = async () => {
     if (documents.length === 0) {
       message.warning('请先上传文档');
@@ -160,12 +159,6 @@ const SubjectDetailView: React.FC<{
     try {
       await rebuildKnowledge(subjectId);
       message.success('知识库构建成功');
-      // 构建完成后自动生成知识图谱（失败不阻塞知识库）
-      try {
-        await buildKnowledgeGraph(subjectId);
-      } catch (graphErr) {
-        message.warning('知识库已构建，知识图谱生成失败，可稍后重试');
-      }
       loadData();
       onRefresh();
     } catch (error: any) {

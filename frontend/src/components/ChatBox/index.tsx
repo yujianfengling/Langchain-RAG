@@ -1,8 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Input, Button, List, Avatar, Typography, Space, Spin, Select, Tag, message } from 'antd';
-import { SendOutlined, UserOutlined, RobotOutlined } from '@ant-design/icons';
-import { ChatMessage, Subject } from '../../types';
-import { sendMessage } from '../../api/chat';
+import { SendOutlined, UserOutlined, RobotOutlined, StopOutlined } from '@ant-design/icons';
+import { ChatMessage, Subject, SourceInfo } from '../../types';
+import { sendMessageStream } from '../../api/chat';
 import { getReadyStatus } from '../../api/health';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
@@ -42,6 +42,32 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
   const [selectedModel, setSelectedModel] = useState<string>('mimo');
   const [retrievalTag, setRetrievalTag] = useState<{ color: string; text: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // 组件卸载时中止未完成的流式请求
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  // 规范化参考来源列表：去重（同文件+同页）、最多5条、过滤无效
+  const normalizeSources = useCallback((sources: SourceInfo[] | undefined): SourceInfo[] => {
+    if (!Array.isArray(sources) || sources.length === 0) return [];
+    const seen = new Set<string>();
+    const result: SourceInfo[] = [];
+    for (const s of sources) {
+      if (!s || typeof s !== 'object') continue;
+      const file = s.file_name || '';
+      const page = s.page != null ? s.page : '';
+      const key = `${file}|${page}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({ id: result.length + 1, file_name: file, page: s.page, type: s.type });
+      if (result.length >= 5) break;
+    }
+    return result;
+  }, []);
 
   // 将 /health/ready 状态映射为顶部标签（not_loaded + 索引就绪 = 可用，首次检索自动加载）
   const applyRetrievalTag = (ready: any) => {
@@ -121,7 +147,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 发送消息
+  // 发送消息（真流式）
   const handleSend = async () => {
     if (!inputValue.trim()) {
       message.warning('请输入问题');
@@ -141,65 +167,96 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
       timestamp: Date.now(),
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    // 创建空的AI消息（先显示"正在思考..."）
+    const aiId = (Date.now() + 1).toString();
+    const aiMessage: ChatMessage = {
+      id: aiId,
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+    };
+
+    setMessages(prev => [...prev, userMessage, aiMessage]);
     setInputValue('');
     setLoading(true);
 
-    try {
-      // 构建历史消息
-      const history = messages
-        .filter(msg => msg.role === 'user' || msg.role === 'assistant')
-        .map(msg => ({
-          role: msg.role,
-          content: msg.content,
-        }));
+    // 构建历史消息
+    const history = messages
+      .filter(msg => msg.role === 'user' || msg.role === 'assistant')
+      .map(msg => ({
+        role: msg.role,
+        content: msg.content,
+      }));
 
-      // 调用API
-      const response = await sendMessage({
+    const startedAt = Date.now();
+
+    const controller = sendMessageStream(
+      {
         question: userMessage.content,
         subject_id: subjectId,
         model: selectedModel,
         history,
-      });
-
-      // 添加AI回复
-      const aiMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: response.answer,
-        timestamp: Date.now(),
-        sources: response.sources,
-        model: response.model,
-        latency: response.latency,
-      };
-
-      setMessages(prev => [...prev, aiMessage]);
-    } catch (error: any) {
-      console.error('发送消息失败:', error);
-      // 提取后端返回的具体错误信息
-      const errorMsg = error?.response?.data?.message 
-        || error?.response?.data?.detail 
-        || error?.message 
-        || '发送消息失败，请稍后重试';
-      message.error(errorMsg);
-      
-      // 添加错误消息
-      const errorMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: `⚠️ ${errorMsg}`,
-        timestamp: Date.now(),
-      };
-      setMessages(prev => [...prev, errorMessage]);
-    } finally {
-      setLoading(false);
-      // 问答完成后刷新检索状态标签（embedding 首次加载后应变为"混合检索已就绪"）
-      try {
-        const ready = await getReadyStatus();
-        applyRetrievalTag(ready);
-      } catch (e) {
-        /* 状态刷新失败不影响聊天 */
+      },
+      {
+        onStart: () => {
+          // 检索完成，开始生成；可更新为"正在生成"
+        },
+        onDelta: (content) => {
+          // 逐块追加到同一条AI消息，不重复创建
+          setMessages(prev =>
+            prev.map(m => (m.id === aiId ? { ...m, content: m.content + content } : m))
+          );
+        },
+        onDone: (ev) => {
+          const elapsed = ev.elapsed != null ? ev.elapsed : (Date.now() - startedAt) / 1000;
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === aiId
+                ? {
+                    ...m,
+                    sources: normalizeSources(ev.sources),
+                    model: ev.model,
+                    latency: elapsed,
+                    ttft: ev.ttft,
+                  }
+                : m
+            )
+          );
+          setLoading(false);
+          refreshStatus();
+        },
+        onError: (errMsg) => {
+          // 已生成的内容保留；空内容时显示错误提示
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === aiId
+                ? { ...m, content: m.content || `⚠️ ${errMsg}` }
+                : m
+            )
+          );
+          message.error(errMsg || '回答生成失败，请重试');
+          setLoading(false);
+          refreshStatus();
+        },
       }
+    );
+    abortRef.current = controller;
+  };
+
+  // 停止生成（保留已生成内容）
+  const handleStop = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+  };
+
+  // 问答完成后刷新检索状态标签
+  const refreshStatus = async () => {
+    try {
+      const ready = await getReadyStatus();
+      applyRetrievalTag(ready);
+    } catch (e) {
+      /* 状态刷新失败不影响聊天 */
     }
   };
 
@@ -244,36 +301,52 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
             {isUser ? (
               <Text style={{ color: '#fff', margin: 0 }}>{msg.content}</Text>
             ) : (
-              <div 
-                className="markdown-body"
-                dangerouslySetInnerHTML={renderMarkdown(msg.content)}
-                style={{
-                  background: 'transparent',
-                  color: '#333',
-                }}
-              />
+              msg.content ? (
+                <div
+                  className="markdown-body"
+                  dangerouslySetInnerHTML={renderMarkdown(msg.content)}
+                  style={{
+                    background: 'transparent',
+                    color: '#333',
+                  }}
+                />
+              ) : (
+                <Space size={8}>
+                  <Spin size="small" />
+                  <Text type="secondary" style={{ fontSize: '13px' }}>正在思考...</Text>
+                </Space>
+              )
             )}
             
-            {/* 显示引用来源 */}
+            {/* 显示引用来源（列表形式） */}
             {msg.sources && msg.sources.length > 0 && (
-              <div style={{ 
-                marginTop: '8px', 
-                padding: '8px', 
-                background: 'rgba(0,0,0,0.05)',
+              <div style={{
+                marginTop: '8px',
+                padding: '8px 10px',
+                background: 'rgba(0,0,0,0.04)',
                 borderRadius: '6px',
-                fontSize: '12px',
               }}>
-                <Text type="secondary" style={{ fontSize: '12px' }}>
-                  参考来源: {msg.sources.join(', ')}
+                <Text type="secondary" style={{ fontSize: '12px', fontWeight: 600 }}>
+                  参考来源（{msg.sources.length}）
                 </Text>
+                <div style={{ marginTop: '4px' }}>
+                  {msg.sources.map(s => (
+                    <div key={s.id} style={{ fontSize: '12px', lineHeight: '20px', color: '#666' }}>
+                      [{s.id}] {s.file_name || '未知来源'}
+                      {s.page != null ? ` · 第 ${s.page} 页` : ''}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
-            
+
             {/* 显示模型和延迟信息 */}
-            {msg.model && (
+            {(msg.model || msg.latency != null) && (
               <div style={{ marginTop: '4px' }}>
                 <Text type="secondary" style={{ fontSize: '11px' }}>
-                  模型: {msg.model} | 耗时: {msg.latency?.toFixed(2)}s
+                  {msg.model ? `模型: ${msg.model}` : ''}
+                  {msg.ttft != null ? ` | 首字响应: ${msg.ttft.toFixed(2)}s` : ''}
+                  {msg.latency != null ? ` | 总耗时: ${msg.latency.toFixed(2)}s` : ''}
                 </Text>
               </div>
             )}
@@ -343,14 +416,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
             style={{ background: 'transparent' }}
           />
         )}
-        {loading && (
-          <div style={{ padding: '12px 0', textAlign: 'left' }}>
-            <Space>
-              <Avatar icon={<RobotOutlined />} style={{ backgroundColor: '#52c41a' }} />
-              <Spin tip="AI思考中..." />
-            </Space>
-          </div>
-        )}
         <div ref={messagesEndRef} />
       </div>
 
@@ -389,16 +454,26 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
             disabled={loading}
             style={{ flex: 1 }}
           />
-          <Button
-            type="primary"
-            icon={<SendOutlined />}
-            onClick={handleSend}
-            loading={loading}
-            disabled={!inputValue.trim() || !subjectId}
-            style={{ height: 'auto' }}
-          >
-            发送
-          </Button>
+          {loading ? (
+            <Button
+              danger
+              icon={<StopOutlined />}
+              onClick={handleStop}
+              style={{ height: 'auto' }}
+            >
+              停止生成
+            </Button>
+          ) : (
+            <Button
+              type="primary"
+              icon={<SendOutlined />}
+              onClick={handleSend}
+              disabled={!inputValue.trim() || !subjectId}
+              style={{ height: 'auto' }}
+            >
+              发送
+            </Button>
+          )}
         </Space.Compact>
       </div>
     </div>

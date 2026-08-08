@@ -19,10 +19,18 @@ export interface ChatRequest {
   image_mime_type?: string; // 图片MIME类型
 }
 
+// 参考来源信息（与后端 extract_sources 对齐）
+export interface SourceInfo {
+  id: number;
+  file_name: string;
+  page?: number | null;
+  type?: string;
+}
+
 export interface ChatResponse {
   success: boolean;
   answer: string;
-  sources: string[];
+  sources: SourceInfo[];
   model: string;
   latency: number;
 }
@@ -95,9 +103,10 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: number;
-  sources?: string[];
+  sources?: SourceInfo[];
   model?: string;
   latency?: number;
+  ttft?: number | null;
   image_url?: string; // 图片URL（用于显示）
   image_data?: string; // base64编码的图片数据
 }
