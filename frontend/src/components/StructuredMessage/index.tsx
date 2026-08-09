@@ -33,8 +33,8 @@ const SmartNoteCard: React.FC<{ payload: any }> = ({ payload }) => {
   return (
     <div style={{ width: '100%' }}>
       <Title level={5} style={{ marginTop: 0, marginBottom: 12 }}>{payload.title}</Title>
-      <NoteSection icon={<BookOutlined style={{ color: '#1890ff' }} />} title="核心概念" content={payload.concept?.content} />
-      <NoteSection icon={<EditOutlined style={{ color: '#52c41a' }} />} title="典型例题" content={payload.example?.content} />
+      <NoteSection icon={<BookOutlined style={{ color: '#0f766e' }} />} title="核心概念" content={payload.concept?.content} />
+      <NoteSection icon={<EditOutlined style={{ color: '#059669' }} />} title="典型例题" content={payload.example?.content} />
       <NoteSection icon={<WarningOutlined style={{ color: '#faad14' }} />} title="易错点" content={payload.mistakes?.content} />
       <NoteSection icon={<BulbOutlined style={{ color: '#722ed1' }} />} title="课堂提示" content={payload.class_tips?.content} />
       <Divider style={{ margin: '12px 0' }} />
@@ -73,7 +73,7 @@ const SummaryCard: React.FC<{ payload: any }> = ({ payload }) => {
           renderItem={(p: any, idx) => (
             <List.Item>
               <Space align="start" size={8}>
-                <Tag color="blue">{idx + 1}</Tag>
+                <Tag color="cyan">{idx + 1}</Tag>
                 <div>
                   <Text strong>{p.title}</Text>
                   <div><Text type="secondary" style={{ fontSize: 13 }}>{p.description}</Text></div>

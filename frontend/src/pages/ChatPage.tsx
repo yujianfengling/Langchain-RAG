@@ -242,7 +242,11 @@ const ChatPage: React.FC = () => {
             subjectId={selectedSubject}
             subjects={subjects}
             conversationId={activeConvId || undefined}
-            onConversationCreated={setActiveConvId}
+            onConversationCreated={(id) => {
+              setActiveConvId(id);
+              // 新会话创建后立即刷新历史会话列表
+              loadConversations(selectedSubject);
+            }}
             onSubjectChange={setSelectedSubject}
           />
         </Content>

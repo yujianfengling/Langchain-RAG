@@ -146,7 +146,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onModelChange }) => {
             <Card
               hoverable
               style={{
-                border: currentModel?.provider === model.provider ? '2px solid #1890ff' : undefined,
+                border: currentModel?.provider === model.provider ? '2px solid #0f766e' : undefined,
               }}
             >
               <Space direction="vertical" style={{ width: '100%' }}>

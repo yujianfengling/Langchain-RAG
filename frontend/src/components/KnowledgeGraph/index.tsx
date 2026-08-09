@@ -156,83 +156,89 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadGraph, stopPolling]);
 
-  // 渲染图谱
+  // 渲染图谱（延迟初始化，避免打开详情页动画期间主线程被图表占用）
   useEffect(() => {
     if (!chartRef.current || !graph?.nodes?.length) return;
 
-    if (!chartInstance.current) {
-      chartInstance.current = echarts.init(chartRef.current);
-    }
+    // 等页面动画稳定后再初始化图表（400ms）
+    const timer = setTimeout(() => {
+      if (!chartRef.current) return;
 
-    const maxWeight = Math.max(...graph.nodes.map(n => n.weight || 1));
-    const minWeight = Math.min(...graph.nodes.map(n => n.weight || 1));
-
-    const option: echarts.EChartsOption = {
-      tooltip: {
-        trigger: 'item',
-        formatter: (params: any) => {
-          if (params.dataType === 'node') {
-            const n = params.data;
-            return `<b>${n.label}</b><br/>类型: ${n.type || '概念'}<br/>权重: ${(n.weight || 1).toFixed(1)}`;
-          }
-          if (params.dataType === 'edge') {
-            const e = params.data;
-            return `${e.source} —[${e.relation}]→ ${e.target}`;
-          }
-          return '';
-        },
-      },
-      animationDuration: 1500,
-      animationEasingUpdate: 'quinticInOut' as any,
-      series: [
-        {
-          type: 'graph' as const,
-          layout: 'force' as const,
-          roam: true,
-          draggable: true,
-          data: graph.nodes.map(n => ({
-            id: n.id,
-            name: n.label,
-            symbolSize: 20 + ((n.weight || 1) - minWeight) / (maxWeight - minWeight || 1) * 30,
-            itemStyle: {
-              color: TYPE_COLORS[n.type || '其他'] || TYPE_COLORS['其他'],
-            },
-            label: { show: true, fontSize: 11 },
-            value: n,
-          })) as any,
-          links: graph.edges.map(e => ({
-            source: e.source,
-            target: e.target,
-            label: { show: true, formatter: e.relation, fontSize: 9, color: '#888' },
-            lineStyle: { width: (e.weight || 1) * 1.5, curveness: 0.1 },
-          })) as any,
-          label: {
-            show: true,
-            position: 'bottom',
-            fontSize: 10,
-          },
-          force: {
-            repulsion: 150,
-            edgeLength: 120,
-          },
-          emphasis: {
-            focus: 'adjacency' as const,
-            lineStyle: { width: 4 },
-          },
-        },
-      ],
-    };
-
-    chartInstance.current.setOption(option, true);
-
-    // 点击节点显示详情
-    chartInstance.current.on('click', (params: any) => {
-      if (params.dataType === 'node') {
-        setSelectedNode(params.data.value);
+      if (!chartInstance.current) {
+        chartInstance.current = echarts.init(chartRef.current);
       }
-    });
+
+      const maxWeight = Math.max(...graph.nodes.map(n => n.weight || 1));
+      const minWeight = Math.min(...graph.nodes.map(n => n.weight || 1));
+
+      const option: echarts.EChartsOption = {
+        tooltip: {
+          trigger: 'item',
+          formatter: (params: any) => {
+            if (params.dataType === 'node') {
+              const n = params.data;
+              return `<b>${n.label}</b><br/>类型: ${n.type || '概念'}<br/>权重: ${(n.weight || 1).toFixed(1)}`;
+            }
+            if (params.dataType === 'edge') {
+              const e = params.data;
+              return `${e.source} —[${e.relation}]→ ${e.target}`;
+            }
+            return '';
+          },
+        },
+        animationDuration: 1500,
+        animationEasingUpdate: 'quinticInOut' as any,
+        series: [
+          {
+            type: 'graph' as const,
+            layout: 'force' as const,
+            roam: true,
+            draggable: true,
+            data: graph.nodes.map(n => ({
+              id: n.id,
+              name: n.label,
+              symbolSize: 20 + ((n.weight || 1) - minWeight) / (maxWeight - minWeight || 1) * 30,
+              itemStyle: {
+                color: TYPE_COLORS[n.type || '其他'] || TYPE_COLORS['其他'],
+              },
+              label: { show: true, fontSize: 11 },
+              value: n,
+            })) as any,
+            links: graph.edges.map(e => ({
+              source: e.source,
+              target: e.target,
+              label: { show: true, formatter: e.relation, fontSize: 9, color: '#888' },
+              lineStyle: { width: (e.weight || 1) * 1.5, curveness: 0.1 },
+            })) as any,
+            label: {
+              show: true,
+              position: 'bottom',
+              fontSize: 10,
+            },
+            force: {
+              repulsion: 150,
+              edgeLength: 120,
+            },
+            emphasis: {
+              focus: 'adjacency' as const,
+              lineStyle: { width: 4 },
+            },
+          },
+        ],
+      };
+
+      chartInstance.current.setOption(option, true);
+
+      // 点击节点显示详情
+      chartInstance.current.on('click', (params: any) => {
+        if (params.dataType === 'node') {
+          setSelectedNode(params.data.value);
+        }
+      });
+    }, 400);
 
     return () => {
+      clearTimeout(timer);
       chartInstance.current?.dispose();
       chartInstance.current = null;
     };

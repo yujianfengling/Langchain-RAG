@@ -18,7 +18,7 @@ const KnowledgePage: React.FC = () => {
         justifyContent: 'space-between',
       }}>
         <Space>
-          <DatabaseOutlined style={{ fontSize: '20px', color: '#1890ff' }} />
+          <DatabaseOutlined style={{ fontSize: '20px', color: '#0f766e' }} />
           <Title level={4} style={{ margin: 0 }}>
             知识库管理
           </Title>

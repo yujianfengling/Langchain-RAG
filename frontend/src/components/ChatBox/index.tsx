@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Input, Button, List, Avatar, Typography, Space, Spin, Select, Tag, message, Segmented, Switch, Tooltip } from 'antd';
+import { Input, Button, List, Avatar, Typography, Space, Spin, Select, Tag, message, Switch, Tooltip } from 'antd';
 import {
   SendOutlined, UserOutlined, RobotOutlined, StopOutlined,
   AudioOutlined, SoundOutlined, PauseOutlined,
@@ -7,6 +7,7 @@ import {
 import { ChatMessage, Subject, SourceInfo, ChatMode } from '../../types';
 import { sendMessageStream } from '../../api/chat';
 import { getReadyStatus } from '../../api/health';
+import { playSendSound, playReceiveSound } from '../../utils/sound';
 import { getConversationMessages, createConversation, ConversationMessage } from '../../api/conversations';
 import { transcribeAudio } from '../../api/audio';
 import { createRecorder } from '../../utils/recorder';
@@ -55,6 +56,16 @@ const MODE_OPTIONS: { label: string; value: ChatMode }[] = [
   { label: '学习建议', value: 'advice' },
 ];
 
+// 各学习模式颜色（统一 Slate 灰，保持整体低调统一）
+const MODE_COLORS: Record<ChatMode, string> = {
+  chat: '#475569',
+  smart_note: '#475569',
+  summary: '#475569',
+  explanation: '#475569',
+  quiz: '#475569',
+  advice: '#475569',
+};
+
 // 各学习模式动态 Placeholder（V2.5.1 统一交互）
 const MODE_PLACEHOLDERS: Record<ChatMode, string> = {
   chat: '输入你的问题，例如：什么是二叉树？',
@@ -76,6 +87,8 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
   const [retrievalTag, setRetrievalTag] = useState<{ color: string; text: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // 流式回复标记：回复期间屏蔽历史加载，避免覆盖本地消息
+  const streamingRef = useRef(false);
 
   // ===== 语音（V2.5.3 统一播放控制器）=====
   const [recording, setRecording] = useState(false);
@@ -258,6 +271,8 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
 
   // 点击历史会话恢复：从后端 SQLite 加载消息（不依赖 localStorage）
   useEffect(() => {
+    // 流式回复进行中不加载历史，避免覆盖本地正在显示的消息
+    if (streamingRef.current) return;
     let cancelled = false;
     if (!conversationId) {
       setMessages([]);
@@ -267,7 +282,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
       try {
         const res: any = await getConversationMessages(conversationId);
         const msgs = res?.data || [];
-        if (!cancelled) setMessages(msgs.map(backendMessageToChat));
+        if (!cancelled && !streamingRef.current) setMessages(msgs.map(backendMessageToChat));
       } catch (e) {
         if (!cancelled) message.error('加载历史消息失败');
       }
@@ -325,6 +340,9 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
     setMessages(prev => [...prev, userMessage, aiMessage]);
     setInputValue('');
     setLoading(true);
+    playSendSound();
+    // 标记流式回复开始（屏蔽历史加载覆盖）
+    streamingRef.current = true;
 
     const startedAt = Date.now();
 
@@ -341,31 +359,43 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
           // 检索完成，开始生成
         },
         onDelta: (content) => {
-          // 逐块追加到同一条AI消息，不重复创建
-          setMessages(prev =>
-            prev.map(m => (m.id === aiId ? { ...m, content: m.content + content } : m))
-          );
+          // 逐块追加到同一条AI消息；若被历史加载覆盖（找不到aiId），兜底补回
+          setMessages(prev => {
+            const exists = prev.some(m => m.id === aiId);
+            if (!exists) {
+              return [...prev, { ...aiMessage, content }];
+            }
+            return prev.map(m => (m.id === aiId ? { ...m, content: m.content + content } : m));
+          });
         },
         onDone: (ev) => {
           const elapsed = ev.elapsed != null ? ev.elapsed : (Date.now() - startedAt) / 1000;
           const finalContent = ev.full_answer || '';
-          setMessages(prev =>
-            prev.map(m =>
-              m.id === aiId
-                ? {
-                    ...m,
-                    content: finalContent,
-                    sources: mode === 'chat' ? normalizeSources(ev.sources) : undefined,
-                    model: ev.model,
-                    latency: elapsed,
-                    ttft: ev.ttft,
-                    message_type: ev.message_type,
-                    payload: ev.payload,
-                  }
-                : m
-            )
-          );
+          // 收到完整回复：柔和提示音
+          if (finalContent) {
+            playReceiveSound();
+          }
+          setMessages(prev => {
+            const exists = prev.some(m => m.id === aiId);
+            const updated: ChatMessage = {
+              ...aiMessage,
+              content: finalContent,
+              sources: mode === 'chat' ? normalizeSources(ev.sources) : undefined,
+              model: ev.model,
+              latency: elapsed,
+              ttft: ev.ttft,
+              message_type: ev.message_type,
+              payload: ev.payload,
+            };
+            if (!exists) {
+              // 历史加载覆盖了本地消息，兜底追加（避免回复"消失"）
+              return [...prev, updated];
+            }
+            return prev.map(m => (m.id === aiId ? updated : m));
+          });
           setLoading(false);
+          // 流式结束，恢复历史加载
+          streamingRef.current = false;
           refreshStatus();
           // 自动语音回复（V2.5.3：按 message_id 去重，仅 streaming→done 触发一次）
           if (autoVoice && mode === 'chat' && finalContent) {
@@ -373,16 +403,22 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
           }
         },
         onError: (errMsg) => {
-          // 已生成的内容保留；空内容时显示错误提示
-          setMessages(prev =>
-            prev.map(m =>
+          // 已生成的内容保留；空内容时显示错误提示（找不到aiId时兜底追加）
+          setMessages(prev => {
+            const exists = prev.some(m => m.id === aiId);
+            if (!exists) {
+              return [...prev, { ...aiMessage, content: `⚠️ ${errMsg}` }];
+            }
+            return prev.map(m =>
               m.id === aiId
                 ? { ...m, content: m.content || `⚠️ ${errMsg}` }
                 : m
-            )
-          );
+            );
+          });
           message.error(errMsg || '回答生成失败，请重试');
           setLoading(false);
+          // 流式结束（失败也恢复历史加载）
+          streamingRef.current = false;
           refreshStatus();
         },
       }
@@ -395,6 +431,8 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
     abortRef.current?.abort();
     abortRef.current = null;
     setLoading(false);
+    // 停止后恢复历史加载
+    streamingRef.current = false;
   };
 
   // 统一键盘交互（V2.5.1）：Enter 发送，Shift+Enter 换行，IME 候选不发送
@@ -434,28 +472,28 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
         padding: '12px 0',
         border: 'none',
       }}>
-        <MessageBubble delay={0}>
+        <MessageBubble delay={0} style={{ maxWidth: '80%' }}>
         <div style={{
           display: 'flex',
           alignItems: 'flex-start',
           gap: '12px',
-          maxWidth: '80%',
           flexDirection: isUser ? 'row-reverse' : 'row',
         }}>
           <Avatar
             icon={isUser ? <UserOutlined /> : <RobotOutlined />}
             style={{
-              backgroundColor: isUser ? '#1890ff' : '#52c41a',
+              backgroundColor: isUser ? '#0f766e' : '#059669',
               flexShrink: 0,
             }}
           />
 
           <div style={{
-            background: isUser ? '#1890ff' : '#f6f6f6',
+            background: isUser ? '#0f766e' : '#f6f6f6',
             color: isUser ? '#fff' : '#333',
             padding: isStructured ? '12px' : '12px 16px',
             borderRadius: '12px',
             maxWidth: '100%',
+            minWidth: 0,
             wordBreak: 'break-word',
           }}>
             {isUser ? (
@@ -620,12 +658,32 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
           marginBottom: '8px',
           flexWrap: 'wrap',
         }}>
-          <Segmented
-            size="small"
-            value={mode}
-            onChange={(v) => setMode(v as ChatMode)}
-            options={MODE_OPTIONS}
-          />
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {MODE_OPTIONS.map(opt => {
+              const active = mode === opt.value;
+              const color = MODE_COLORS[opt.value];
+              return (
+                <Tag
+                  key={opt.value}
+                  onClick={() => setMode(opt.value)}
+                  style={{
+                    cursor: 'pointer',
+                    marginInlineEnd: 0,
+                    padding: '2px 10px',
+                    borderRadius: 6,
+                    fontSize: 12,
+                    fontWeight: active ? 600 : 450,
+                    border: active ? `1px solid ${color}` : '1px solid #d1d5db',
+                    background: active ? color : '#ffffff',
+                    color: active ? '#ffffff' : '#475569',
+                    transition: 'all 0.15s cubic-bezier(0.16, 1, 0.3, 1)',
+                  }}
+                >
+                  {opt.label}
+                </Tag>
+              );
+            })}
+          </div>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
             <Text type="secondary" style={{ fontSize: '12px' }}>当前模型:</Text>
             <Select
@@ -699,9 +757,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
         <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
           <Switch size="small" checked={autoVoice} onChange={setAutoVoice} />
           <Text type="secondary" style={{ fontSize: 12 }}>自动语音回复</Text>
-          <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-            回答完成后自动朗读（关闭时点消息旁的🔊播放）
-          </Text>
         </div>
       </div>
     </div>

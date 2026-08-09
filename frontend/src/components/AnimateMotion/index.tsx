@@ -8,8 +8,8 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-// ============ 弹簧物理配置 ============
-const spring = { type: 'spring' as const, stiffness: 100, damping: 20 };
+// ============ 弹簧物理配置（快速响应） ============
+const spring = { type: 'spring' as const, stiffness: 200, damping: 24 };
 
 // ============ 页面切换 ============
 export const AnimatedPage: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className }) => (
@@ -18,29 +18,30 @@ export const AnimatedPage: React.FC<{ children: React.ReactNode; className?: str
     initial={{ opacity: 0, y: 8 }}
     animate={{ opacity: 1, y: 0 }}
     exit={{ opacity: 0, y: -6 }}
-    transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+    transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
   >
     {children}
   </motion.div>
 );
 
-// ============ 聊天气泡弹入（教育风格：柔和、温暖） ============
-export const MessageBubble: React.FC<{ children: React.ReactNode; delay?: number }> = ({ children, delay = 0 }) => (
+// ============ 聊天气泡弹入（快速柔和） ============
+export const MessageBubble: React.FC<{ children: React.ReactNode; delay?: number; style?: React.CSSProperties }> = ({ children, delay = 0, style }) => (
   <motion.div
-    initial={{ opacity: 0, y: 16, scale: 0.97 }}
+    initial={{ opacity: 0, y: 10, scale: 0.98 }}
     animate={{ opacity: 1, y: 0, scale: 1 }}
     transition={{ 
       type: 'spring', 
-      stiffness: 120, 
-      damping: 18, 
+      stiffness: 220, 
+      damping: 26, 
       delay,
     }}
+    style={{ minWidth: 0, maxWidth: '100%', ...style }}
   >
     {children}
   </motion.div>
 );
 
-// ============ 列表入场级联（知识库、学习计划） ============
+// ============ 列表入场级联（快速） ============
 export const StaggerList: React.FC<{ children: React.ReactNode; className?: string }> = ({ children, className }) => (
   <motion.div
     className={className}
@@ -48,7 +49,7 @@ export const StaggerList: React.FC<{ children: React.ReactNode; className?: stri
     animate="visible"
     variants={{
       hidden: {},
-      visible: { transition: { staggerChildren: 0.05 } },
+      visible: { transition: { staggerChildren: 0.04 } },
     }}
   >
     {children}
@@ -59,15 +60,15 @@ export const StaggerItem: React.FC<{ children: React.ReactNode; className?: stri
   <motion.div
     className={className}
     variants={{
-      hidden: { opacity: 0, y: 12 },
-      visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: [0.16, 1, 0.3, 1] } },
+      hidden: { opacity: 0, y: 10 },
+      visible: { opacity: 1, y: 0, transition: { duration: 0.2, ease: [0.16, 1, 0.3, 1] } },
     }}
   >
     {children}
   </motion.div>
 );
 
-// ============ 骨架屏加载（专业感） ============
+// ============ 骨架屏加载 ============
 export const SkeletonCard: React.FC<{ width?: string; height?: number }> = ({ width = '100%', height = 80 }) => (
   <motion.div
     style={{
@@ -78,7 +79,7 @@ export const SkeletonCard: React.FC<{ width?: string; height?: number }> = ({ wi
       backgroundSize: '200% 100%',
     }}
     animate={{ backgroundPosition: ['200% 0', '-200% 0'] }}
-    transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
+    transition={{ duration: 1.0, repeat: Infinity, ease: 'linear' }}
   />
 );
 

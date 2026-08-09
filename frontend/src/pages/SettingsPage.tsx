@@ -16,7 +16,7 @@ const SettingsPage: React.FC = () => {
         alignItems: 'center',
       }}>
         <Space>
-          <SettingOutlined style={{ fontSize: '20px', color: '#1890ff' }} />
+          <SettingOutlined style={{ fontSize: '20px', color: '#0f766e' }} />
           <Title level={4} style={{ margin: 0 }}>
             系统设置
           </Title>

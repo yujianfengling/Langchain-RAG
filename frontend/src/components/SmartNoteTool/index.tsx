@@ -29,7 +29,7 @@ export const QuizList: React.FC<{ quizzes: QuizItem[] }> = ({ quizzes }) => {
           <List.Item>
             <div style={{ width: '100%' }}>
               <div style={{ marginBottom: 8 }}>
-                <Tag color={q.type === 'single_choice' ? 'blue' : q.type === 'judgement' ? 'green' : 'orange'}>
+                <Tag color={q.type === 'single_choice' ? 'cyan' : q.type === 'judgement' ? 'green' : 'orange'}>
                   {q.type === 'single_choice' ? '单选题' : q.type === 'judgement' ? '判断题' : '简答题'}
                 </Tag>
                 <Text strong>
@@ -204,8 +204,8 @@ const SmartNoteTool: React.FC = () => {
           </Text>
 
           <div style={{ marginTop: 16 }}>
-            {renderSection(<BookOutlined style={{ color: '#1890ff' }} />, '核心概念', note.concept.content, note.concept.sources)}
-            {renderSection(<EditOutlined style={{ color: '#52c41a' }} />, '典型例题', note.example.content, note.example.sources)}
+            {renderSection(<BookOutlined style={{ color: '#0f766e' }} />, '核心概念', note.concept.content, note.concept.sources)}
+            {renderSection(<EditOutlined style={{ color: '#059669' }} />, '典型例题', note.example.content, note.example.sources)}
             {renderSection(<WarningOutlined style={{ color: '#faad14' }} />, '易错点', note.mistakes.content, note.mistakes.sources)}
             {renderSection(<BulbOutlined style={{ color: '#722ed1' }} />, '课堂提示', note.class_tips.content, note.class_tips.sources)}
           </div>

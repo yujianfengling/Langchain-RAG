@@ -19,7 +19,7 @@ const { Title, Paragraph, Text } = Typography;
 
 // 任务类型标签映射
 const TASK_TYPE_META: Record<TaskType, { color: string; label: string }> = {
-  READ: { color: 'blue', label: '阅读' },
+  READ: { color: 'cyan', label: '阅读' },
   REVIEW: { color: 'purple', label: '复习' },
   QUIZ: { color: 'green', label: '自测' },
   PRACTICE: { color: 'orange', label: '练习' },
@@ -252,9 +252,9 @@ const LearningPlanPage: React.FC = () => {
         plans.map((plan, index) => (
           <motion.div
             key={plan.id}
-            initial={{ opacity: 0, y: 16 }}
+            initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: Math.min(index * 0.08, 0.6), duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ delay: Math.min(index * 0.04, 0.4), duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
           >
             {renderPlan(plan)}
           </motion.div>

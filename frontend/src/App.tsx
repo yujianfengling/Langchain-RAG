@@ -44,6 +44,8 @@ const App: React.FC = () => {
         token: {
           colorPrimary: '#0f766e',
           colorPrimaryBg: '#f0fdfa',
+          colorLink: '#0f766e',
+          colorLinkHover: '#0d9488',
           colorSuccess: '#059669',
           colorWarning: '#d97706',
           colorError: '#dc2626',
@@ -85,7 +87,7 @@ const App: React.FC = () => {
         <motion.div
           initial={{ x: -60, opacity: 0 }}
           animate={{ x: 0, opacity: 1 }}
-          transition={{ type: 'spring', stiffness: 100, damping: 20 }}
+          transition={{ type: 'spring', stiffness: 180, damping: 22 }}
           style={{ display: 'flex', flexDirection: 'column', width: 220, flexShrink: 0 }}
         >
           <Sider
@@ -108,7 +110,7 @@ const App: React.FC = () => {
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1, type: 'spring', stiffness: 100, damping: 20 }}
+              transition={{ delay: 0.05, type: 'spring', stiffness: 180, damping: 22 }}
               style={{
                 padding: '20px 20px 16px',
                 borderBottom: '1px solid #f1f5f9',
@@ -118,7 +120,7 @@ const App: React.FC = () => {
                 <motion.div
                   whileHover={{ scale: 1.08, rotate: 5 }}
                   whileTap={{ scale: 0.92 }}
-                  transition={{ type: 'spring', stiffness: 200, damping: 15 }}
+                  transition={{ type: 'spring', stiffness: 260, damping: 18 }}
                   style={{
                     width: 38,
                     height: 38,
@@ -196,13 +198,13 @@ const App: React.FC = () => {
         <div style={{ flex: 1, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
           {/* 页面内容 */}
           <div style={{ flex: 1, overflow: 'hidden' }}>
-            <AnimatePresence mode="wait">
+            <AnimatePresence mode="sync">
               <motion.div
                 key={location.pathname}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -6 }}
-                transition={{ type: 'spring', stiffness: 100, damping: 20 }}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.12 }}
                 style={{ height: '100%' }}
               >
                 <Routes location={location}>

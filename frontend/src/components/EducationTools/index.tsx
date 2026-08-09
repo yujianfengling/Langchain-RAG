@@ -153,7 +153,7 @@ const EducationTools: React.FC = () => {
                   <List.Item.Meta
                     title={
                       <Space>
-                        <Tag color="blue">{point.id}</Tag>
+                        <Tag color="cyan">{point.id}</Tag>
                         <Text strong>{point.title}</Text>
                       </Space>
                     }

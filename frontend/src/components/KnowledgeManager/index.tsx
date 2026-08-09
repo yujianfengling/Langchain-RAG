@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Card,
   Row,
@@ -31,6 +31,8 @@ import {
 } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
 import KnowledgeGraph from '../KnowledgeGraph';
+import { SkeletonCard } from '../AnimateMotion';
+import { playOpenSound, playCloseSound, playSuccessSound, playTapSound } from '../../utils/sound';
 import { KnowledgeBase, Subject } from '../../types';
 import { getSubjects, createSubject, deleteSubject } from '../../api/subjects';
 import {
@@ -84,7 +86,11 @@ const SubjectDetailView: React.FC<{
   }, [subjectId]);
 
   useEffect(() => {
-    loadData();
+    // 等展开动画完全结束（450ms）后再加载数据，避免动画期间主线程被数据请求占用
+    const timer = setTimeout(() => {
+      loadData();
+    }, 450);
+    return () => clearTimeout(timer);
   }, [loadData]);
 
   // 上传文件
@@ -128,25 +134,17 @@ const SubjectDetailView: React.FC<{
     }
   };
 
-  // 查看文档（PDF用iframe弹窗预览，其他格式下载）
+  // 查看文档（统一弹窗预览）
   const [previewDoc, setPreviewDoc] = useState<{ name: string; url: string } | null>(null);
 
   const handleViewDocument = (filename: string) => {
-    // 严格编码文件名（含括号等特殊字符）
     const encodedFilename = encodeURIComponent(filename)
       .replace(/\(/g, '%28')
       .replace(/\)/g, '%29');
     const encodedSubject = encodeURIComponent(subjectId);
-    // 直接访问后端8000端口，绕过Vite代理，避免代理对二进制文件的兼容性问题
     const url = `http://localhost:8000/api/knowledge/${encodedSubject}/documents/${encodedFilename}/file`;
-    
-    // PDF/图片：弹窗预览；Word/TXT：新标签页
-    const lower = filename.toLowerCase();
-    if (lower.endsWith('.pdf') || lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.webp')) {
-      setPreviewDoc({ name: filename, url });
-    } else {
-      window.open(url, '_blank');
-    }
+    // 所有文档统一走弹窗预览
+    setPreviewDoc({ name: filename, url });
   };
 
   // 构建知识库（独立操作，不再自动生成知识图谱；图谱由用户单独点击生成）
@@ -160,6 +158,7 @@ const SubjectDetailView: React.FC<{
     try {
       await rebuildKnowledge(subjectId);
       message.success('知识库构建成功');
+      playSuccessSound();
       loadData();
       onRefresh();
     } catch (error: any) {
@@ -181,7 +180,7 @@ const SubjectDetailView: React.FC<{
     <div>
       {/* 顶部导航 */}
       <div style={{ marginBottom: 16 }}>
-        <Button type="link" onClick={onBack} style={{ padding: 0 }}>
+        <Button type="link" onClick={() => { playCloseSound(); onBack(); }} style={{ padding: 0 }}>
           ← 返回学科列表
         </Button>
       </div>
@@ -200,9 +199,13 @@ const SubjectDetailView: React.FC<{
           </Col>
           <Col>
             <Space>
+              {loading ? (
+                <Tag color="default">加载中...</Tag>
+              ) : (
               <Tag color={stats?.status === 'ready' ? 'success' : stats?.status === 'building' ? 'processing' : stats?.status === 'failed' ? 'error' : 'default'}>
                 {stats?.status === 'ready' ? '已构建' : stats?.status === 'building' ? '构建中' : stats?.status === 'failed' ? '构建失败' : '未构建'}
               </Tag>
+              )}
             </Space>
           </Col>
         </Row>
@@ -272,7 +275,15 @@ const SubjectDetailView: React.FC<{
           </Space>
         }
       >
-        {documents.length === 0 ? (
+        {loading ? (
+          <div style={{ padding: '16px 0' }}>
+            <SkeletonCard height={48} />
+            <div style={{ height: 10 }} />
+            <SkeletonCard height={48} />
+            <div style={{ height: 10 }} />
+            <SkeletonCard height={48} />
+          </div>
+        ) : documents.length === 0 ? (
           <Empty description="暂无文档，请上传文件" />
         ) : (
           <List
@@ -280,16 +291,16 @@ const SubjectDetailView: React.FC<{
             dataSource={documents}
             renderItem={(doc: any, index: number) => (
               <motion.div
-                initial={{ opacity: 0, y: 12 }}
+                initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: Math.min(index * 0.05, 0.5), duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+                transition={{ delay: Math.min(index * 0.03, 0.3), duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
               >
               <List.Item
                 actions={[
                   <Button
                     type="link"
                     icon={<EyeOutlined />}
-                    onClick={() => handleViewDocument(doc.name)}
+                    onClick={() => { playTapSound(); handleViewDocument(doc.name); }}
                   >
                     查看
                   </Button>,
@@ -302,7 +313,7 @@ const SubjectDetailView: React.FC<{
                 ]}
               >
                 <List.Item.Meta
-                  avatar={<FileTextOutlined style={{ fontSize: 24, color: '#1890ff' }} />}
+                  avatar={<FileTextOutlined style={{ fontSize: 24, color: '#0f766e' }} />}
                   title={doc.name}
                   description={
                     <Space>
@@ -427,13 +438,28 @@ const KnowledgeManager: React.FC = () => {
   };
 
   // 如果选中了学科，显示详情视图
+  // 苹果风格果冻动画：展开/返回完全对称镜像
   if (selectedSubject) {
     return (
-      <SubjectDetailView
-        subject={selectedSubject}
-        onBack={() => setSelectedSubject(null)}
-        onRefresh={loadData}
-      />
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={selectedSubject.subject_id}
+          layoutId={`subject-${selectedSubject.subject_id}`}
+          style={{ borderRadius: 14, overflow: 'hidden', height: '100%', willChange: 'transform, opacity' }}
+          // 展开：纯 transform 放大（GPU加速不掉帧）
+          initial={{ opacity: 0, scale: 0.85, y: 16 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          // 返回：layoutId 缩回卡片（保留现有果冻效果）
+          exit={{ opacity: 0 }}
+          transition={{ layout: { type: 'spring', stiffness: 320, damping: 24 }, opacity: { duration: 0.12 }, scale: { duration: 0.2, ease: [0.22, 1, 0.36, 1] }, y: { duration: 0.2, ease: [0.22, 1, 0.36, 1] } }}
+        >
+          <SubjectDetailView
+            subject={selectedSubject}
+            onBack={() => setSelectedSubject(null)}
+            onRefresh={loadData}
+          />
+        </motion.div>
+      </AnimatePresence>
     );
   }
 
@@ -457,6 +483,7 @@ const KnowledgeManager: React.FC = () => {
       </div>
 
       {/* 学科列表 */}
+      <AnimatePresence mode="wait">
       {loading ? (
         <div style={{ textAlign: 'center', padding: '50px 0' }}>
           <Spin size="large" tip="加载中..." />
@@ -478,9 +505,16 @@ const KnowledgeManager: React.FC = () => {
             const status = getSubjectKBStatus(subject.subject_id);
             return (
               <Col xs={24} sm={12} lg={8} key={subject.subject_id}>
+                <motion.div
+                  layoutId={`subject-${subject.subject_id}`}
+                  style={{ borderRadius: 12, willChange: 'transform' }}
+                  whileHover={{ y: -5, boxShadow: '0 8px 24px rgba(0,0,0,0.08)' }}
+                  whileTap={{ scale: 0.98 }}
+                  transition={{ type: 'spring', stiffness: 260, damping: 20 }}
+                >
                 <Card
                   hoverable
-                  onClick={() => setSelectedSubject(subject)}
+                  onClick={() => { playOpenSound(); setSelectedSubject(subject); }}
                   actions={[
                     <Popconfirm
                       title="确定删除此学科？"
@@ -503,7 +537,7 @@ const KnowledgeManager: React.FC = () => {
                   ]}
                 >
                   <Card.Meta
-                    avatar={<CloudServerOutlined style={{ fontSize: 32, color: '#1890ff' }} />}
+                    avatar={<CloudServerOutlined style={{ fontSize: 32, color: '#0f766e' }} />}
                     title={
                       <Space>
                         {subject.name}
@@ -522,11 +556,13 @@ const KnowledgeManager: React.FC = () => {
                     }
                   />
                 </Card>
+                </motion.div>
               </Col>
             );
           })}
         </Row>
       )}
+      </AnimatePresence>
 
       {/* 创建学科弹窗 */}
       <Modal
