@@ -162,6 +162,100 @@ def _normalize_quiz(raw: Any, knowledge_point: str) -> List[Dict[str, Any]]:
     return quizzes
 
 
+def generate_quiz(
+    subject_id: str,
+    topic: str,
+    model: Optional[str] = None,
+    top_k: int = 6,
+    count: int = 5,
+) -> Dict[str, Any]:
+    """
+    生成自测题（V2.5.1 Chat 自测模式）
+
+    基于 RAG 证据生成自测题，复用 note_service 的 quiz 规范化逻辑。
+
+    Args:
+        subject_id: 学科ID
+        topic: 知识点主题（如"二叉树"）
+        model: 模型名（可选）
+        top_k: RAG 检索数量
+        count: 题目数量
+
+    Returns:
+        {"quiz": [...], "model": str, "context_used": bool, "evidence_count": int}
+
+    Raises:
+        NoteServiceError
+        KBError: 学科不存在 / 知识库未构建
+    """
+    try:
+        # 知识库就绪守卫
+        require_kb_ready(subject_id)
+
+        # RAG 检索证据
+        ctx = retrieve_and_build_context(topic, subject_id, top_k=top_k)
+        context = ctx.get("context", "")
+        sources = ctx.get("sources", [])
+        context_used = ctx.get("context_used", False)
+
+        if not context_used or not context:
+            # 无证据降级：不编造题目
+            logger.info(f"自测题证据不足（subject={subject_id}, topic={topic}）")
+            return {"quiz": [], "model": "", "context_used": False, "evidence_count": 0}
+
+        prompt = f"""你是一名教育自测题生成助手。请基于【知识库证据】生成自测题。
+
+## 知识点主题
+{topic}
+
+## 知识库证据（仅依据以下内容，不得编造）
+{context[:10000]}
+
+## 输出要求（严格 JSON，不要输出任何其他内容）
+{{
+  "quiz": [
+    {{
+      "question": "题干",
+      "type": "single_choice | judgement | short_answer",
+      "options": ["A...", "B...", "C...", "D..."],
+      "answer": "答案",
+      "explanation": "解析（基于证据）",
+      "knowledge_point": "知识点"
+    }}
+  ]
+}}
+
+## 规则
+1. 生成 {count} 道题，覆盖 single_choice / judgement / short_answer 至少两种。
+2. 每道题必须能独立回答，explanation 基于知识库证据。
+3. 不得编造知识库中没有的概念。
+"""
+        answer = call_llm(prompt, system_message="你是智慧教育自测题助手。", model=model)
+
+        raw = _parse_note_json(answer)
+        if not raw:
+            raise NoteServiceError("自测题生成失败：模型输出无法解析为结构化内容",
+                                   error_type="structured_output_error")
+
+        quiz = _normalize_quiz(raw.get("quiz"), topic)
+        return {
+            "quiz": quiz,
+            "model": "",
+            "context_used": True,
+            "evidence_count": len(sources),
+        }
+
+    except KBError:
+        raise
+    except AIServiceError as e:
+        raise NoteServiceError("AI生成服务暂时不可用，请稍后重试", error_type="model_api_error")
+    except NoteServiceError:
+        raise
+    except Exception as e:
+        logger.error(f"自测题异常: {e}", exc_info=True)
+        raise NoteServiceError("自测题生成失败", error_type="unknown")
+
+
 def generate_smart_note(
     subject_id: str,
     topic: str,

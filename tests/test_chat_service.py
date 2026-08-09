@@ -85,7 +85,7 @@ class TestChatService(unittest.TestCase):
         # 应该只有一个错误事件
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["type"], "error")
-        self.assertIn("问题不能为空", events[0]["error"])
+        self.assertIn("问题不能为空", events[0].get("message", events[0].get("error", "")))
     
     def test_quick_chat_empty_question(self):
         """

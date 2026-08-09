@@ -2,6 +2,7 @@
 # 教育功能接口路由
 
 from fastapi import APIRouter, HTTPException
+from starlette.concurrency import run_in_threadpool
 
 from api.schemas.knowledge_schema import (
     EducationSummaryRequest,
@@ -30,9 +31,10 @@ async def get_summary(request: EducationSummaryRequest):
     try:
         if not request.text or not request.text.strip():
             raise ValidationError("文本内容不能为空")
-        
-        result = generate_summary(text=request.text)
-        
+
+        # V2.5.2：同步 LLM 调用移出事件循环
+        result = await run_in_threadpool(generate_summary, text=request.text)
+
         return SuccessResponse(
             data={
                 "key_points": result["key_points"],
@@ -55,9 +57,10 @@ async def get_explanation(request: EducationExplainRequest):
     try:
         if not request.question or not request.question.strip():
             raise ValidationError("题目内容不能为空")
-        
-        result = generate_explanation(question=request.question)
-        
+
+        # V2.5.2：同步 LLM 调用移出事件循环
+        result = await run_in_threadpool(generate_explanation, question=request.question)
+
         return SuccessResponse(
             data={
                 "question": result["question"],
@@ -78,8 +81,9 @@ async def get_advice(request: EducationAdviceRequest):
     - **history**: 问题历史列表（可选）
     """
     try:
-        result = generate_advice(history=request.history)
-        
+        # V2.5.2：同步 LLM 调用移出事件循环
+        result = await run_in_threadpool(generate_advice, history=request.history)
+
         return SuccessResponse(
             data={
                 "advice": result["advice"],

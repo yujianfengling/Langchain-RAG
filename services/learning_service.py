@@ -89,6 +89,8 @@ def _get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # V2.5.2：并发写等待（默认5s），避免 database is locked
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 

@@ -28,6 +28,20 @@ MODEL_CONFIG = {
         "api_key": "",
         "model_name": os.getenv("DASHSCOPE_MODEL", "qwen-plus"),
     },
+    "mimo-asr": {
+        "name": "小米MiMo语音识别",
+        "base_url": os.getenv("MIMO_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1"),
+        "api_key": "",
+        "model_name": os.getenv("MIMO_ASR_MODEL", "mimo-v2.5-asr"),
+    },
+    "mimo-tts": {
+        "name": "小米MiMo语音合成",
+        "base_url": os.getenv("MIMO_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1"),
+        "api_key": "",
+        "model_name": os.getenv("MIMO_TTS_MODEL", "mimo-v2.5-tts"),
+        # 预置音色（第一版不支持 voiceclone/voicedesign，但结构可扩展）
+        "voices": os.getenv("MIMO_TTS_VOICES", "").split(",") if os.getenv("MIMO_TTS_VOICES") else [],
+    },
     "qwen-vision": {
         "name": "通义千问视觉",
         "base_url": os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
@@ -44,6 +58,8 @@ ENV_VAR_MAPPING = {
     "qwen": "DASHSCOPE_API_KEY",
     "qwen-vision": "DASHSCOPE_API_KEY",
     "mimo-vision": "MIMO_API_KEY",  # 已弃用
+    "mimo-asr": "MIMO_API_KEY",     # ASR 复用 MiMo API Key
+    "mimo-tts": "MIMO_API_KEY",     # TTS 复用 MiMo API Key
 }
 
 # 内置默认API密钥（团队共享，clone后无需配置.env即可运行）
@@ -54,6 +70,8 @@ _BUILTIN_API_KEYS = {
     "qwen": "",
     "qwen-vision": "",
     "mimo-vision": "tp-c59wovslcca0jbzoie3b5w96qghcsj2s8mpsveyaxr7sfrt8",
+    "mimo-asr": "tp-c59wovslcca0jbzoie3b5w96qghcsj2s8mpsveyaxr7sfrt8",
+    "mimo-tts": "tp-c59wovslcca0jbzoie3b5w96qghcsj2s8mpsveyaxr7sfrt8",
 }
 
 

@@ -12,6 +12,9 @@ from starlette.responses import Response
 
 logger = logging.getLogger("api.middleware")
 
+# 慢请求阈值（毫秒）：超过则输出诊断日志（V2.5.2）
+SLOW_REQUEST_THRESHOLD_MS = 2000
+
 
 def generate_request_id() -> str:
     """生成短UUID作为request_id"""
@@ -70,11 +73,18 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         
         # 计算耗时
         duration_ms = round((time.time() - start_time) * 1000, 2)
-        
+
         # 记录请求完成日志
         log_context["status_code"] = response.status_code
         log_context["duration_ms"] = duration_ms
-        
+
+        # V2.5.2：慢请求诊断（>2s），便于发现新的阻塞点（不记录用户内容）
+        if duration_ms > SLOW_REQUEST_THRESHOLD_MS:
+            logger.warning(
+                f"Slow request: route={request.url.path} "
+                f"duration={duration_ms:.0f}ms status={response.status_code} "
+                f"request_id={request_id}")
+
         # 根据状态码选择日志级别
         if response.status_code >= 500:
             logger.error("Request completed", extra={"request_context": log_context})

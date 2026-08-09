@@ -5,6 +5,7 @@ import logging
 import os
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from api.schemas.knowledge_schema import (
     KnowledgeBuildRequest,
@@ -56,11 +57,13 @@ async def build_knowledge(request: KnowledgeBuildRequest):
     - **path**: 知识库源文件目录路径
     """
     try:
-        result = build_subject_knowledge(
+        # V2.5.2：构建知识库为同步重操作（embedding），移出事件循环
+        result = await run_in_threadpool(
+            build_subject_knowledge,
             subject_id=request.subject_id,
             source_path=request.path,
         )
-        
+
         return SuccessResponse(
             data={
                 "subject_id": result["subject_id"],
@@ -244,8 +247,9 @@ async def rebuild_knowledge(subject_id: str):
     - **subject_id**: 学科ID
     """
     try:
-        result = rebuild_subject_knowledge(subject_id=subject_id)
-        
+        # V2.5.2：重建为同步重操作，移出事件循环
+        result = await run_in_threadpool(rebuild_subject_knowledge, subject_id=subject_id)
+
         return SuccessResponse(
             data={
                 "subject_id": result["subject_id"],
@@ -272,15 +276,22 @@ async def get_knowledge_graph(subject_id: str, node: str = None, depth: int = 1)
     - **node**: 起始节点（可选，None返回全部）
     - **depth**: 展开深度（默认1）
     """
+    def _load_and_query(sid, _node, _depth):
+        """加载图谱 + 查询（同步，移入线程池）"""
+        from rag.knowledge_graph import load_knowledge_graph, query_graph
+        existing = load_knowledge_graph(sid)
+        if existing is None:
+            return None, None
+        return existing, query_graph(sid, node=_node, depth=_depth)
+
     try:
-        from rag.knowledge_graph import load_knowledge_graph, query_graph, build_knowledge_graph
-        
-        # 检查图谱是否存在
-        existing = load_knowledge_graph(subject_id)
+        # V2.5.2：图谱加载/查询为同步文件+图遍历，移出事件循环
+        existing, result = await run_in_threadpool(
+            _load_and_query, subject_id, node, depth)
+
         if existing is None:
             raise KnowledgeBaseNotFoundError(subject_id)
-        
-        result = query_graph(subject_id, node=node, depth=depth)
+
         return SuccessResponse(
             data=result,
             message="获取知识图谱成功",

@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import settings, APP_VERSION
-from api.routes import chat, knowledge, subjects, models, education, notes, learning
+from api.routes import chat, knowledge, subjects, models, education, notes, learning, conversations, audio
 from api.middleware import RequestIDMiddleware, get_request_id
 from api.exceptions import (
     APIException,
@@ -54,6 +54,8 @@ app.include_router(models.router, prefix="/api", tags=["模型"])
 app.include_router(education.router, prefix="/api", tags=["教育"])
 app.include_router(notes.router, prefix="/api", tags=["智能笔记"])
 app.include_router(learning.router, prefix="/api", tags=["学习计划"])
+app.include_router(conversations.router, prefix="/api", tags=["对话"])
+app.include_router(audio.router, prefix="/api", tags=["语音"])
 
 
 # ============ 全局异常处理（统一返回格式，带request_id） ============

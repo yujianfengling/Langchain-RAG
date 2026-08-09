@@ -15,13 +15,14 @@ class EducationServiceError(Exception):
     pass
 
 
-def generate_summary(text: str) -> Dict[str, Any]:
+def generate_summary(text: str, model: str = None) -> Dict[str, Any]:
     """
     生成知识点总结
-    
+
     Args:
         text: 输入文本
-        
+        model: 模型名（可选，V2.5.1 支持 Chat 模式透传）
+
     Returns:
         总结结果字典，包含知识点列表
     """
@@ -49,9 +50,10 @@ def generate_summary(text: str) -> Dict[str, Any]:
         system_message = "你是一名专业的教育助手，擅长从文本中提取关键知识点。请用中文回答。"
         result = call_llm(
             prompt=prompt,
-            system_message=system_message
+            system_message=system_message,
+            model=model,
         )
-        
+
         # 尝试解析JSON
         try:
             # 提取JSON部分
@@ -90,13 +92,14 @@ def generate_summary(text: str) -> Dict[str, Any]:
         raise EducationServiceError(f"生成知识点总结失败: {str(e)}")
 
 
-def generate_explanation(question: str) -> Dict[str, Any]:
+def generate_explanation(question: str, model: str = None) -> Dict[str, Any]:
     """
     生成题目解析
-    
+
     Args:
         question: 题目内容
-        
+        model: 模型名（可选，V2.5.1 支持 Chat 模式透传）
+
     Returns:
         解析结果字典，包含步骤解析
     """
@@ -128,9 +131,10 @@ def generate_explanation(question: str) -> Dict[str, Any]:
         system_message = "你是一名专业的教育助手，擅长题目解析和解答。请用中文回答。"
         result = call_llm(
             prompt=prompt,
-            system_message=system_message
+            system_message=system_message,
+            model=model,
         )
-        
+
         return {
             "success": True,
             "question": question,
@@ -145,13 +149,14 @@ def generate_explanation(question: str) -> Dict[str, Any]:
         raise EducationServiceError(f"生成题目解析失败: {str(e)}")
 
 
-def generate_advice(history: List[Dict[str, Any]] = None) -> Dict[str, Any]:
+def generate_advice(history: List[Dict[str, Any]] = None, model: str = None) -> Dict[str, Any]:
     """
     生成学习建议
-    
+
     Args:
         history: 问题历史列表
-        
+        model: 模型名（可选，V2.5.1 支持 Chat 模式透传）
+
     Returns:
         学习建议字典
     """
@@ -187,9 +192,10 @@ def generate_advice(history: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         system_message = "你是一名专业的教育顾问，擅长根据学生的学习情况提供个性化建议。请用中文回答。"
         result = call_llm(
             prompt=prompt,
-            system_message=system_message
+            system_message=system_message,
+            model=model,
         )
-        
+
         return {
             "success": True,
             "advice": result,

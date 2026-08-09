@@ -1,10 +1,18 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Input, Button, List, Avatar, Typography, Space, Spin, Select, Tag, message } from 'antd';
-import { SendOutlined, UserOutlined, RobotOutlined, StopOutlined } from '@ant-design/icons';
-import { ChatMessage, Subject, SourceInfo } from '../../types';
+import { Input, Button, List, Avatar, Typography, Space, Spin, Select, Tag, message, Segmented, Switch, Tooltip } from 'antd';
+import {
+  SendOutlined, UserOutlined, RobotOutlined, StopOutlined,
+  AudioOutlined, SoundOutlined, PauseOutlined,
+} from '@ant-design/icons';
+import { ChatMessage, Subject, SourceInfo, ChatMode } from '../../types';
 import { sendMessageStream } from '../../api/chat';
 import { getReadyStatus } from '../../api/health';
+import { getConversationMessages, createConversation, ConversationMessage } from '../../api/conversations';
+import { transcribeAudio } from '../../api/audio';
+import { createRecorder } from '../../utils/recorder';
+import { ttsPlayer, PlaybackState } from '../../utils/ttsPlayer';
 import { MessageBubble } from '../AnimateMotion';
+import StructuredMessage from '../StructuredMessage';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import './ChatBox.css';
@@ -32,25 +40,159 @@ const md: MarkdownIt = new MarkdownIt({
 interface ChatBoxProps {
   subjectId: string;
   subjects: Subject[];
+  conversationId?: string;
+  onConversationCreated?: (id: string) => void;
   onSubjectChange?: (subjectId: string) => void;
 }
 
-const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
+// 学习模式选项（V2.5.1：教学辅助整合进 Chat，不跳转独立页面）
+const MODE_OPTIONS: { label: string; value: ChatMode }[] = [
+  { label: '普通问答', value: 'chat' },
+  { label: '智能笔记', value: 'smart_note' },
+  { label: '知识总结', value: 'summary' },
+  { label: '题目解析', value: 'explanation' },
+  { label: '自测', value: 'quiz' },
+  { label: '学习建议', value: 'advice' },
+];
+
+// 各学习模式动态 Placeholder（V2.5.1 统一交互）
+const MODE_PLACEHOLDERS: Record<ChatMode, string> = {
+  chat: '输入你的问题，例如：什么是二叉树？',
+  smart_note: '输入知识点，例如：二叉树、牛顿第二定律',
+  summary: '输入要总结的主题，例如：总结二叉树的核心知识点',
+  explanation: '输入题目或问题，例如：为什么完全二叉树适合顺序存储？',
+  quiz: '输入自测主题，例如：二叉树遍历',
+  advice: '输入你的学习困难或目标，例如：我总是搞混DFS和BFS，应该怎么复习？',
+};
+// 统一快捷键提示（所有模式一致）
+const ENTER_HINT = ' · Enter发送，Shift+Enter换行';
+
+const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, onConversationCreated }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [loading, setLoading] = useState(false);
-  const [conversationId, setConversationId] = useState<string>('');
+  const [mode, setMode] = useState<ChatMode>('chat');
   const [selectedModel, setSelectedModel] = useState<string>('mimo');
   const [retrievalTag, setRetrievalTag] = useState<{ color: string; text: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // 组件卸载时中止未完成的流式请求
+  // ===== 语音（V2.5.3 统一播放控制器）=====
+  const [recording, setRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [transcribing, setTranscribing] = useState(false);
+  const recorderRef = useRef<ReturnType<typeof createRecorder> | null>(null);
+  // 统一 Audio Controller 状态（单一 active Audio，禁止叠音）
+  const [playbackState, setPlaybackState] = useState<PlaybackState>('idle');
+  const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
+  const [autoVoice, setAutoVoice] = useState<boolean>(() => {
+    // localStorage 保存 UI 偏好（不是聊天数据库）
+    return localStorage.getItem('auto_voice_reply') === '1';
+  });
+
+  // 订阅统一播放器状态
+  useEffect(() => {
+    return ttsPlayer.subscribe((state, msgId) => {
+      setPlaybackState(state);
+      setPlayingMsgId(msgId);
+    });
+  }, []);
+
+  // 自动语音回复开关持久化
+  useEffect(() => {
+    localStorage.setItem('auto_voice_reply', autoVoice ? '1' : '0');
+  }, [autoVoice]);
+
+  // 组件卸载时中止流式请求 + 停止录音/播放
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
+      recorderRef.current?.cancel();
+      ttsPlayer.stop();
     };
   }, []);
+
+  // 切换学科/会话时停止当前播放，避免其他学科回答继续朗读
+  useEffect(() => {
+    return () => ttsPlayer.stop();
+  }, [conversationId, subjectId]);
+
+  // ===== 录音逻辑 =====
+  const handleToggleRecord = async () => {
+    if (recording) {
+      // 停止录音
+      const recorder = recorderRef.current;
+      recorderRef.current = null;
+      setRecording(false);
+      setRecordingSeconds(0);
+      if (!recorder) return;
+      let blob: Blob;
+      try {
+        blob = await recorder.stop();
+      } catch (e) {
+        message.info('录音已取消');
+        return;
+      }
+      if (blob.size === 0) {
+        message.warning('未捕获到声音');
+        return;
+      }
+      // ASR 转文本，填入输入框（不自动发送）
+      setTranscribing(true);
+      try {
+        const res: any = await transcribeAudio(blob);
+        const text = res?.data?.text || '';
+        if (text) {
+          setInputValue((prev) => (prev ? prev + text : text));
+          message.success('语音识别完成');
+        } else {
+          message.warning('未识别到内容，请重试');
+        }
+      } catch (e: any) {
+        const errType = e?.response?.data?.error_type;
+        let msg = '语音识别失败，请重试';
+        if (errType === 'microphone_permission_denied') msg = '未获得麦克风权限';
+        else if (errType === 'unsupported_audio') msg = '不支持的音频格式';
+        else if (errType === 'audio_too_large') msg = '音频过大，请缩短录音';
+        else if (errType === 'asr_timeout') msg = '语音识别超时，请重试';
+        message.error(msg);
+      } finally {
+        setTranscribing(false);
+      }
+      return;
+    }
+
+    // 开始录音
+    try {
+      const recorder = createRecorder((sec) => setRecordingSeconds(Math.round(sec)));
+      await recorder.start();
+      recorderRef.current = recorder;
+      setRecording(true);
+      setRecordingSeconds(0);
+    } catch (e: any) {
+      const name = e?.name;
+      let msg = '无法访问麦克风';
+      if (name === 'NotAllowedError') msg = '未获得麦克风权限，请在浏览器设置中允许';
+      else if (name === 'NotFoundError') msg = '未检测到麦克风设备';
+      message.error(msg);
+    }
+  };
+
+  // 取消录音
+  const handleCancelRecord = () => {
+    recorderRef.current?.cancel();
+    recorderRef.current = null;
+    setRecording(false);
+    setRecordingSeconds(0);
+  };
+
+  // ===== TTS 播放（V2.5.3 统一控制器）=====
+  const playTTS = async (msg: ChatMessage) => {
+    const text = msg.content;
+    if (!text || !text.trim()) return;
+    // 手动🔊全文朗读（分段 + 预取），同一消息再次点击 → 暂停/恢复
+    await ttsPlayer.toggleManual(msg.id, text);
+  };
 
   // 规范化参考来源列表：去重（同文件+同页）、最多5条、过滤无效
   const normalizeSources = useCallback((sources: SourceInfo[] | undefined): SourceInfo[] => {
@@ -70,16 +212,16 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
     return result;
   }, []);
 
-  // 将 /health/ready 状态映射为顶部标签（not_loaded + 索引就绪 = 可用，首次检索自动加载）
+  // 将 /health/ready 状态映射为顶部标签
   const applyRetrievalTag = (ready: any) => {
-    const mode = ready?.retrieval_mode;
+    const rm = ready?.retrieval_mode;
     const faissOk = ready?.faiss?.available;
     const bm25Ok = ready?.bm25?.available;
-    if (mode === 'hybrid_ready' || (mode === 'not_loaded' && faissOk && bm25Ok)) {
+    if (rm === 'hybrid_ready' || (rm === 'not_loaded' && faissOk && bm25Ok)) {
       setRetrievalTag({ color: 'success', text: '混合检索已就绪' });
-    } else if (mode === 'loading') {
+    } else if (rm === 'loading') {
       setRetrievalTag({ color: 'processing', text: '向量检索组件正在加载' });
-    } else if (mode === 'bm25_degraded') {
+    } else if (rm === 'bm25_degraded') {
       setRetrievalTag({ color: 'warning', text: '向量检索暂不可用，当前仅使用关键词检索，回答质量可能下降' });
     } else {
       setRetrievalTag({ color: 'error', text: '知识库检索服务不可用' });
@@ -102,53 +244,43 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
     return () => { mounted = false; };
   }, []);
 
-  // 模型选项
-  const modelOptions = [
-    { value: 'mimo', label: '小米MiMo' },
-    { value: 'deepseek', label: 'DeepSeek' },
-    { value: 'qwen', label: '通义千问' },
-  ];
+  // 后端 Message → 前端 ChatMessage（含结构化 payload 恢复）
+  const backendMessageToChat = useCallback((m: ConversationMessage, idx: number): ChatMessage => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    timestamp: new Date(m.created_at).getTime() + idx,
+    sources: m.sources && m.sources.length ? normalizeSources(m.sources) : undefined,
+    model: m.model || undefined,
+    message_type: m.message_type,
+    payload: m.payload,
+  }), [normalizeSources]);
 
-  // 生成会话ID
+  // 点击历史会话恢复：从后端 SQLite 加载消息（不依赖 localStorage）
   useEffect(() => {
-    const savedConversationId = localStorage.getItem('chat_conversation_id');
-    if (savedConversationId) {
-      setConversationId(savedConversationId);
-    } else {
-      const newId = Date.now().toString();
-      setConversationId(newId);
-      localStorage.setItem('chat_conversation_id', newId);
+    let cancelled = false;
+    if (!conversationId) {
+      setMessages([]);
+      return;
     }
-  }, []);
-
-  // 恢复历史消息
-  useEffect(() => {
-    if (conversationId) {
-      const savedMessages = localStorage.getItem(`chat_messages_${conversationId}`);
-      if (savedMessages) {
-        try {
-          const parsedMessages = JSON.parse(savedMessages);
-          setMessages(parsedMessages);
-        } catch (error) {
-          console.error('解析历史消息失败:', error);
-        }
+    (async () => {
+      try {
+        const res: any = await getConversationMessages(conversationId);
+        const msgs = res?.data || [];
+        if (!cancelled) setMessages(msgs.map(backendMessageToChat));
+      } catch (e) {
+        if (!cancelled) message.error('加载历史消息失败');
       }
-    }
-  }, [conversationId]);
-
-  // 保存消息到localStorage
-  useEffect(() => {
-    if (conversationId && messages.length > 0) {
-      localStorage.setItem(`chat_messages_${conversationId}`, JSON.stringify(messages));
-    }
-  }, [messages, conversationId]);
+    })();
+    return () => { cancelled = true; };
+  }, [conversationId, backendMessageToChat]);
 
   // 自动滚动到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 发送消息（真流式）
+  // 发送消息（真流式 + 服务端会话持久化）
   const handleSend = async () => {
     if (!inputValue.trim()) {
       message.warning('请输入问题');
@@ -158,6 +290,19 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
     if (!subjectId) {
       message.warning('请选择学科');
       return;
+    }
+
+    // 无会话时自动创建（绑定当前学科）
+    let targetConvId = conversationId;
+    if (!targetConvId) {
+      try {
+        const res: any = await createConversation(subjectId);
+        targetConvId = res?.data?.id;
+        if (targetConvId) onConversationCreated?.(targetConvId);
+      } catch (e) {
+        message.error('创建会话失败，请重试');
+        return;
+      }
     }
 
     // 添加用户消息
@@ -181,14 +326,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
     setInputValue('');
     setLoading(true);
 
-    // 构建历史消息
-    const history = messages
-      .filter(msg => msg.role === 'user' || msg.role === 'assistant')
-      .map(msg => ({
-        role: msg.role,
-        content: msg.content,
-      }));
-
     const startedAt = Date.now();
 
     const controller = sendMessageStream(
@@ -196,11 +333,12 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
         question: userMessage.content,
         subject_id: subjectId,
         model: selectedModel,
-        history,
+        conversation_id: targetConvId,
+        mode,
       },
       {
         onStart: () => {
-          // 检索完成，开始生成；可更新为"正在生成"
+          // 检索完成，开始生成
         },
         onDelta: (content) => {
           // 逐块追加到同一条AI消息，不重复创建
@@ -210,21 +348,29 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
         },
         onDone: (ev) => {
           const elapsed = ev.elapsed != null ? ev.elapsed : (Date.now() - startedAt) / 1000;
+          const finalContent = ev.full_answer || '';
           setMessages(prev =>
             prev.map(m =>
               m.id === aiId
                 ? {
                     ...m,
-                    sources: normalizeSources(ev.sources),
+                    content: finalContent,
+                    sources: mode === 'chat' ? normalizeSources(ev.sources) : undefined,
                     model: ev.model,
                     latency: elapsed,
                     ttft: ev.ttft,
+                    message_type: ev.message_type,
+                    payload: ev.payload,
                   }
                 : m
             )
           );
           setLoading(false);
           refreshStatus();
+          // 自动语音回复（V2.5.3：按 message_id 去重，仅 streaming→done 触发一次）
+          if (autoVoice && mode === 'chat' && finalContent) {
+            ttsPlayer.autoSpeak(aiId, finalContent);
+          }
         },
         onError: (errMsg) => {
           // 已生成的内容保留；空内容时显示错误提示
@@ -251,6 +397,17 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
     setLoading(false);
   };
 
+  // 统一键盘交互（V2.5.1）：Enter 发送，Shift+Enter 换行，IME 候选不发送
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // IME 中文输入法候选状态下按 Enter：只确认候选，不发送
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+    // Shift+Enter → 保留默认换行行为
+  };
+
   // 问答完成后刷新检索状态标签
   const refreshStatus = async () => {
     try {
@@ -269,9 +426,10 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
   // 渲染消息列表
   const renderMessage = (msg: ChatMessage) => {
     const isUser = msg.role === 'user';
-    
+    const isStructured = !!msg.message_type && msg.message_type !== 'chat' && !!msg.payload;
+
     return (
-      <List.Item style={{ 
+      <List.Item style={{
         justifyContent: isUser ? 'flex-end' : 'flex-start',
         padding: '12px 0',
         border: 'none',
@@ -284,44 +442,44 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
           maxWidth: '80%',
           flexDirection: isUser ? 'row-reverse' : 'row',
         }}>
-          <Avatar 
-            icon={isUser ? <UserOutlined /> : <RobotOutlined />} 
-            style={{ 
+          <Avatar
+            icon={isUser ? <UserOutlined /> : <RobotOutlined />}
+            style={{
               backgroundColor: isUser ? '#1890ff' : '#52c41a',
               flexShrink: 0,
             }}
           />
-          
+
           <div style={{
             background: isUser ? '#1890ff' : '#f6f6f6',
             color: isUser ? '#fff' : '#333',
-            padding: '12px 16px',
+            padding: isStructured ? '12px' : '12px 16px',
             borderRadius: '12px',
             maxWidth: '100%',
             wordBreak: 'break-word',
           }}>
             {isUser ? (
               <Text style={{ color: '#fff', margin: 0 }}>{msg.content}</Text>
+            ) : isStructured ? (
+              <StructuredMessage messageType={msg.message_type!} payload={msg.payload} />
+            ) : msg.content ? (
+              <div
+                className="markdown-body"
+                dangerouslySetInnerHTML={renderMarkdown(msg.content)}
+                style={{
+                  background: 'transparent',
+                  color: '#333',
+                }}
+              />
             ) : (
-              msg.content ? (
-                <div
-                  className="markdown-body"
-                  dangerouslySetInnerHTML={renderMarkdown(msg.content)}
-                  style={{
-                    background: 'transparent',
-                    color: '#333',
-                  }}
-                />
-              ) : (
-                <Space size={8}>
-                  <Spin size="small" />
-                  <Text type="secondary" style={{ fontSize: '13px' }}>正在思考...</Text>
-                </Space>
-              )
+              <Space size={8}>
+                <Spin size="small" />
+                <Text type="secondary" style={{ fontSize: '13px' }}>正在思考...</Text>
+              </Space>
             )}
-            
+
             {/* 显示引用来源（列表形式） */}
-            {msg.sources && msg.sources.length > 0 && (
+            {!isUser && mode === 'chat' && msg.sources && msg.sources.length > 0 && (
               <div style={{
                 marginTop: '8px',
                 padding: '8px 10px',
@@ -342,14 +500,39 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
               </div>
             )}
 
-            {/* 显示模型和延迟信息 */}
-            {(msg.model || msg.latency != null) && (
-              <div style={{ marginTop: '4px' }}>
-                <Text type="secondary" style={{ fontSize: '11px' }}>
-                  {msg.model ? `模型: ${msg.model}` : ''}
-                  {msg.ttft != null ? ` | 首字响应: ${msg.ttft.toFixed(2)}s` : ''}
-                  {msg.latency != null ? ` | 总耗时: ${msg.latency.toFixed(2)}s` : ''}
-                </Text>
+            {/* 语音播放按钮 + 模型信息（V2.5.3 统一播放器状态） */}
+            {!isUser && (
+              <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                {msg.content && (
+                  <Tooltip
+                    title={
+                      playbackState === 'requesting' && playingMsgId === msg.id ? '语音合成中...'
+                      : playbackState === 'playing' && playingMsgId === msg.id ? '暂停'
+                      : playbackState === 'paused' && playingMsgId === msg.id ? '继续'
+                      : '语音播放'
+                    }
+                  >
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={
+                        playbackState === 'requesting' && playingMsgId === msg.id ? <Spin size="small" />
+                        : (playbackState === 'playing' || playbackState === 'paused') && playingMsgId === msg.id
+                          ? <PauseOutlined />
+                          : <SoundOutlined />
+                      }
+                      onClick={() => playTTS(msg)}
+                      style={{ fontSize: 12 }}
+                    />
+                  </Tooltip>
+                )}
+                {(msg.model || msg.latency != null) && (
+                  <Text type="secondary" style={{ fontSize: '11px' }}>
+                    {msg.model ? `模型: ${msg.model}` : ''}
+                    {msg.ttft != null ? ` | 首字响应: ${msg.ttft.toFixed(2)}s` : ''}
+                    {msg.latency != null ? ` | 总耗时: ${msg.latency.toFixed(2)}s` : ''}
+                  </Text>
+                )}
               </div>
             )}
           </div>
@@ -360,9 +543,9 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
   };
 
   return (
-    <div style={{ 
-      display: 'flex', 
-      flexDirection: 'column', 
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
       height: '100%',
       background: '#fff',
       borderRadius: '12px',
@@ -377,7 +560,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
       }}>
         <Space>
           <Title level={5} style={{ margin: 0 }}>
-            AI智能问答
+            AI学习助手
           </Title>
           <Text type="secondary">
             当前学科: {subjects.find(s => s.subject_id === subjectId)?.name || '未选择'}
@@ -396,7 +579,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
         overflow: 'auto',
         padding: '24px',
         background: '#fff',
-        maxHeight: 'calc(100vh - 200px)',
+        maxHeight: 'calc(100vh - 260px)',
       }}>
         {messages.length === 0 ? (
           <div style={{
@@ -429,36 +612,69 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
         borderTop: '1px solid #f0f0f0',
         background: '#fafafa',
       }}>
-        <div style={{ 
-          display: 'flex', 
-          alignItems: 'center', 
+        {/* 学习模式选择（Segmented，轻量不占纵向空间） */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
           gap: '12px',
           marginBottom: '8px',
+          flexWrap: 'wrap',
         }}>
-          <Text type="secondary" style={{ fontSize: '12px' }}>当前模型:</Text>
-          <Select
-            value={selectedModel}
-            onChange={setSelectedModel}
-            options={modelOptions}
-            style={{ width: 120 }}
+          <Segmented
             size="small"
+            value={mode}
+            onChange={(v) => setMode(v as ChatMode)}
+            options={MODE_OPTIONS}
           />
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Text type="secondary" style={{ fontSize: '12px' }}>当前模型:</Text>
+            <Select
+              value={selectedModel}
+              onChange={setSelectedModel}
+              options={[
+                { value: 'mimo', label: '小米MiMo' },
+                { value: 'deepseek', label: 'DeepSeek' },
+                { value: 'qwen', label: '通义千问' },
+              ]}
+              style={{ width: 120 }}
+              size="small"
+            />
+          </div>
         </div>
         <Space.Compact style={{ width: '100%' }}>
+          {/* 麦克风按钮（录音/停止，V2.5.1 Checkpoint D） */}
+          <Tooltip title={recording ? '点击停止录音' : '语音输入'}>
+            <Button
+              icon={transcribing ? <Spin size="small" /> : <AudioOutlined />}
+              onClick={handleToggleRecord}
+              danger={recording}
+              type={recording ? 'primary' : 'default'}
+              style={{ height: 'auto' }}
+            />
+          </Tooltip>
           <TextArea
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder="输入你的问题... (Ctrl+Enter 发送)"
+            placeholder={
+              recording
+                ? `录音中 ${String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:${String(recordingSeconds % 60).padStart(2, '0')} ...`
+                : MODE_PLACEHOLDERS[mode] + ENTER_HINT
+            }
             autoSize={{ minRows: 1, maxRows: 4 }}
-            onPressEnter={(e) => {
-              if (e.ctrlKey) {
-                handleSend();
-              }
-            }}
+            onKeyDown={handleKeyDown}
             disabled={loading}
             style={{ flex: 1 }}
           />
-          {loading ? (
+          {recording ? (
+            <Button
+              danger
+              icon={<StopOutlined />}
+              onClick={handleCancelRecord}
+              style={{ height: 'auto' }}
+            >
+              取消
+            </Button>
+          ) : loading ? (
             <Button
               danger
               icon={<StopOutlined />}
@@ -479,6 +695,14 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects }) => {
             </Button>
           )}
         </Space.Compact>
+        {/* 自动语音回复开关（默认关闭，localStorage UI 偏好） */}
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Switch size="small" checked={autoVoice} onChange={setAutoVoice} />
+          <Text type="secondary" style={{ fontSize: 12 }}>自动语音回复</Text>
+          <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+            回答完成后自动朗读（关闭时点消息旁的🔊播放）
+          </Text>
+        </div>
       </div>
     </div>
   );

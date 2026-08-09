@@ -445,26 +445,30 @@ def retrieve_context(
         raise RuntimeError(f"检索上下文失败: {str(e)}")
 
 
-def build_context(documents: List[Document]) -> str:
+def build_context(documents: List[Document], max_chars: Optional[int] = None) -> str:
     """
     将文档列表转换为LLM上下文字符串
-    
+
     Args:
         documents: Document对象列表
-        
+        max_chars: 上下文总字符预算（V2.5.3，可选）。文档按相关性排序优先
+                  拼接，超过预算时截断当前文档并停止，保留最相关证据。
+                  为 None 时不做预算（全量拼接）。
+
     Returns:
         格式化的上下文字符串
-        
+
     Raises:
         ValueError: 文档列表为空
     """
     # 参数验证
     if not documents:
         raise ValueError("文档列表不能为空")
-    
+
     try:
         context_parts = []
-        
+        total_chars = 0
+
         # 清理孤立代理字符（PyMuPDF数学符号提取可能产生），避免污染LLM上下文与JSON序列化
         from .embedding import _sanitize_unicode_text
         for i, doc in enumerate(documents, 1):
@@ -472,14 +476,14 @@ def build_context(documents: List[Document]) -> str:
             content = _sanitize_unicode_text(doc.page_content).strip()
             if not content:
                 continue
-            
+
             # 获取元数据
             metadata = doc.metadata if hasattr(doc, 'metadata') else {}
             source = metadata.get('source', f'文档{i}')
             section = metadata.get('section', '')
             retrieval_type = metadata.get('retrieval_type', '')
             rerank_score = metadata.get('rerank_score', None)
-            
+
             # 构建来源标注
             source_label = f"来源: {source}"
             if section:
@@ -488,16 +492,39 @@ def build_context(documents: List[Document]) -> str:
                 source_label += f" [{retrieval_type}]"
             if rerank_score is not None:
                 source_label += f" (相关度: {rerank_score:.2f})"
-            
+
             # 格式化上下文
             context_part = f"[{source_label}]\n{content}"
+
+            # V2.5.3：字符预算控制，避免无意义冗长Context
+            if max_chars is not None:
+                remaining = max_chars - total_chars
+                if remaining <= 0:
+                    break  # 预算已用尽，跳过剩余文档
+                if len(context_part) > remaining:
+                    # 截断当前文档内容（保留来源标注与前半部分），保持句子边界尽量自然
+                    cut = remaining
+                    # 尽量在句号/换行处截断
+                    for sep in ("。", "\n", ".", " "):
+                        idx = context_part[:cut].rfind(sep)
+                        if idx > 0 and idx > cut * 0.6:
+                            cut = idx + len(sep)
+                            break
+                    content_cut = context_part[:cut].rstrip()
+                    if not content_cut.endswith("…"):
+                        content_cut += "…"
+                    context_part = content_cut
+                    context_parts.append(context_part)
+                    break
+
             context_parts.append(context_part)
-        
+            total_chars += len(context_part)
+
         # 组合所有上下文
         context = "\n\n---\n\n".join(context_parts)
-        
+
         return context
-        
+
     except Exception as e:
         raise RuntimeError(f"构建上下文失败: {str(e)}")
 

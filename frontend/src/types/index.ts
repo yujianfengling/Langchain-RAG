@@ -17,7 +17,12 @@ export interface ChatRequest {
   history?: Array<{ role: string; content: string }>;
   image_data?: string; // base64编码的图片数据
   image_mime_type?: string; // 图片MIME类型
+  conversation_id?: string; // 会话ID（V2.5.1）
+  mode?: string; // 学习模式：chat|smart_note|summary|explanation|advice|quiz
 }
+
+// 学习模式
+export type ChatMode = 'chat' | 'smart_note' | 'summary' | 'explanation' | 'advice' | 'quiz';
 
 // 参考来源信息（与后端 extract_sources 对齐）
 export interface SourceInfo {
@@ -109,4 +114,16 @@ export interface ChatMessage {
   ttft?: number | null;
   image_url?: string; // 图片URL（用于显示）
   image_data?: string; // base64编码的图片数据
+  message_type?: string; // 结构化消息类型：chat|smart_note|summary|explanation|advice|quiz
+  payload?: any; // 结构化消息负载（V2.5.1，Card恢复渲染用）
+}
+
+// 会话（V2.5.1 Conversation 系统）
+export interface Conversation {
+  id: string;
+  subject_id: string;
+  title: string;
+  model: string | null;
+  created_at: string;
+  updated_at: string;
 }

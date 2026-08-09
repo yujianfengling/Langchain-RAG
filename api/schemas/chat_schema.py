@@ -13,6 +13,8 @@ class ChatRequest(BaseModel):
     history: List[dict] = []
     image_data: Optional[str] = None  # base64编码的图片数据
     image_mime_type: Optional[str] = None  # 图片MIME类型
+    conversation_id: Optional[str] = None  # 会话ID（V2.5.1：服务端持久化上下文）
+    mode: Optional[str] = None  # 学习模式：chat|smart_note|summary|explanation|advice|quiz
 
 
 class ChatResponse(BaseModel):

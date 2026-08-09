@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from api.schemas.response_schema import SuccessResponse
 from api.exceptions import ValidationError
@@ -42,7 +43,13 @@ async def generate_learning_plan(request: GeneratePlanRequest):
     - **goal**: 学习目标，如"三天复习完数据结构中的树和图"
     """
     try:
-        plan = generate_plan(subject_id=request.subject_id, goal=request.goal, model=request.model)
+        # V2.5.2：generate_plan 为同步阻塞（RAG + LLM），移出事件循环
+        plan = await run_in_threadpool(
+            generate_plan,
+            subject_id=request.subject_id,
+            goal=request.goal,
+            model=request.model,
+        )
         return SuccessResponse(data=plan, message="学习计划生成成功")
     except KBError as e:
         # 学科不存在 / 知识库未构建 → 409，明确提示，不调 LLM

@@ -3,6 +3,7 @@
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from api.schemas.note_schema import SmartNoteRequest
 from api.schemas.response_schema import SuccessResponse
@@ -28,7 +29,9 @@ async def generate_note(request: SmartNoteRequest):
         raise ValidationError("知识点主题不能为空")
 
     try:
-        note = generate_smart_note(
+        # V2.5.2：generate_smart_note 为同步阻塞（RAG + LLM），移出事件循环
+        note = await run_in_threadpool(
+            generate_smart_note,
             subject_id=request.subject_id,
             topic=request.topic.strip(),
             user_instruction=request.user_instruction,

@@ -6,23 +6,20 @@ import {
   MessageOutlined,
   DatabaseOutlined,
   SettingOutlined,
-  FunctionOutlined,
   CalendarOutlined,
 } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import ChatPage from './pages/ChatPage';
 import KnowledgePage from './pages/KnowledgePage';
 import SettingsPage from './pages/SettingsPage';
-import EducationPage from './pages/EducationPage';
 import LearningPlanPage from './pages/LearningPlanPage';
 
 const { Sider } = Layout;
 
-// 侧边栏菜单配置
+// 侧边栏菜单配置（V2.5.1：教学辅助整合进 AI学习助手）
 const sidebarItems = [
-  { key: '/chat',       icon: <MessageOutlined />,  label: 'AI问答' },
+  { key: '/chat',       icon: <MessageOutlined />,  label: 'AI学习助手' },
   { key: '/knowledge',  icon: <DatabaseOutlined />, label: '知识库' },
-  { key: '/education',  icon: <FunctionOutlined />, label: '教学辅助' },
   { key: '/learning',   icon: <CalendarOutlined />, label: '学习计划' },
   { key: '/settings',   icon: <SettingOutlined />,  label: '设置' },
 ];
@@ -35,7 +32,6 @@ const App: React.FC = () => {
     const path = location.pathname;
     if (path.startsWith('/chat')) return '/chat';
     if (path.startsWith('/knowledge')) return '/knowledge';
-    if (path.startsWith('/education')) return '/education';
     if (path.startsWith('/learning')) return '/learning';
     if (path.startsWith('/settings')) return '/settings';
     return '/chat';
@@ -213,7 +209,6 @@ const App: React.FC = () => {
                   <Route path="/" element={<ChatPage />} />
                   <Route path="/chat" element={<ChatPage />} />
                   <Route path="/knowledge" element={<KnowledgePage />} />
-                  <Route path="/education" element={<EducationPage />} />
                   <Route path="/learning" element={<LearningPlanPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                 </Routes>

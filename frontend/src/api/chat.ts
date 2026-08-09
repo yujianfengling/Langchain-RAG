@@ -26,6 +26,8 @@ export interface StreamDoneEvent {
   elapsed?: number;
   ttft?: number | null;
   full_answer?: string;
+  message_type?: string; // 结构化模式：smart_note|summary|explanation|advice|quiz
+  payload?: any; // 结构化负载（前端据此渲染 Card）
 }
 export interface StreamErrorEvent {
   type: 'error';
