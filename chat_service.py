@@ -50,6 +50,15 @@ except ImportError as e:
     _PROMPTS_IMPORT_ERROR = str(e)
 
 # 导入日志
+# 导入用户画像模块（V2.6 Agent自我学习）
+try:
+    from services.user_profiler import record_interaction, update_knowledge_level
+    from services.adaptive_retriever import get_personalized_system_prompt
+    from services.learning_loop import on_note_generated, on_quiz_answered, on_chat_completed
+    AGENT_AVAILABLE = True
+except ImportError:
+    AGENT_AVAILABLE = False
+
 from utils.logger import logger
 
 # 默认配置
@@ -185,6 +194,18 @@ def chat_with_ai(
                     touch_conversation(conversation_id, model=model_name)
                 except Exception as e:
                     logger.error(f"写入结构化消息失败: {e}", exc_info=True)
+
+
+            # V2.6: 学习闭环回调
+            if AGENT_AVAILABLE:
+                try:
+                    if mode == "smart_note":
+                        on_note_generated("default_user", subject_id or "", question, payload)
+                    elif mode == "quiz":
+                        from services.user_profiler import record_interaction
+                        record_interaction("default_user", "quiz", subject_id, question, f"生成{len(payload.get('quiz', []))}道题", model=model_name)
+                except Exception as e:
+                    logger.warning(f"学习闭环回调失败（不影响主流程）: {e}")
 
             response.update({
                 "success": True,
@@ -822,6 +843,21 @@ def quick_chat(question: str, subject_id: Optional[str] = None) -> str:
     """
     response = chat_with_ai(question, subject_id)
     if response["success"]:
+        # V2.6: 记录用户交互（Agent自我学习）
+        if AGENT_AVAILABLE:
+            try:
+                record_interaction(
+                    user_id="default_user",
+                    interaction_type="chat",
+                    subject_id=subject_id,
+                    question=question,
+                    answer=response.get("answer", ""),
+                    model_used=response.get("model"),
+                    latency=response.get("latency"),
+                    )
+            except Exception as e:
+                logger.warning(f"记录交互失败（不影响主流程）: {e}")
+
         return response["answer"]
     else:
         raise RuntimeError(response["error"])

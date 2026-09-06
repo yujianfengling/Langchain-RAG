@@ -1,11 +1,16 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Layout, Button, Empty, Space, Typography, message, Popconfirm, Spin } from 'antd';
-import { MessageOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons';
+import { MessageOutlined, PlusOutlined, DeleteOutlined, RocketOutlined, AimOutlined, ExperimentOutlined, SettingOutlined } from '@ant-design/icons';
 import ChatBox from '../components/ChatBox';
 import SubjectSelector from '../components/SubjectSelector';
 import { getSubjects } from '../api/subjects';
 import { getConversations, createConversation, deleteConversation } from '../api/conversations';
 import { Subject, Conversation } from '../types';
+import LearningProgressPanel from '../components/LearningProgressPanel';
+import LearningPathPanel from '../components/LearningPathPanel';
+import KnowledgeExtractionPanel from '../components/KnowledgeExtractionPanel';
+import CollapsiblePanel from '../components/CollapsiblePanel';
+import PersonalizationSettings from '../components/PersonalizationSettings';
 
 const { Sider, Content } = Layout;
 const { Text } = Typography;
@@ -137,6 +142,39 @@ const ChatPage: React.FC = () => {
               style={{ width: '100%' }}
             />
           </div>
+
+          {/* 学习助手面板 - 可折叠 */}
+          <CollapsiblePanel
+            title="学习进度"
+            icon={<RocketOutlined />}
+            defaultOpen={true}
+          >
+            <LearningProgressPanel userId="default_user" subjectId={selectedSubject} compact={true} />
+          </CollapsiblePanel>
+
+          <CollapsiblePanel
+            title="学习路径"
+            icon={<AimOutlined />}
+            defaultOpen={false}
+          >
+            <LearningPathPanel userId="default_user" subjectId={selectedSubject} />
+          </CollapsiblePanel>
+
+          <CollapsiblePanel
+            title="知识扩展"
+            icon={<ExperimentOutlined />}
+            defaultOpen={false}
+          >
+            <KnowledgeExtractionPanel userId="default_user" subjectId={selectedSubject} />
+          </CollapsiblePanel>
+
+          <CollapsiblePanel
+            title="个性化设置"
+            icon={<SettingOutlined />}
+            defaultOpen={false}
+          >
+            <PersonalizationSettings userId="default_user" subjectId={selectedSubject} />
+          </CollapsiblePanel>
 
           {/* 历史会话列表（按学科分组） */}
           <div>

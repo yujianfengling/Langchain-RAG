@@ -1,11 +1,15 @@
 import React from 'react';
 import { Layout, Typography, Space, Card } from 'antd';
-import { SettingOutlined, InfoCircleOutlined } from '@ant-design/icons';
+import { SettingOutlined, InfoCircleOutlined, UserOutlined } from '@ant-design/icons';
+import UserProfileDashboard from '../components/UserProfileDashboard';
+import PersonalizationSettings from '../components/PersonalizationSettings';
+import SubjectSelector from '../components/SubjectSelector';
 
 const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
 
 const SettingsPage: React.FC = () => {
+  const [selectedSubject, setSelectedSubject] = React.useState<string>('');
   return (
     <Layout style={{ height: '100%' }}>
       <Header style={{ 
@@ -34,6 +38,24 @@ const SettingsPage: React.FC = () => {
           padding: '24px',
           boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
         }}>
+          {/* 学习仪表盘 */}
+          <div style={{ marginBottom: 24 }}>
+            <UserProfileDashboard userId="default_user" subjectId={selectedSubject} />
+          </div>
+
+          {/* 个性化设置 */}
+          <div style={{ marginBottom: 24 }}>
+            <PersonalizationSettings userId="default_user" subjectId={selectedSubject} />
+          </div>
+
+          {/* 学科选择 */}
+          <div style={{ marginBottom: 24 }}>
+            <Title level={5} style={{ marginBottom: '16px' }}>
+              <UserOutlined /> 学习学科
+            </Title>
+            <SubjectSelector value={selectedSubject} onChange={setSelectedSubject} />
+          </div>
+
           {/* 系统信息部分 */}
           <div>
             <Title level={5} style={{ marginBottom: '16px' }}>

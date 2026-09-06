@@ -14,6 +14,7 @@ import { createRecorder } from '../../utils/recorder';
 import { ttsPlayer, PlaybackState } from '../../utils/ttsPlayer';
 import { MessageBubble } from '../AnimateMotion';
 import StructuredMessage from '../StructuredMessage';
+import FeedbackButtons from '../FeedbackButtons';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import './ChatBox.css';
@@ -571,6 +572,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
                     {msg.latency != null ? ` | 总耗时: ${msg.latency.toFixed(2)}s` : ''}
                   </Text>
                 )}
+                {!isUser && <FeedbackButtons messageId={msg.id} userId="default_user" />}
               </div>
             )}
           </div>
