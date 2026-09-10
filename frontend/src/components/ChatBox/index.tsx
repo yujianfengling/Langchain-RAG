@@ -1,8 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Input, Button, List, Avatar, Typography, Space, Spin, Select, Tag, message, Switch, Tooltip } from 'antd';
+import { Input, Button, Typography, Space, Spin, Select, Tag, message, Switch, Tooltip, List } from 'antd';
 import {
-  SendOutlined, UserOutlined, RobotOutlined, StopOutlined,
-  AudioOutlined, SoundOutlined, PauseOutlined,
+  SendOutlined, RobotOutlined, StopOutlined, AudioOutlined,
 } from '@ant-design/icons';
 import { ChatMessage, Subject, SourceInfo, ChatMode } from '../../types';
 import { sendMessageStream } from '../../api/chat';
@@ -12,32 +11,14 @@ import { getConversationMessages, createConversation, ConversationMessage } from
 import { transcribeAudio } from '../../api/audio';
 import { createRecorder } from '../../utils/recorder';
 import { ttsPlayer, PlaybackState } from '../../utils/ttsPlayer';
-import { MessageBubble } from '../AnimateMotion';
-import StructuredMessage from '../StructuredMessage';
-import FeedbackButtons from '../FeedbackButtons';
-import MarkdownIt from 'markdown-it';
-import hljs from 'highlight.js';
+import ChatMessageItem from './ChatMessageItem';
 import './ChatBox.css';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
 
-// 初始化Markdown渲染器
-const md: MarkdownIt = new MarkdownIt({
-  html: true,
-  linkify: true,
-  typographer: true,
-  highlight: function (str: string, lang: string): string {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return '<pre class="hljs"><code>' +
-               hljs.highlight(str, { language: lang, ignoreIllegals: true }).value +
-               '</code></pre>';
-      } catch (__) {}
-    }
-    return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + '</code></pre>';
-  }
-});
+// 流式 delta 批处理间隔（ms）：合并渲染刷新，不丢字符（V2.5.4）
+const STREAM_BATCH_MS = 40;
 
 interface ChatBoxProps {
   subjectId: string;
@@ -87,9 +68,20 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
   const [selectedModel, setSelectedModel] = useState<string>('mimo');
   const [retrievalTag, setRetrievalTag] = useState<{ color: string; text: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   // 流式回复标记：回复期间屏蔽历史加载，避免覆盖本地消息
   const streamingRef = useRef(false);
+  // ===== 流式 delta 批处理（V2.5.4）=====
+  // 当前正在流式写入的 assistant 消息 id（避免闭包过期）
+  const aiIdRef = useRef('');
+  // 待 flush 的 delta 字符缓冲
+  const pendingBufferRef = useRef('');
+  // flush 定时器
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ===== 自动滚动（V2.5.4）=====
+  // 用户是否仍靠近底部（上滚历史时停止强制跟随）
+  const isNearBottomRef = useRef(true);
 
   // ===== 语音（V2.5.3 统一播放控制器）=====
   const [recording, setRecording] = useState(false);
@@ -201,12 +193,56 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
   };
 
   // ===== TTS 播放（V2.5.3 统一控制器）=====
-  const playTTS = async (msg: ChatMessage) => {
+  // useCallback 稳定引用：避免传入 ChatMessageItem 时破坏 React.memo
+  const playTTS = useCallback(async (msg: ChatMessage) => {
     const text = msg.content;
     if (!text || !text.trim()) return;
     // 手动🔊全文朗读（分段 + 预取），同一消息再次点击 → 暂停/恢复
     await ttsPlayer.toggleManual(msg.id, text);
-  };
+  }, []);
+
+  // ===== 流式 delta 批处理（V2.5.4）=====
+  // 将缓冲中的字符一次性写入 assistant 消息；返回是否真实写入了内容
+  const flushStreamBuffer = useCallback((): boolean => {
+    if (flushTimerRef.current) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    const buf = pendingBufferRef.current;
+    pendingBufferRef.current = '';
+    const aiId = aiIdRef.current;
+    if (!buf || !aiId) return false;
+    setMessages(prev => {
+      const exists = prev.some(m => m.id === aiId);
+      if (!exists) {
+        // 被历史加载覆盖（不应发生，防御性兜底补回）
+        return [...prev, { id: aiId, role: 'assistant', content: buf, timestamp: Date.now() }];
+      }
+      return prev.map(m => (m.id === aiId ? { ...m, content: m.content + buf } : m));
+    });
+    return true;
+  }, []);
+
+  // 追加 delta 到缓冲，按 STREAM_BATCH_MS 合并一次渲染
+  const enqueueDelta = useCallback((content: string) => {
+    pendingBufferRef.current += content;
+    if (!flushTimerRef.current) {
+      flushTimerRef.current = setTimeout(() => { flushStreamBuffer(); }, STREAM_BATCH_MS);
+    }
+  }, [flushStreamBuffer]);
+
+  // ===== 自动滚动（V2.5.4）=====
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    // 距底部 < 120px 视为"靠近底部"
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
+
+  // 滚动到底部：流式期间 auto（不触发平滑动画）；用户主动发送/切换时 smooth
+  const scrollToBottom = useCallback((smooth: boolean) => {
+    messagesEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' });
+  }, []);
 
   // 规范化参考来源列表：去重（同文件+同页）、最多5条、过滤无效
   const normalizeSources = useCallback((sources: SourceInfo[] | undefined): SourceInfo[] => {
@@ -291,10 +327,13 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
     return () => { cancelled = true; };
   }, [conversationId, backendMessageToChat]);
 
-  // 自动滚动到底部
+  // 自动滚动（V2.5.4）：
+  // - 流式期间 messages 变化 → auto 跟随（无平滑动画开销）
+  // - 仅当用户仍靠近底部才跟随；用户上滚历史时停止强制拉回
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (!isNearBottomRef.current) return;
+    scrollToBottom(false);
+  }, [messages, scrollToBottom]);
 
   // 发送消息（真流式 + 服务端会话持久化）
   const handleSend = async () => {
@@ -344,6 +383,11 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
     playSendSound();
     // 标记流式回复开始（屏蔽历史加载覆盖）
     streamingRef.current = true;
+    // 记录当前流式消息 id 供 batch flush 使用
+    aiIdRef.current = aiId;
+    pendingBufferRef.current = '';
+    // 用户发送消息：视为已回到底部，允许平滑跟随
+    isNearBottomRef.current = true;
 
     const startedAt = Date.now();
 
@@ -360,18 +404,14 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
           // 检索完成，开始生成
         },
         onDelta: (content) => {
-          // 逐块追加到同一条AI消息；若被历史加载覆盖（找不到aiId），兜底补回
-          setMessages(prev => {
-            const exists = prev.some(m => m.id === aiId);
-            if (!exists) {
-              return [...prev, { ...aiMessage, content }];
-            }
-            return prev.map(m => (m.id === aiId ? { ...m, content: m.content + content } : m));
-          });
+          // V2.5.4：delta 先进缓冲，按 ~40ms 合并一次渲染（不丢字符）
+          enqueueDelta(content);
         },
         onDone: (ev) => {
           const elapsed = ev.elapsed != null ? ev.elapsed : (Date.now() - startedAt) / 1000;
           const finalContent = ev.full_answer || '';
+          // done 必须立即 flush 剩余 buffer，不能丢最后几个字符
+          flushStreamBuffer();
           // 收到完整回复：柔和提示音
           if (finalContent) {
             playReceiveSound();
@@ -397,6 +437,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
           setLoading(false);
           // 流式结束，恢复历史加载
           streamingRef.current = false;
+          aiIdRef.current = '';
           refreshStatus();
           // 自动语音回复（V2.5.3：按 message_id 去重，仅 streaming→done 触发一次）
           if (autoVoice && mode === 'chat' && finalContent) {
@@ -404,6 +445,8 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
           }
         },
         onError: (errMsg) => {
+          // error 也立即 flush，保留已收到的字符
+          flushStreamBuffer();
           // 已生成的内容保留；空内容时显示错误提示（找不到aiId时兜底追加）
           setMessages(prev => {
             const exists = prev.some(m => m.id === aiId);
@@ -420,6 +463,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
           setLoading(false);
           // 流式结束（失败也恢复历史加载）
           streamingRef.current = false;
+          aiIdRef.current = '';
           refreshStatus();
         },
       }
@@ -431,9 +475,12 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
   const handleStop = () => {
     abortRef.current?.abort();
     abortRef.current = null;
+    // V2.5.4：停止后立即 flush 剩余 buffer，保留已收到的字符
+    flushStreamBuffer();
     setLoading(false);
     // 停止后恢复历史加载
     streamingRef.current = false;
+    aiIdRef.current = '';
   };
 
   // 统一键盘交互（V2.5.1）：Enter 发送，Shift+Enter 换行，IME 候选不发送
@@ -457,130 +504,15 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
     }
   };
 
-  // 渲染Markdown内容
-  const renderMarkdown = (content: string) => {
-    return { __html: md.render(content) };
-  };
-
-  // 渲染消息列表
-  const renderMessage = (msg: ChatMessage) => {
-    const isUser = msg.role === 'user';
-    const isStructured = !!msg.message_type && msg.message_type !== 'chat' && !!msg.payload;
-
-    return (
-      <List.Item style={{
-        justifyContent: isUser ? 'flex-end' : 'flex-start',
-        padding: '12px 0',
-        border: 'none',
-      }}>
-        <MessageBubble delay={0} style={{ maxWidth: '80%' }}>
-        <div style={{
-          display: 'flex',
-          alignItems: 'flex-start',
-          gap: '12px',
-          flexDirection: isUser ? 'row-reverse' : 'row',
-        }}>
-          <Avatar
-            icon={isUser ? <UserOutlined /> : <RobotOutlined />}
-            style={{
-              backgroundColor: isUser ? '#0f766e' : '#059669',
-              flexShrink: 0,
-            }}
-          />
-
-          <div style={{
-            background: isUser ? '#0f766e' : '#f6f6f6',
-            color: isUser ? '#fff' : '#333',
-            padding: isStructured ? '12px' : '12px 16px',
-            borderRadius: '12px',
-            maxWidth: '100%',
-            minWidth: 0,
-            wordBreak: 'break-word',
-          }}>
-            {isUser ? (
-              <Text style={{ color: '#fff', margin: 0 }}>{msg.content}</Text>
-            ) : isStructured ? (
-              <StructuredMessage messageType={msg.message_type!} payload={msg.payload} />
-            ) : msg.content ? (
-              <div
-                className="markdown-body"
-                dangerouslySetInnerHTML={renderMarkdown(msg.content)}
-                style={{
-                  background: 'transparent',
-                  color: '#333',
-                }}
-              />
-            ) : (
-              <Space size={8}>
-                <Spin size="small" />
-                <Text type="secondary" style={{ fontSize: '13px' }}>正在思考...</Text>
-              </Space>
-            )}
-
-            {/* 显示引用来源（列表形式） */}
-            {!isUser && mode === 'chat' && msg.sources && msg.sources.length > 0 && (
-              <div style={{
-                marginTop: '8px',
-                padding: '8px 10px',
-                background: 'rgba(0,0,0,0.04)',
-                borderRadius: '6px',
-              }}>
-                <Text type="secondary" style={{ fontSize: '12px', fontWeight: 600 }}>
-                  参考来源（{msg.sources.length}）
-                </Text>
-                <div style={{ marginTop: '4px' }}>
-                  {msg.sources.map(s => (
-                    <div key={s.id} style={{ fontSize: '12px', lineHeight: '20px', color: '#666' }}>
-                      [{s.id}] {s.file_name || '未知来源'}
-                      {s.page != null ? ` · 第 ${s.page} 页` : ''}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 语音播放按钮 + 模型信息（V2.5.3 统一播放器状态） */}
-            {!isUser && (
-              <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: 8 }}>
-                {msg.content && (
-                  <Tooltip
-                    title={
-                      playbackState === 'requesting' && playingMsgId === msg.id ? '语音合成中...'
-                      : playbackState === 'playing' && playingMsgId === msg.id ? '暂停'
-                      : playbackState === 'paused' && playingMsgId === msg.id ? '继续'
-                      : '语音播放'
-                    }
-                  >
-                    <Button
-                      size="small"
-                      type="text"
-                      icon={
-                        playbackState === 'requesting' && playingMsgId === msg.id ? <Spin size="small" />
-                        : (playbackState === 'playing' || playbackState === 'paused') && playingMsgId === msg.id
-                          ? <PauseOutlined />
-                          : <SoundOutlined />
-                      }
-                      onClick={() => playTTS(msg)}
-                      style={{ fontSize: 12 }}
-                    />
-                  </Tooltip>
-                )}
-                {(msg.model || msg.latency != null) && (
-                  <Text type="secondary" style={{ fontSize: '11px' }}>
-                    {msg.model ? `模型: ${msg.model}` : ''}
-                    {msg.ttft != null ? ` | 首字响应: ${msg.ttft.toFixed(2)}s` : ''}
-                    {msg.latency != null ? ` | 总耗时: ${msg.latency.toFixed(2)}s` : ''}
-                  </Text>
-                )}
-                {!isUser && <FeedbackButtons messageId={msg.id} userId="default_user" />}
-              </div>
-            )}
-          </div>
-        </div>
-        </MessageBubble>
-      </List.Item>
-    );
-  };
+  // 消息渲染（V2.5.4：委托给 ChatMessageItem，React.memo 隔离流式更新）
+  const renderItem = (msg: ChatMessage) => (
+    <ChatMessageItem
+      msg={msg}
+      mode={mode}
+      isPlaying={playingMsgId === msg.id && (playbackState === 'playing' || playbackState === 'requesting' || playbackState === 'paused')}
+      onPlay={playTTS}
+    />
+  );
 
   return (
     <div style={{
@@ -613,14 +545,18 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
         </Space>
       </div>
 
-      {/* 消息列表 */}
-      <div style={{
-        flex: 1,
-        overflow: 'auto',
-        padding: '24px',
-        background: '#fff',
-        maxHeight: 'calc(100vh - 260px)',
-      }}>
+      {/* 消息列表（V2.5.4：onScroll 检测是否靠近底部；流式期间 auto 跟随） */}
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        style={{
+          flex: 1,
+          overflow: 'auto',
+          padding: '24px',
+          background: '#fff',
+          maxHeight: 'calc(100vh - 260px)',
+        }}
+      >
         {messages.length === 0 ? (
           <div style={{
             display: 'flex',
@@ -639,7 +575,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({ subjectId, subjects, conversationId, 
         ) : (
           <List
             dataSource={messages}
-            renderItem={renderMessage}
+            renderItem={renderItem}
             style={{ background: 'transparent' }}
           />
         )}

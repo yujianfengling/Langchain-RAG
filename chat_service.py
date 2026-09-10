@@ -390,6 +390,11 @@ def chat_stream(
     start_time = time.time()
     first_token_time = None
     mode = mode or "chat"
+    # V2.5.4：耗时拆解标记（只写开发日志，不打印内容）
+    rag_start = None
+    rag_end = None
+    provider_start = None
+    total_output_chars = 0
 
     # 依赖检查
     if not LLM_AVAILABLE:
@@ -461,13 +466,15 @@ def chat_stream(
             except Exception as e:
                 logger.warning(f"读取会话历史失败: {e}")
 
-        # 3. RAG检索
+        # 3. RAG检索（V2.5.4：记录 rag_start/rag_end）
+        rag_start = time.time()
         try:
             context_docs = get_rag_context(question, subject_id, _DEFAULT_TOP_K)
             context_used = len(context_docs) > 0
         except AIServiceError as e:
             yield {"type": "error", "message": str(e)}
             return
+        rag_end = time.time()
 
         # 4. 构建上下文 + 来源（V2.5.3：context 字符预算，保留最相关证据）
         if context_used:
@@ -510,6 +517,7 @@ def chat_stream(
         }
 
         # 8. 真流式调用LLM（V2.5.3：按详细程度控制输出预算）
+        provider_start = time.time()
         full_answer = ""
         messages = [
             {"role": "system", "content": system_message},
@@ -524,10 +532,22 @@ def chat_stream(
             if first_token_time is None:
                 first_token_time = time.time()
             full_answer += chunk
+            total_output_chars += len(chunk)
             yield {"type": "delta", "content": chunk}
 
         ttft = first_token_time - start_time if first_token_time else None
         elapsed = time.time() - start_time
+
+        # V2.5.4：耗时拆解日志（只记耗时/模型/字符数，不打印内容）
+        rag_ms = (rag_end - rag_start) * 1000 if rag_start and rag_end else None
+        ttft_ms = (first_token_time - provider_start) * 1000 if first_token_time and provider_start else None
+        generation_ms = (time.time() - first_token_time) * 1000 if first_token_time else None
+        total_ms = elapsed * 1000
+        logger.info(
+            f"[ChatTiming] mode={mode} detail={detail_level} model={model_name} "
+            f"rag_ms={rag_ms:.0f} ttft_ms={ttft_ms:.0f} generation_ms={generation_ms:.0f} "
+            f"total_ms={total_ms:.0f} output_chars={total_output_chars}"
+        )
 
         # 9. 持久化 assistant 消息（会话存在时）
         if conv_meta:
