@@ -7,12 +7,14 @@ import {
   DatabaseOutlined,
   SettingOutlined,
   CalendarOutlined,
+  TeamOutlined,
 } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import ChatPage from './pages/ChatPage';
 import KnowledgePage from './pages/KnowledgePage';
 import SettingsPage from './pages/SettingsPage';
 import LearningPlanPage from './pages/LearningPlanPage';
+import TeacherPage from './pages/TeacherPage';
 
 const { Sider } = Layout;
 
@@ -21,6 +23,7 @@ const sidebarItems = [
   { key: '/chat',       icon: <MessageOutlined />,  label: 'AI学习助手' },
   { key: '/knowledge',  icon: <DatabaseOutlined />, label: '知识库' },
   { key: '/learning',   icon: <CalendarOutlined />, label: '学习计划' },
+  { key: '/teacher',    icon: <TeamOutlined />,     label: '教师端' },
   { key: '/settings',   icon: <SettingOutlined />,  label: '设置' },
 ];
 
@@ -33,6 +36,7 @@ const App: React.FC = () => {
     if (path.startsWith('/chat')) return '/chat';
     if (path.startsWith('/knowledge')) return '/knowledge';
     if (path.startsWith('/learning')) return '/learning';
+    if (path.startsWith('/teacher')) return '/teacher';
     if (path.startsWith('/settings')) return '/settings';
     return '/chat';
   };
@@ -212,6 +216,7 @@ const App: React.FC = () => {
                   <Route path="/chat" element={<ChatPage />} />
                   <Route path="/knowledge" element={<KnowledgePage />} />
                   <Route path="/learning" element={<LearningPlanPage />} />
+                  <Route path="/teacher" element={<TeacherPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                 </Routes>
               </motion.div>
