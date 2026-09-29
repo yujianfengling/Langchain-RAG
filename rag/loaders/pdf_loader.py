@@ -121,7 +121,10 @@ class PdfLoader(BaseLoader):
             elements = self._extract_images_from_elements(elements, file_path)
             
             # 使用 DocumentAdapter 转换为 Document
-            documents = self.adapter.adapt(elements, file_path)
+            # v2.6：生产入库路径启用小元素合并。PDF 抽取是逐元素的，
+            # 不合并会产生大量单字符 Document（实测中位长度 5 字符），
+            # 下游分块器只能切分过长内容、无法把碎片拼回段落。
+            documents = self.adapter.adapt(elements, file_path, merge_small=True)
             
             if not documents:
                 logger.warning(f"文档转换失败: {file_path}")
@@ -251,7 +254,9 @@ class PdfLoader(BaseLoader):
                             # 创建 Document 对象
                             from langchain_core.documents import Document
                             metadata = {
-                                'source': str(file_path),
+                                # v2.6：source 只存文件名（避免完整本地路径进入 LLM 提示词）
+                                'source': file_path.name,
+                                'source_path': str(file_path),
                                 'file_name': file_path.name,
                                 'file_type': 'pdf',
                                 'page': i + 1,

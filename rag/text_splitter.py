@@ -178,6 +178,80 @@ def _split_by_characters(text: str, metadata: dict, chunk_size: int, chunk_overl
     return chunks
 
 
+def _merge_small_pieces(
+    pieces: List,
+    chunk_size: int,
+    chunk_overlap: int,
+    metadata: dict
+) -> List:
+    """
+    把相邻的小片段累积合并到接近 chunk_size，再切成块（v2.6 关键修复）。
+
+    原实现的问题：`_split_by_paragraphs` 分支里对"未超过 chunk_size 的段落"
+    直接原样输出（见旧代码 else: result.append(para)），于是文档里每个换行
+    分隔的小段落各自成为一块。对 docx 抽取出的"每行一段"式文本，
+    会产生大量 1~20 字符的碎片（实测中位长度 9 字符、50% 少于 10 字符），
+    把索引撑大近百倍却几乎没有信息量。
+
+    现在统一改为"累积到接近 chunk_size 再输出"，并保留 chunk_overlap：
+    相邻块之间回带尾部若干片段，避免跨块语义被硬切断。
+    """
+    pieces = [p for p in pieces if (p.page_content or "").strip()]
+    if not pieces:
+        return []
+
+    merged: List = []
+    buf: List = []          # 当前块的片段
+    buf_len = 0
+
+    def _flush():
+        nonlocal buf, buf_len
+        if not buf:
+            return
+        text = "\n".join(p.page_content for p in buf).strip()
+        if text:
+            m = buf[0].metadata.copy() if hasattr(buf[0], "metadata") else dict(metadata)
+            m["merged_pieces"] = len(buf)
+            merged.append(_make_doc(text, m))
+        # 用尾部片段构造 overlap（按字符数近似）
+        if chunk_overlap > 0:
+            keep, acc = [], 0
+            for p in reversed(buf):
+                keep.insert(0, p)
+                acc += len(p.page_content)
+                if acc >= chunk_overlap:
+                    break
+            # 若整块都进了 overlap，则清空避免无限重复
+            buf = [] if keep == buf else keep
+        else:
+            buf = []
+        buf_len = sum(len(p.page_content) for p in buf)
+
+    for piece in pieces:
+        plen = len(piece.page_content)
+        # 单个片段就超过 chunk_size：先冲刷当前缓冲，再递归细分该片段
+        if plen > chunk_size:
+            _flush()
+            sub = _split_by_sentences(piece.page_content, piece.metadata)
+            if len(sub) > 1:
+                merged.extend(_merge_small_pieces(sub, chunk_size, chunk_overlap,
+                                                  piece.metadata))
+            else:
+                merged.extend(_split_by_characters(piece.page_content, piece.metadata,
+                                                   chunk_size, chunk_overlap))
+            buf, buf_len = [], 0
+            continue
+
+        if buf_len + plen + 1 > chunk_size and buf:
+            _flush()
+
+        buf.append(piece)
+        buf_len += plen + 1
+
+    _flush()
+    return merged
+
+
 def _recursive_semantic_split(
     text: str,
     metadata: dict,
@@ -224,49 +298,20 @@ def _recursive_semantic_split(
                     )
                 else:
                     result.append(section)
-            return result
+            # v2.6：章节合并 —— 大量短章节若各自成块同样是碎片
+            return _merge_small_pieces(result, chunk_size, chunk_overlap, metadata)
     
     # 优先级2: 段落切分
     paragraphs = _split_by_paragraphs(text, metadata)
     if len(paragraphs) > 1:
-        result = []
-        for para in paragraphs:
-            if len(para.page_content) > chunk_size:
-                result.extend(
-                    _recursive_semantic_split(
-                        para.page_content,
-                        para.metadata,
-                        chunk_size,
-                        chunk_overlap,
-                        depth + 1
-                    )
-                )
-            else:
-                result.append(para)
-        return result
+        # v2.6 修复：旧实现把未超长的段落直接 output，导致碎片满天飞。
+        # 改为累积合并到 chunk_size，并保留 chunk_overlap。
+        return _merge_small_pieces(paragraphs, chunk_size, chunk_overlap, metadata)
     
     # 优先级3: 句子切分
     sentences = _split_by_sentences(text, metadata)
     if len(sentences) > 1:
-        # 将短句子合并到chunk_size限制内
-        merged = []
-        current_text = ""
-        current_meta = metadata.copy()
-        
-        for sent in sentences:
-            candidate = (current_text + " " + sent.page_content).strip() if current_text else sent.page_content
-            if len(candidate) <= chunk_size:
-                current_text = candidate
-            else:
-                if current_text:
-                    merged.append(_make_doc(current_text, current_meta))
-                current_text = sent.page_content
-                current_meta = sent.metadata.copy()
-        
-        if current_text:
-            merged.append(_make_doc(current_text, current_meta))
-        
-        return merged
+        return _merge_small_pieces(sentences, chunk_size, chunk_overlap, metadata)
     
     # 优先级4: 字符切分（最终fallback）
     return _split_by_characters(text, metadata, chunk_size, chunk_overlap)

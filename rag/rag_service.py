@@ -79,7 +79,9 @@ try:
         load_vector_store,
         add_documents,
         similarity_search,
-        get_retriever
+        get_retriever,
+        GlobalFAISS,
+        filter_documents_by_min_length,
     )
     LOCAL_MODULES_AVAILABLE = True
 except ImportError as e:
@@ -115,8 +117,9 @@ except ImportError:
 def build_knowledge_base(
     documents: List[Union[Document, str]],
     subject_id: str,
-    chunk_size: int = 500,
-    chunk_overlap: int = 50
+    chunk_size: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
+    chunk_min_length: Optional[int] = None,
 ) -> Any:
     """
     构建学科知识库（向量索引 + BM25索引）
@@ -124,8 +127,9 @@ def build_knowledge_base(
     Args:
         documents: Document对象列表或字符串列表
         subject_id: 学科ID（用于隔离知识库）
-        chunk_size: 文本块大小（默认500）
-        chunk_overlap: 文本块重叠大小（默认50）
+        chunk_size: 文本块大小（None=读配置 CHUNK_SIZE，默认500）
+        chunk_overlap: 文本块重叠大小（None=读配置 CHUNK_OVERLAP，默认50）
+        chunk_min_length: 最小 chunk 字符数（None=读配置 CHUNK_MIN_LENGTH，默认120）
         
     Returns:
         向量存储实例
@@ -145,6 +149,19 @@ def build_knowledge_base(
     
     if not subject_id or not subject_id.strip():
         raise ValueError("学科ID不能为空")
+
+    # v2.6：未显式传参时读配置（此前调用方不传参就直接落到函数默认值，
+    # 导致改 .env 的 CHUNK_SIZE 完全不影响实际分块）
+    if CONFIG_AVAILABLE:
+        if chunk_size is None:
+            chunk_size = int(getattr(settings.rag, "chunk_size", 500))
+        if chunk_overlap is None:
+            chunk_overlap = int(getattr(settings.rag, "chunk_overlap", 50))
+        if chunk_min_length is None:
+            chunk_min_length = int(getattr(settings.rag, "chunk_min_length", 120))
+    chunk_size = 500 if chunk_size is None else chunk_size
+    chunk_overlap = 50 if chunk_overlap is None else chunk_overlap
+    chunk_min_length = 120 if chunk_min_length is None else chunk_min_length
     
     try:
         # 读取配置
@@ -157,6 +174,22 @@ def build_knowledge_base(
         )
         
         logger.info(f"文本分割完成: {len(documents)}个文档 → {len(split_docs)}个chunk")
+
+        # 1.5 过滤碎片 chunk（v2.6）：FAISS 与 BM25 共用同一份过滤后文档，
+        # 修复此前"向量索引与 BM25 索引条目数不一致"的问题
+        split_docs, filter_stats = filter_documents_by_min_length(
+            split_docs, chunk_min_length)
+        if not split_docs:
+            raise ValueError(
+                f"过滤后无可用 chunk（min_length={chunk_min_length}，"
+                f"原始 {filter_stats['before']} 条全部过短）。"
+                f"请检查文档抽取质量，或调低 CHUNK_MIN_LENGTH")
+        logger.info(
+            f"碎片过滤: {filter_stats.get('before')} → {filter_stats.get('after')} chunk "
+            f"(丢弃 {filter_stats.get('dropped', 0)} 条, "
+            f"{(filter_stats.get('dropped_ratio') or 0)*100:.1f}%, "
+            f"实际阈值={filter_stats.get('min_length')}, "
+            f"配置阈值={filter_stats.get('configured_min_length')})")
         
         # 2. 创建向量数据库（按学科目录隔离，使用绝对路径）
         persist_dir = os.path.join(_VECTOR_STORE_BASE, _safe_dir_name(subject_id))
@@ -168,17 +201,23 @@ def build_knowledge_base(
             docs=split_docs,
             embeddings=embeddings,
             collection_name=subject_id,
-            persist_dir=persist_dir
+            persist_dir=persist_dir,
+            filter_stats=filter_stats,  # 已在上方过滤，此处只透传统计避免 meta 失真
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
+        # 写入缓存（键用 safe_name，与检索路径一致）
+        GlobalFAISS.put(_safe_dir_name(subject_id), vector_store)
         
-        # 3. 构建BM25索引（如果可用）
+        # 3. 构建BM25索引（如果可用）——使用同一份过滤后文档
         if HYBRID_AVAILABLE:
             try:
                 build_hybrid_index(
                     subject_id=subject_id,
                     documents=split_docs
                 )
-                logger.info(f"BM25索引构建完成: subject={subject_id}")
+                logger.info(f"BM25索引构建完成: subject={subject_id}, "
+                            f"文档={len(split_docs)}")
             except Exception as e:
                 logger.warning(f"BM25索引构建失败（不影响向量检索）: {str(e)}")
         
@@ -224,8 +263,9 @@ def load_knowledge_base(subject_id: str) -> Any:
         # 获取嵌入模型
         embeddings = get_embedding_model()
         
-        # 加载向量数据库
-        vector_store = load_vector_store(
+        # 加载向量数据库（v2.6：统一走 GlobalFAISS 缓存，避免每次检索重读磁盘）
+        # 此前直接调 load_vector_store，实测每次请求 21~41ms 全量反序列化
+        vector_store = GlobalFAISS.get(
             collection_name=_safe_dir_name(subject_id),
             embeddings=embeddings,
             persist_dir=persist_dir
@@ -247,9 +287,17 @@ def rerank_documents(
 ) -> List[Document]:
     """
     对检索结果进行重排序（Rerank）
-    
-    使用embedding相似度对文档重新排序，提升相关文档排名。
-    轻量级实现，不引入大型rerank模型。
+
+    v2.6 修复（性能 + 有效性）：
+    此前实现对**每一篇**文档调用 embed_query 重新编码（实测 8.4ms/条，
+    100 候选 = 841ms），而且这些向量在 FAISS 检索时刚刚算过、却被丢弃，
+    属于纯重复计算；同时 rerank 只改变排序、不改变召回集合，
+    实测开关对 recall@5 的影响恒为 0。
+
+    现在的策略（按优先级）：
+    1. 若候选来自检索且已带分数（metadata['retrieval_score']），直接复用
+       —— **零额外前向计算**；
+    2. 否则用 embed_documents **一次性批量**编码（实测 2ms/条，比逐条快 4 倍以上）。
     
     Args:
         question: 用户问题
@@ -261,43 +309,70 @@ def rerank_documents(
     """
     if not documents:
         return []
-    
+
     if not LOCAL_MODULES_AVAILABLE:
         return documents[:top_k]
-    
+
+    # 策略 1：复用检索阶段已算出的分数（最省）
+    scored = []
+    reused = 0
+    for doc in documents:
+        meta = getattr(doc, 'metadata', {}) or {}
+        s = meta.get('retrieval_score')
+        if s is not None:
+            try:
+                scored.append((doc, float(s)))
+                reused += 1
+                continue
+            except (TypeError, ValueError):
+                pass
+        scored.append((doc, None))
+
+    if reused == len(documents):
+        scored.sort(key=lambda x: x[1], reverse=True)
+        logger.debug(f"Rerank 复用检索分数: {len(documents)} 篇（0 次额外编码）")
+        return [d for d, _ in scored[:top_k]]
+
+    # 策略 2：批量编码（比逐条 embed_query 快 4 倍以上）
     try:
-        # 获取embedding模型
         embedding_model = get_embedding_model()
-        
-        # 计算问题的embedding
         query_embedding = embedding_model.embed_query(question)
-        
-        # 计算每个文档的embedding并与问题计算相似度
-        scored_docs = []
-        for doc in documents:
-            doc_text = doc.page_content if hasattr(doc, 'page_content') else str(doc)
-            doc_embedding = embedding_model.embed_query(doc_text)
-            
-            # 余弦相似度计算
-            similarity = _cosine_similarity(query_embedding, doc_embedding)
-            scored_docs.append((doc, similarity))
-        
-        # 按相似度降序排序
-        scored_docs.sort(key=lambda x: x[1], reverse=True)
-        
-        # 返回top_k并更新metadata中的rerank_score
+
+        need = [(i, d) for i, (d, s) in enumerate(scored) if s is None]
+        if need:
+            texts = [
+                (d.page_content if hasattr(d, 'page_content') else str(d))
+                for _, d in need
+            ]
+            # 一次性批量编码，而非 N 次 embed_query
+            doc_vectors = embedding_model.embed_documents(texts)
+            import numpy as _np
+            q = _np.asarray(query_embedding, dtype='float32')
+            qn = float(_np.linalg.norm(q)) or 1.0
+            M = _np.asarray(doc_vectors, dtype='float32')
+            norms = _np.linalg.norm(M, axis=1)
+            norms[norms == 0] = 1.0
+            sims = (M @ q) / (norms * qn)      # 向量化计算，替代 Python 三重循环
+            for (i, _), sim in zip(need, sims):
+                scored[i] = (scored[i][0], float(sim))
+
+        scored.sort(key=lambda x: (x[1] is None, -(x[1] or 0.0)))
+
         result = []
-        for doc, score in scored_docs[:top_k]:
+        for doc, score in scored[:top_k]:
             if hasattr(doc, 'metadata'):
-                doc.metadata['rerank_score'] = float(score)
+                doc.metadata['rerank_score'] = float(score or 0.0)
             result.append(doc)
-        
-        logger.debug(f"Rerank完成: {len(documents)}个文档 → {len(result)}个结果")
+
+        logger.debug(
+            f"Rerank 批量编码完成: {len(documents)} 篇（复用 {reused} 篇，"
+            f"新编码 {len(need)} 篇）→ {len(result)} 个结果")
         return result
-        
+
     except Exception as e:
         logger.warning(f"Rerank失败，返回原始排序: {str(e)}")
         return documents[:top_k]
+
 
 
 def _cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
@@ -404,7 +479,9 @@ def retrieve_context(
                     documents.append(doc)
 
             # Rerank重排序（向量检索不可用时跳过，避免依赖Embedding）
-            if use_rerank and len(documents) > top_k:
+            # v2.6：去掉 len(documents) > top_k 的前置条件。阈值过滤后候选数可能
+            # 已不足 top_k，此时若跳过精排会形成"既不精排也不足量"的空洞。
+            if use_rerank and len(documents) > 1:
                 documents = rerank_documents(question, documents, top_k)
 
             return documents[:top_k]
@@ -618,6 +695,20 @@ def delete_knowledge_base(subject_id: str) -> bool:
         
         # 删除整个学科目录
         shutil.rmtree(persist_path)
+
+        # v2.6 关键修复：让进程内缓存失效。
+        # 此前只删磁盘文件，GlobalFAISS._instances 与 _bm25_retrievers 仍持有旧索引，
+        # 导致「删除知识库后仍能检索到已删内容」——数据删除语义失效（合规风险）。
+        try:
+            GlobalFAISS.invalidate(_safe_dir_name(subject_id))
+        except Exception as e:
+            logger.warning(f"FAISS 缓存失效失败: {e}")
+        try:
+            if HYBRID_AVAILABLE:
+                from .hybrid_retriever import clear_index
+                clear_index(subject_id)
+        except Exception as e:
+            logger.warning(f"BM25 缓存失效失败: {e}")
         
         return True
         

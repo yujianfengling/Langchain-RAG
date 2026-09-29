@@ -384,11 +384,15 @@ def upload_file_to_subject(subject_id: str, file_content: bytes, filename: str) 
         file_path = subject_dir / safe_filename
 
         # 5. 检查文件是否已存在
-        if file_path.exists():
+        replaced = file_path.exists()
+        if replaced:
             logger.info(f"文件已存在，将覆盖: {safe_filename}")
 
         with open(file_path, 'wb') as f:
             f.write(file_content)
+
+        # v2.6：覆盖同名文件后旧索引仍指向旧内容，必须失效
+        stale = _invalidate_subject_index(subject_id) if replaced else False
 
         logger.info(f"文件上传成功: subject={subject_id}, file={safe_filename}, size={len(file_content)}")
 
@@ -398,7 +402,10 @@ def upload_file_to_subject(subject_id: str, file_content: bytes, filename: str) 
             "filename": safe_filename,
             "size": len(file_content),
             "status": "uploaded",
-            "message": f"文件 {safe_filename} 上传成功",
+            "replaced": replaced,
+            "index_stale": stale,
+            "message": (f"文件 {safe_filename} 上传成功"
+                        + ("（已覆盖同名文件，知识库索引已失效，请重新构建）" if stale else "")),
         }
         
     except KnowledgeServiceError:
@@ -523,13 +530,20 @@ def delete_subject_document(subject_id: str, filename: str) -> Dict[str, Any]:
         
         file_path.unlink()
         logger.info(f"文件删除成功: subject={subject_id}, file={safe_filename}")
-        
+
+        # v2.6 修复：删除源文件后必须让索引失效。
+        # 此前只 unlink 文件、索引岿然不动，用户删完文件立刻提问，
+        # 答案仍然引用那份已删文件的内容（100% 必然触发，不依赖并发或重启）。
+        stale = _invalidate_subject_index(subject_id)
+
         return {
             "success": True,
             "subject_id": subject_id,
             "filename": safe_filename,
             "status": "deleted",
-            "message": f"文件 {safe_filename} 已删除",
+            "index_stale": stale,
+            "message": (f"文件 {safe_filename} 已删除"
+                        + ("，知识库索引已失效，请重新构建" if stale else "")),
         }
         
     except KnowledgeServiceError:
@@ -537,6 +551,30 @@ def delete_subject_document(subject_id: str, filename: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"删除文件异常: {str(e)}", exc_info=True)
         raise KnowledgeServiceError("删除文件失败，请稍后重试")
+
+
+def _invalidate_subject_index(subject_id: str) -> bool:
+    """
+    使指定学科的内存索引缓存失效（v2.6 新增）。
+
+    删除或覆盖源文件后调用，避免进程内继续返回陈旧内容。
+    返回 True 表示确实存在索引（调用方据此提示用户重建）。
+    """
+    existed = False
+    try:
+        from rag.vector_store import GlobalFAISS
+        from rag.rag_service import _safe_dir_name
+        safe = _safe_dir_name(subject_id)
+        existed = GlobalFAISS.exists(safe)
+        GlobalFAISS.invalidate(safe)
+    except Exception as e:
+        logger.warning(f"FAISS 缓存失效失败: {e}")
+    try:
+        from rag.hybrid_retriever import clear_index
+        clear_index(subject_id)
+    except Exception as e:
+        logger.warning(f"BM25 缓存失效失败: {e}")
+    return existed
 
 
 def rebuild_subject_knowledge(subject_id: str) -> Dict[str, Any]:
@@ -570,22 +608,79 @@ def rebuild_subject_knowledge(subject_id: str) -> Dict[str, Any]:
         
         # 加载文档
         documents = load_documents(file_paths)
-        
-        # 删除旧知识库
+
+        # v2.6 关键修复：此前是「先删除旧知识库 → 再重建」，
+        # 一旦重建失败（抽取异常、维度不符、磁盘问题…）旧索引已不可恢复，
+        # 用户会直接丢失整个学科知识库。现在改为：
+        #   1) 先把旧索引备份到 .bak
+        #   2) 构建新索引
+        #   3) 成功则删除备份；失败则回滚备份
         persist_directory = _resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}")
-        if persist_directory.exists():
-            delete_knowledge_base(subject_id=subject_id)
-        
-        # 重新构建知识库
-        build_knowledge_base(
-            documents=documents,
-            subject_id=subject_id,
-        )
-        
+        bm25_directory = _resolve_path(f"data/bm25_index/{subject_id}")
+        backup_dir = persist_directory.parent / f"{persist_directory.name}.bak"
+        bm25_backup_dir = bm25_directory.parent / f"{bm25_directory.name}.bak"
+
+        def _backup():
+            """备份现有索引（存在才备份）"""
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir, ignore_errors=True)
+            if persist_directory.exists():
+                shutil.copytree(persist_directory, backup_dir)
+            if bm25_backup_dir.exists():
+                shutil.rmtree(bm25_backup_dir, ignore_errors=True)
+            if bm25_directory.exists():
+                shutil.copytree(bm25_directory, bm25_backup_dir)
+
+        def _rollback():
+            """用备份恢复旧索引"""
+            restored = False
+            if backup_dir.exists():
+                if persist_directory.exists():
+                    shutil.rmtree(persist_directory, ignore_errors=True)
+                shutil.copytree(backup_dir, persist_directory)
+                restored = True
+            if bm25_backup_dir.exists():
+                if bm25_directory.exists():
+                    shutil.rmtree(bm25_directory, ignore_errors=True)
+                shutil.copytree(bm25_backup_dir, bm25_directory)
+                restored = True
+            if restored:
+                _invalidate_subject_index(subject_id)
+                logger.warning(f"知识库重建失败，已从备份回滚: {subject_id}")
+
+        def _cleanup_backup():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            shutil.rmtree(bm25_backup_dir, ignore_errors=True)
+
+        _backup()
+        try:
+            # 删除旧索引后重建（失败会被下面的 except 回滚）
+            if persist_directory.exists():
+                delete_knowledge_base(subject_id=subject_id)
+
+            vector_store = build_knowledge_base(
+                documents=documents,
+                subject_id=subject_id,
+            )
+        except Exception:
+            _rollback()
+            raise
+        _cleanup_backup()
+
+        # 统计过滤效果（供前端提示"知识库体量"是否异常）
+        try:
+            from rag.vector_store import read_index_meta
+            meta = read_index_meta(str(persist_directory)) or {}
+        except Exception:
+            meta = {}
+
         return {
             "success": True,
             "subject_id": subject_id,
             "document_count": len(documents),
+            "chunk_count": getattr(vector_store, "count", lambda: None)(),
+            "chunks_before_filter": meta.get("chunks_before_filter"),
+            "chunks_dropped": meta.get("chunks_dropped"),
             "status": "rebuilt",
             "message": f"知识库 {subject_id} 重新构建成功",
         }

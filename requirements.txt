@@ -19,3 +19,7 @@ faiss-cpu
 Pillow>=9.0.0
 pytesseract>=0.3.10
 PyMuPDF>=1.23.0
+# v2.6：BM25 中文词级分词（BM25_TOKENIZER=word）。缺失时自动回退字符级分词。
+jieba>=0.42.1
+# v2.6：测试运行依赖（此前仓库有 28 个测试文件但未声明测试框架）
+pytest>=8.0.0

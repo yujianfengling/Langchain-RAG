@@ -37,6 +37,7 @@ const TeacherPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [selectedStudent, setSelectedStudent] = useState<string | null>(null);
   const [studentDetail, setStudentDetail] = useState<StudentOverview | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [selectedSubject, setSelectedSubject] = useState<string | undefined>(undefined);
 
   const loadData = useCallback(async () => {
@@ -85,6 +86,20 @@ const TeacherPage: React.FC = () => {
   };
 
   // ============ 学生详情视图 ============
+  // 已选中学生但详情尚未返回时，显示加载态（否则会瞬间落回班级列表，造成"点了没反应"）
+  if (selectedStudent && !studentDetail) {
+    return (
+      <div style={{ padding: 24 }}>
+        <Button type="link" icon={<ArrowLeftOutlined />} onClick={() => setSelectedStudent(null)} style={{ padding: 0 }}>
+          返回班级列表
+        </Button>
+        <div style={{ textAlign: 'center', padding: 60 }}>
+          <Spin size="large" spinning={detailLoading} />
+        </div>
+      </div>
+    );
+  }
+
   if (selectedStudent && studentDetail) {
     const stats = studentDetail.learning_stats || {};
     const weakPoints = studentDetail.weak_points || [];

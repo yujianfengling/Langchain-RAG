@@ -33,6 +33,9 @@ _bm25_retrievers: Dict[str, BM25Retriever] = {}
 # BM25索引持久化根目录（使用绝对路径）
 _BM25_INDEX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "bm25_index")
 
+# BM25 索引 schema 版本（v2.6）：分词方式或结构变更时递增，强制重建
+BM25_INDEX_VERSION = 2
+
 # ============ 检索诊断状态（线程安全） ============
 # retrieval_mode: hybrid_ready | vector_only | bm25_degraded | unavailable
 # fallback_reason: embedding_load_failed | faiss_index_missing | vector_search_failed | None
@@ -105,6 +108,7 @@ def _save_bm25_index(subject_id: str) -> None:
     保存内容：
     - documents: 原始Document对象列表
     - tokenized_corpus: 分词后的语料库
+    - tokenizer_mode / tokenizer_version: 供加载时校验（v2.6）
     """
     bm25 = _bm25_retrievers.get(subject_id)
     if bm25 is None or bm25.is_empty:
@@ -117,12 +121,26 @@ def _save_bm25_index(subject_id: str) -> None:
         data = {
             "documents": bm25._documents,
             "tokenized_corpus": bm25._tokenized_corpus,
+            # v2.6：记录分词模式。换分词器后旧语料与新查询 token 空间不一致，
+            # 会导致 BM25 静默失效（词级查询查字级语料，几乎命中不到）
+            "tokenizer_mode": _current_tokenizer_mode(),
+            "tokenizer_version": BM25_INDEX_VERSION,
         }
         with open(index_path, 'wb') as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-        logger.info(f"BM25索引已持久化: {index_path} ({bm25.doc_count}个文档)")
+        logger.info(f"BM25索引已持久化: {index_path} ({bm25.doc_count}个文档, "
+                    f"tokenizer={data['tokenizer_mode']})")
     except Exception as e:
         logger.error(f"BM25索引持久化失败: {e}", exc_info=True)
+
+
+def _current_tokenizer_mode() -> str:
+    """读取当前分词模式（用于索引校验）"""
+    try:
+        from .bm25_retriever import get_tokenizer_mode
+        return get_tokenizer_mode()
+    except Exception:
+        return "char"
 
 
 def _load_bm25_index(subject_id: str) -> bool:
@@ -145,15 +163,26 @@ def _load_bm25_index(subject_id: str) -> bool:
         
         documents = data.get("documents", [])
         tokenized_corpus = data.get("tokenized_corpus", [])
+
+        # v2.6：分词器一致性校验。不匹配时明确告警并拒绝加载，
+        # 避免"新分词器查询旧语料"导致的静默零命中。
+        # 注意：缺少 tokenizer_version 的索引属于 v2.6 之前的字级语料，
+        # 必须重建，否则词级查询会在字级语料上几乎命中不到。
+        saved_mode = data.get("tokenizer_mode")
+        cur_mode = _current_tokenizer_mode()
+        saved_ver = data.get("tokenizer_version")
+        if saved_ver != BM25_INDEX_VERSION or saved_mode != cur_mode:
+            logger.warning(
+                f"BM25 索引分词器不匹配/版本过旧，需重建知识库: "
+                f"索引(mode={saved_mode}, ver={saved_ver}) vs "
+                f"当前(mode={cur_mode}, ver={BM25_INDEX_VERSION}) subject={subject_id}")
+            return False
         
         if not documents:
             return False
         
         # 直接构造BM25Retriever，跳过add_documents的分词（已有tokenized_corpus）
-        retriever = BM25Retriever.__new__(BM25Retriever)
-        retriever._documents = documents
-        retriever._tokenized_corpus = tokenized_corpus
-        retriever._rebuild_index()
+        retriever = BM25Retriever.from_persisted(documents, tokenized_corpus)
         
         _bm25_retrievers[subject_id] = retriever
         logger.info(f"BM25索引已从磁盘加载: {index_path} ({retriever.doc_count}个文档)")
@@ -330,43 +359,36 @@ def _vector_search(
         return [], "faiss_index_missing"
 
     try:
-        results = vector_store.similarity_search(query, k=top_k)
+        # v2.6：取回真实相似度并按 threshold 过滤。
+        # 此前 distances 在 vector_store 内被丢弃，threshold 形同虚设，
+        # 毫不相关的 chunk 会一路进入 RRF → rerank → LLM 上下文。
+        scored = vector_store.similarity_search(
+            query, k=top_k, with_scores=True, score_threshold=threshold)
     except Exception as e:
         logger.error(f"向量检索失败: {str(e)}", exc_info=True)
         return [], "vector_search_failed"
 
     formatted = []
-    for i, result in enumerate(results):
-        content = ""
-        source = ""
-        metadata = {}
+    for result in scored:
+        # with_scores=True 返回 (Document, similarity)
+        if isinstance(result, tuple) and len(result) == 2:
+            doc, score = result
+        else:
+            doc, score = result, 0.0
 
-        if isinstance(result, dict):
-            content = result.get('content', result.get('text', ''))
-            source = result.get('source', result.get('metadata', {}).get('source', ''))
-            score = result.get('score', result.get('similarity', 0))
-            metadata = result.get('metadata', {})
-        elif hasattr(result, 'page_content'):
-            content = result.page_content
-            source = result.metadata.get('source', result.metadata.get('file_name', ''))
-            score = result.metadata.get('score', 0)
-            metadata = result.metadata
-        elif isinstance(result, tuple) and len(result) >= 2:
-            content = result[0]
-            score = result[1] if len(result) > 1 else 0
-            source = result[2] if len(result) > 2 else ''
-            if isinstance(source, dict):
-                metadata = source
-                source = metadata.get('source', metadata.get('file_name', ''))
-
+        content = getattr(doc, "page_content", "") or ""
+        metadata = getattr(doc, "metadata", {}) or {}
         if content:
             formatted.append({
                 'document': _make_simple_doc(content, metadata),
-                'score': float(score) if score else 0,
+                'score': float(score),
                 'retrieval_type': 'vector'
             })
 
+    if not formatted:
+        logger.info(f"向量检索无结果通过阈值({threshold}): subject={subject_id}")
     return formatted, None
+
 
 
 def _bm25_search(

@@ -66,7 +66,11 @@ class DocxLoader(BaseLoader):
                 # 创建 Document 对象
                 from langchain_core.documents import Document
                 metadata = {
-                    'source': str(file_path),
+                    # v2.6：source 只存文件名。此前存完整绝对路径，
+                    # 会被 build_context 拼进 LLM 提示词（"来源: D:\...\xxx.docx"），
+                    # 既泄露本地路径也浪费 token。
+                    'source': file_path.name,
+                    'source_path': str(file_path),
                     'file_name': file_path.name,
                     'file_type': 'docx'
                 }
