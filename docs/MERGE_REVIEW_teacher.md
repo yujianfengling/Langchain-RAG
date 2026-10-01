@@ -128,7 +128,13 @@
   教师认不出是谁；已改为 `display_name → username → user_id` 回退，详情卡标题同步。
   浏览器实测：首行 `resp_s_1366_158g …`，无 `user_xxx`。
 
-### 7.5 遗留
+### 7.5 推送结果
+
+- `git push origin local-consolidated-20260927:master` → `d7ff751..2c3ee03`（**fast-forward**，退出码 0）。
+- 本地 `master` 已快进到 `2c3ee03`，与 `origin/master` 一致。**未 force push、未改写历史、未动其它分支与 tag。**
+
+### 7.6 遗留
 
 - 该面板的窄屏（≤900px）显示未单独做"显示名"检查（三档屏宽的溢出检查已覆盖）。
+- 密钥轮换、真实小班试用、人工语音试听三项仍是**未完成**状态，见 `PROJECT_STATUS.md` 的"阻塞项"。
 - 推送是否成功以实际 `git push` 输出为准，网络不可达时不得写成"已推送"。

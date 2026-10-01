@@ -472,10 +472,14 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
   但如实记录：该条检查在慢机器上仍有偶发失败的可能。
 - 数据隔离：全部验证均在后端 `EDU_DATA_DIR=git_text_e2e_data`（`isolated: true`）下进行，正式库未被写入。
 
-### 4. 仍未完成
+### 4. 推送结果（已完成）
 
-- 推送 `origin/master` 需要 GitHub 网络可达；本轮 `git fetch` 一次失败（连接被重置），
-  推送结果以实际执行结果为准记录，未成功时不得写成"已推送"。
+- 推送目标：`origin/master`（`github.com/yujianfengling/Langchain-RAG`），**fast-forward，未 force push、未改写历史**。
+- 实际输出：`d7ff751..2c3ee03  local-consolidated-20260927 -> master`（退出码 0）。
+- 本地 `master` 随后快进到同一提交 `2c3ee03`，与 `origin/master` 一致（`git rev-parse` 两个 ref 相同）。
+- 推送前 `git fetch` 曾失败一次（`Recv failure: Connection was reset`，网络原因）；
+  推送时重新确认 `git ls-remote origin master` 仍为 `d7ff751`（远端未前进），再执行的推送。
+- **未做**：没有推送其它分支、没有删远端分支、没有改 tags。
 
 ## 阻塞项（对外开放 / 正式汇报前必须由人完成）
 
