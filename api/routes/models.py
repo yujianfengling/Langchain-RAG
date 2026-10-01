@@ -111,7 +111,10 @@ async def switch_model_provider(request: SwitchModelRequest):
     切换模型提供商
     
     请求体:
-        {"model": "mimo"}
+        {"model": "deepseek"}
+
+    说明：仅影响本次调用方的后续请求（由各请求的 model 参数决定），
+    不改动后端默认文本模型（默认 DeepSeek，见 config/models.DEFAULT_MODEL）
     
     返回:
         {"success": true, "message": "模型切换成功"}

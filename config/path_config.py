@@ -3,22 +3,64 @@
 管理项目相关的路径配置
 """
 
+import os
 from pathlib import Path
 from typing import Dict, Any, List
 from .base import BaseConfig, Field, PYDANTIC_V2, get_project_root
 
 
+def get_data_dir() -> Path:
+    """
+    数据根目录（**唯一来源**）
+
+    - 默认：<项目根>/data
+    - 可用环境变量 `EDU_DATA_DIR` 覆盖
+
+    所有服务的数据库（chat.db / learning.db / learning_loop.db / user_agent.db /
+    auth.db）与资料目录（vector_store / bm25_index / subjects / subjects.json）
+    都必须由本函数推导，不要在各自模块里硬编码 "data"。
+
+    覆盖用途：
+    - 自动化测试与真实模型验收使用独立数据目录，不污染正式库
+    - 部署时把数据放到独立磁盘/挂载点
+    """
+    override = os.getenv("EDU_DATA_DIR")
+    if override and override.strip():
+        return Path(override.strip()).expanduser().resolve()
+    return get_project_root() / "data"
+
+
+def get_vector_store_dir() -> Path:
+    """向量库根目录"""
+    return get_data_dir() / "vector_store"
+
+
+def get_bm25_index_dir() -> Path:
+    """BM25 索引根目录"""
+    return get_data_dir() / "bm25_index"
+
+
+def get_subjects_dir() -> Path:
+    """学科资料根目录"""
+    return get_data_dir() / "subjects"
+
+
+def get_subjects_file() -> Path:
+    """学科清单文件"""
+    return get_data_dir() / "subjects.json"
+
+
 class PathConfig(BaseConfig):
     """路径配置"""
-    
+
     # 项目根目录
     project_root: Path = Field(default_factory=get_project_root)
-    
-    # 数据目录
-    data_dir: Path = Field(default_factory=lambda: get_project_root() / "data")
-    
+
+    # 数据目录（可用 EDU_DATA_DIR 覆盖）
+    data_dir: Path = Field(default_factory=get_data_dir)
+
     # 向量存储目录
-    vector_store_path: Path = Field(default_factory=lambda: get_project_root() / "data" / "vector_store")
+    vector_store_path: Path = Field(default_factory=get_vector_store_dir)
     
     @property
     def vector_store_dir(self) -> Path:

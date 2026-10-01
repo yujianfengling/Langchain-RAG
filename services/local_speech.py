@@ -1,0 +1,249 @@
+"""
+本地语音服务客户端（2026-09-26）
+
+职责：把"本地语音服务（独立进程）"包装成主后端可用的接口。
+
+设计（对应本轮要求）：
+- 模型推理在主进程之外（这里是 HTTP 调用），主项目的 Python 环境不需要装 torch/funasr
+- 健康状态带缓存，模型不可用时文字问答不受影响（调用方按 available=false 降级）
+- 失败原因如实透出（模型缺失 / 依赖缺失 / 显存不足 / 服务未启动 …），不伪装成功
+- 不做"用文本模型假装语音"的兜底
+
+配置（环境变量）：
+    SPEECH_BACKEND       local | mimo | auto   （默认 auto：本地优先，本地不可用再试 MiMo）
+    LOCAL_SPEECH_URL     默认 http://127.0.0.1:8100
+    LOCAL_SPEECH_TIMEOUT 单次请求超时（秒），默认 120
+"""
+
+import base64
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+from typing import Any, Dict, List, Optional
+
+from utils.logger import logger
+
+DEFAULT_URL = "http://127.0.0.1:8100"
+HEALTH_TTL_SECONDS = 10
+# 失败/超时结果的缓存时间（短）：避免一次瞬时超时把服务判死一段时间
+FAILURE_TTL_SECONDS = 2
+REQUEST_TIMEOUT = float(os.environ.get("LOCAL_SPEECH_TIMEOUT", "120"))
+# /health 超时：模型合成时 GIL 争用可能变慢，给足余量
+HEALTH_TIMEOUT = float(os.environ.get("LOCAL_SPEECH_HEALTH_TIMEOUT", "15"))
+
+
+class LocalSpeechError(Exception):
+    """本地语音服务异常（error_type 与 audio_service 的错误类型对齐）"""
+
+    def __init__(self, message: str, error_type: str = "speech_unavailable"):
+        self.message = message
+        self.error_type = error_type
+        super().__init__(message)
+
+
+# 健康状态缓存：{ "ts": float, "data": {...} }
+_HEALTH_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
+
+
+def base_url() -> str:
+    return (os.environ.get("LOCAL_SPEECH_URL") or DEFAULT_URL).rstrip("/")
+
+
+def backend_mode() -> str:
+    """语音后端选择：local / mimo / auto（默认 auto）"""
+    return (os.environ.get("SPEECH_BACKEND") or "auto").strip().lower()
+
+
+def _http(method: str, path: str, body: Optional[dict] = None,
+          timeout: float = REQUEST_TIMEOUT) -> Dict[str, Any]:
+    url = base_url() + path
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "ignore")
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"message": raw[:200]}
+        raise LocalSpeechError(
+            payload.get("message") or f"本地语音服务返回 {e.code}",
+            payload.get("error_type") or "speech_error")
+    except urllib.error.URLError as e:
+        raise LocalSpeechError(
+            f"本地语音服务未启动或无法连接（{base_url()}）：{e.reason}",
+            "speech_unavailable")
+    except TimeoutError:
+        raise LocalSpeechError("本地语音服务响应超时", "timeout")
+
+
+def health(force: bool = False) -> Dict[str, Any]:
+    """
+    查询本地语音服务状态（带缓存）
+
+    Returns:
+        {"running": bool, "asr": {...}, "tts": {...}, "vram": {...}, "reason": str}
+    """
+    now = time.time()
+    if not force and _HEALTH_CACHE["data"] is not None:
+        # 成功结果缓存久一些；失败只短暂缓存——模型合成时 /health 可能瞬时超时，
+        # 不能因此把服务判死一段时间（否则会误触发 MiMo 回退）
+        ttl = (HEALTH_TTL_SECONDS if not _HEALTH_CACHE["data"].get("reason")
+               else FAILURE_TTL_SECONDS)
+        if now - _HEALTH_CACHE["ts"] < ttl:
+            return _HEALTH_CACHE["data"]
+
+    result: Dict[str, Any] = {
+        "running": False, "asr": {"ready": False}, "tts": {"ready": False},
+        "vram": {"available": False}, "reason": "",
+    }
+    try:
+        data = _http("GET", "/health", timeout=HEALTH_TIMEOUT)
+        result["running"] = True
+        result["asr"] = (data.get("engines") or {}).get("asr") or {"ready": False}
+        result["tts"] = (data.get("engines") or {}).get("tts") or {"ready": False}
+        result["vram"] = data.get("vram") or {"available": False}
+        result["config"] = data.get("config") or {}
+    except LocalSpeechError as e:
+        result["reason"] = e.message
+    except Exception as e:  # 任何异常都不应影响文字问答
+        result["reason"] = f"本地语音服务状态未知：{e}"
+
+    _HEALTH_CACHE.update(ts=now, data=result)
+    return result
+
+
+def reset_health_cache() -> None:
+    _HEALTH_CACHE.update(ts=0.0, data=None)
+
+
+def is_enabled() -> bool:
+    """本地语音是否启用（含健康判断）"""
+    mode = backend_mode()
+    if mode == "mimo":
+        return False
+    if mode == "local":
+        return True
+    return True  # auto：本地优先，不可用时由调用方回退
+
+
+def asr_available() -> bool:
+    h = health()
+    return bool(h.get("running") and (h.get("asr") or {}).get("ready"))
+
+
+def tts_available() -> bool:
+    h = health()
+    return bool(h.get("running") and (h.get("tts") or {}).get("ready"))
+
+
+def warmup() -> Dict[str, Any]:
+    """手动预热（模型加载可能较慢）"""
+    reset_health_cache()
+    return _http("POST", "/warmup", timeout=max(REQUEST_TIMEOUT, 600))
+
+
+def list_voices() -> List[str]:
+    try:
+        data = _http("GET", "/voices", timeout=30)
+        return list(data.get("voices") or [])
+    except LocalSpeechError as e:
+        logger.debug(f"获取本地音色失败：{e.message}")
+        return []
+
+
+def transcribe(audio_bytes: bytes, filename: str = "audio.wav") -> Dict[str, Any]:
+    """
+    本地 ASR（multipart 上传）
+
+    Returns:
+        {"text": str, "engine": str, "latency_ms": float, "duration_s": float}
+    """
+    boundary = "----eduspeech" + base64.urlsafe_b64encode(
+        os.urandom(12)).decode("ascii").strip("=")
+    parts: List[bytes] = []
+    parts.append(f"--{boundary}\r\n".encode())
+    parts.append(
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n".encode())
+    parts.append(audio_bytes)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    payload = b"".join(parts)
+
+    req = urllib.request.Request(
+        base_url() + "/asr", data=payload, method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
+                 "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "ignore")
+        try:
+            payload_json = json.loads(raw)
+        except Exception:
+            payload_json = {"message": raw[:200]}
+        raise LocalSpeechError(payload_json.get("message") or f"本地识别失败（{e.code}）",
+                               payload_json.get("error_type") or "asr_failed")
+    except urllib.error.URLError as e:
+        raise LocalSpeechError(f"本地语音服务未启动（{e.reason}）", "speech_unavailable")
+    if not data.get("success"):
+        raise LocalSpeechError(data.get("message") or "本地识别失败",
+                               data.get("error_type") or "asr_failed")
+    return data
+
+
+def synthesize_segments(segments: List[str], voice: Optional[str] = None,
+                        speed: float = 1.0) -> Dict[str, Any]:
+    """
+    本地 TTS：逐段合成（顺序由服务端保证）
+
+    Returns:
+        {"items": [{"seq", "text", "audio_b64", "duration_s", "latency_ms"}], ...}
+    """
+    if not segments:
+        raise LocalSpeechError("待合成文本为空", "empty_text")
+    data = _http("POST", "/tts/segments",
+                 {"segments": segments, "voice": voice, "speed": speed})
+    if not data.get("success"):
+        raise LocalSpeechError(data.get("message") or "本地合成失败",
+                               data.get("error_type") or "tts_failed")
+    return data
+
+
+def ensure_available(what: str = "speech") -> None:
+    """给调用方用：不可用时抛带原因的异常"""
+    h = health()
+    if not h.get("running"):
+        raise LocalSpeechError(
+            h.get("reason") or "本地语音服务未启动（请运行 speech_service/run_speech_service.py）",
+            "speech_unavailable")
+    engine = h.get(what) or {}
+    if not engine.get("ready"):
+        reason = engine.get("error") or f"{what} 引擎未就绪（state={engine.get('state')}）"
+        raise LocalSpeechError(reason, engine.get("error_type") or "engine_not_ready")
+
+
+__all__ = [
+    "LocalSpeechError",
+    "backend_mode",
+    "base_url",
+    "health",
+    "reset_health_cache",
+    "is_enabled",
+    "asr_available",
+    "tts_available",
+    "warmup",
+    "list_voices",
+    "transcribe",
+    "synthesize_segments",
+    "ensure_available",
+]

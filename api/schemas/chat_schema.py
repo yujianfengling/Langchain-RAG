@@ -2,7 +2,13 @@
 # 聊天接口数据模型
 
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+def _default_text_model() -> str:
+    """未指定模型时的默认文本模型（与 config/models.get_default_model 保持一致）"""
+    from config.models import get_default_model
+    return get_default_model()
 
 
 class ChatRequest(BaseModel):
@@ -18,12 +24,27 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """聊天响应"""
+    """聊天响应
+
+    结构化模式（smart_note/summary/explanation/advice/quiz）额外返回
+    message_type 与 payload —— 否则 response_model 会把结构化卡片数据过滤掉，
+    非流式调用方拿不到题单/笔记内容。
+    """
     success: bool = True
     answer: str
     sources: List[dict] = []
-    model: str = "mimo"
+    # 实际使用的文本模型（未指定时由后端默认模型决定，默认 DeepSeek）
+    model: str = Field(default_factory=_default_text_model)
+    # 提供方键（deepseek / mimo / qwen）与展示名，便于核验"显示 = 实际调用"
+    provider: Optional[str] = None
+    provider_display: Optional[str] = None
     latency: float = 0.0
+    context_used: bool = False
+    message_type: Optional[str] = None
+    payload: Optional[dict] = None
+    detail_level: Optional[str] = None
+    # 本轮教学策略与依据（画像 → 教学安排的可解释输出）
+    teaching: Optional[dict] = None
 
 
 class ChatStreamRequest(BaseModel):

@@ -22,7 +22,6 @@ interface LearningPathPanelProps {
 }
 
 const LearningPathPanel: React.FC<LearningPathPanelProps> = ({
-  userId = 'default_user',
   subjectId,
   onTopicClick,
 }) => {
@@ -33,7 +32,7 @@ const LearningPathPanel: React.FC<LearningPathPanelProps> = ({
     if (!subjectId) return;
     setLoading(true);
     try {
-      const res = await getLearningPath(userId, subjectId);
+      const res = await getLearningPath(subjectId);
       setLearningPath(res?.data || []);
     } catch (error) {
       console.error('加载学习路径失败:', error);
@@ -44,7 +43,7 @@ const LearningPathPanel: React.FC<LearningPathPanelProps> = ({
 
   useEffect(() => {
     loadData();
-  }, [userId, subjectId]);
+  }, [subjectId]);
 
   const getStepIcon = (item: LearningPathItem) => {
     switch (item.status) {

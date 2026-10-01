@@ -19,7 +19,6 @@ interface UserProfileDashboardProps {
 }
 
 const UserProfileDashboard: React.FC<UserProfileDashboardProps> = ({
-  userId = 'default_user',
   subjectId,
 }) => {
   const [loading, setLoading] = useState(false);
@@ -31,8 +30,8 @@ const UserProfileDashboard: React.FC<UserProfileDashboardProps> = ({
     setLoading(true);
     try {
       const [summaryRes, statsRes] = await Promise.all([
-        getProgressSummary(userId, subjectId).catch(() => ({ data: null })),
-        getLearningStats(userId, subjectId).catch(() => ({ data: null })),
+        getProgressSummary(subjectId).catch(() => ({ data: null })),
+        getLearningStats(subjectId).catch(() => ({ data: null })),
       ]);
       setSummary(summaryRes?.data || null);
       setStats(statsRes?.data || null);
@@ -45,7 +44,7 @@ const UserProfileDashboard: React.FC<UserProfileDashboardProps> = ({
 
   useEffect(() => {
     loadData();
-  }, [userId, subjectId]);
+  }, [subjectId]);
 
   if (!subjectId) {
     return (

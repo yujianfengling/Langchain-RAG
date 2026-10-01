@@ -50,7 +50,6 @@ interface ProgressSummary {
 }
 
 const LearningProgressPanel: React.FC<LearningProgressPanelProps> = ({
-  userId = 'default_user',
   subjectId,
   currentTopic,
   compact = false,
@@ -66,10 +65,10 @@ const LearningProgressPanel: React.FC<LearningProgressPanelProps> = ({
     setLoading(true);
     try {
       const [weakRes, strongRes, recRes, summaryRes] = await Promise.all([
-        getWeakPoints(userId, subjectId).catch(() => ({ data: [] })),
-        getStrongPoints(userId, subjectId).catch(() => ({ data: [] })),
-        getRecommendations(userId, subjectId, currentTopic).catch(() => ({ data: { recommendations: [] } })),
-        getProgressSummary(userId, subjectId).catch(() => ({ data: null })),
+        getWeakPoints(subjectId).catch(() => ({ data: [] })),
+        getStrongPoints(subjectId).catch(() => ({ data: [] })),
+        getRecommendations(subjectId, currentTopic).catch(() => ({ data: { recommendations: [] } })),
+        getProgressSummary(subjectId).catch(() => ({ data: null })),
       ]);
       setWeakPoints(weakRes?.data || []);
       setStrongPoints(strongRes?.data || []);
@@ -84,7 +83,7 @@ const LearningProgressPanel: React.FC<LearningProgressPanelProps> = ({
 
   useEffect(() => {
     loadData();
-  }, [userId, subjectId, currentTopic]);
+  }, [subjectId, currentTopic]);
 
   const getMasteryColor = (level: number) => {
     if (level >= 0.7) return '#52c41a';

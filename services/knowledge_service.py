@@ -1,6 +1,7 @@
 # services/knowledge_service.py
 # 知识库业务服务层
 
+from config.path_config import get_data_dir
 import os
 import re
 import shutil
@@ -116,14 +117,63 @@ def validate_file_size(file_content: bytes) -> Tuple[bool, str]:
 
 
 def _resolve_path(path_str: str) -> Path:
-    """将路径解析为绝对路径
-    
-    如果是相对路径，则基于项目根目录解析
+    """
+    将路径解析为绝对路径
+
+    - 以 `data/` 开头 → 基于统一数据根目录（config.path_config.get_data_dir，
+      可用 EDU_DATA_DIR 覆盖），保证测试/部署可与正式数据隔离
+    - 其余相对路径 → 基于项目根目录
     """
     p = Path(path_str)
     if not p.is_absolute():
-        p = PROJECT_ROOT / p
+        parts = p.parts
+        if parts and parts[0] == "data":
+            p = get_data_dir().joinpath(*parts[1:])
+        else:
+            p = PROJECT_ROOT / p
     return p.resolve()
+
+
+# 允许被扫描/建库的受控根目录（阶段一补验安全修复）
+# 说明：建库接口此前接受任意绝对路径，匿名者可以让服务扫描服务器任意目录
+# 并把内容索引进知识库（再经检索接口外泄）。这里把可扫描范围限制在
+# 受控目录内，越界一律拒绝。
+_ALLOWED_SOURCE_ROOTS = (
+    PROJECT_ROOT / "data" / "subjects",
+    PROJECT_ROOT / "data" / "uploads",
+    PROJECT_ROOT / "data" / "knowledge_sources",
+)
+
+
+def ensure_allowed_source_dir(path_str: str) -> Path:
+    """
+    校验"知识库源目录"是否位于受控根目录内，返回解析后的绝对路径。
+
+    Raises:
+        KnowledgeServiceError: 路径越界 / 不存在 / 不是目录
+    """
+    if not path_str or not str(path_str).strip():
+        raise KnowledgeServiceError("源目录不能为空")
+    resolved = _resolve_path(path_str)
+    allowed = False
+    for root in _ALLOWED_SOURCE_ROOTS:
+        try:
+            root_resolved = root.resolve()
+        except OSError:
+            continue
+        if resolved == root_resolved or root_resolved in resolved.parents:
+            allowed = True
+            break
+    if not allowed:
+        logger.warning(f"拒绝越界的知识库源目录: {resolved}")
+        raise KnowledgeServiceError(
+            "源目录必须是受控目录下的子目录（data/subjects、data/uploads、"
+            "data/knowledge_sources）")
+    if not resolved.exists():
+        raise KnowledgeServiceError("源目录不存在")
+    if not resolved.is_dir():
+        raise KnowledgeServiceError("路径不是目录")
+    return resolved
 
 
 class KnowledgeServiceError(Exception):
@@ -146,15 +196,8 @@ def build_subject_knowledge(subject_id: str, source_path: str) -> Dict[str, Any]
         KnowledgeServiceError: 构建失败时抛出
     """
     try:
-        # 解析路径为绝对路径
-        docs_path = _resolve_path(source_path)
-        
-        # 检查路径是否存在
-        if not docs_path.exists():
-            raise KnowledgeServiceError(f"源文件目录不存在: {source_path} (解析为: {docs_path})")
-        
-        if not docs_path.is_dir():
-            raise KnowledgeServiceError(f"路径不是目录: {source_path}")
+        # 解析并校验路径（仅允许受控目录，防止扫描服务器任意路径）
+        docs_path = ensure_allowed_source_dir(source_path)
         
         # 收集目录下的所有文件路径
         supported_extensions = {'.txt', '.md', '.pdf', '.docx', '.png', '.jpg', '.jpeg', '.webp'}
@@ -252,6 +295,16 @@ def cleanup_subject_data(subject_id: str) -> None:
                 logger.info(f"清理学科数据: {p}")
         except Exception as e:
             logger.warning(f"清理学科数据失败（不阻断删除）: {rel}, {str(e)}")
+
+
+def get_vector_store_dir(subject_id: str) -> str:
+    """
+    获取学科向量库目录（统一路径解析入口）
+
+    供接口层做"知识库是否已构建"的前置校验，避免各处各自硬编码项目根目录。
+    """
+    from rag.rag_service import _safe_dir_name
+    return str(_resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}"))
 
 
 def list_knowledge_bases() -> List[Dict[str, str]]:
@@ -459,6 +512,9 @@ def get_subject_documents(subject_id: str) -> List[Dict[str, Any]]:
     Raises:
         KnowledgeServiceError: 获取失败时抛出
     """
+    # subject_id 安全校验（此前本函数缺少校验，与其它函数不一致）
+    if not subject_id or not re.match(r'^[\w一-鿿-]+$', subject_id):
+        raise KnowledgeServiceError("学科ID格式不合法")
     try:
         subject_dir = _resolve_path(f"data/subjects/{subject_id}")
         

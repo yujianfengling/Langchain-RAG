@@ -6,7 +6,7 @@ import {
   BookOutlined, EditOutlined, WarningOutlined, BulbOutlined,
   QuestionCircleOutlined,
 } from '@ant-design/icons';
-import { QuizList } from '../SmartNoteTool';
+import QuizList from '../QuizList';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -27,8 +27,24 @@ const NoteSection: React.FC<{
   </div>
 );
 
+/** 卡片上下文：用于把作答关联到来源学科/会话 */
+export interface StructuredMessageProps {
+  messageType: string;
+  payload: any;
+  subjectId?: string;
+  conversationId?: string;
+  /** 来源学习任务：作答会关联到该任务（可追溯） */
+  sourceTaskId?: string;
+  /** 作答完成后回调（父组件可刷新掌握度/错题） */
+  onAnswered?: () => void;
+}
+
+/** 卡片入参（不需要 messageType，由外层 switch 决定） */
+type CardProps = Omit<StructuredMessageProps, 'messageType'>;
+
 // 智能笔记 Card
-const SmartNoteCard: React.FC<{ payload: any }> = ({ payload }) => {
+const SmartNoteCard: React.FC<CardProps> = (
+  { payload, subjectId, conversationId, sourceTaskId, onAnswered }) => {
   if (!payload) return <Empty description="暂无内容" />;
   return (
     <div style={{ width: '100%' }}>
@@ -44,18 +60,31 @@ const SmartNoteCard: React.FC<{ payload: any }> = ({ payload }) => {
           自测题
         </Space>
       </Title>
-      <QuizList quizzes={payload.quiz || []} />
+      <QuizList
+        quizzes={payload.quiz || []}
+        subjectId={subjectId}
+        conversationId={conversationId}
+        sourceTaskId={sourceTaskId}
+        onAnswered={onAnswered}
+      />
     </div>
   );
 };
 
 // 自测题 Card
-const QuizCard: React.FC<{ payload: any }> = ({ payload }) => {
+const QuizCard: React.FC<CardProps> = (
+  { payload, subjectId, conversationId, sourceTaskId, onAnswered }) => {
   const quizzes = payload?.quiz || [];
   return (
     <div style={{ width: '100%' }}>
       <Title level={5} style={{ marginTop: 0 }}>自测题</Title>
-      <QuizList quizzes={quizzes} />
+      <QuizList
+        quizzes={quizzes}
+        subjectId={subjectId}
+        conversationId={conversationId}
+        sourceTaskId={sourceTaskId}
+        onAnswered={onAnswered}
+      />
     </div>
   );
 };
@@ -122,17 +151,25 @@ const AdviceCard: React.FC<{ payload: any }> = ({ payload }) => (
  * 根据 message_type 渲染对应 Card；历史对话重新打开后，
  * 从 payload_json 恢复结构化 Card，而不是降级为纯文本。
  */
-const StructuredMessage: React.FC<{ messageType: string; payload: any }> = ({
+const StructuredMessage: React.FC<StructuredMessageProps> = ({
   messageType,
   payload,
+  subjectId,
+  conversationId,
+  sourceTaskId,
+  onAnswered,
 }) => {
   if (!payload) return null;
 
   switch (messageType) {
     case 'smart_note':
-      return <SmartNoteCard payload={payload} />;
+      return <SmartNoteCard payload={payload} subjectId={subjectId}
+                            conversationId={conversationId} sourceTaskId={sourceTaskId}
+                            onAnswered={onAnswered} />;
     case 'quiz':
-      return <QuizCard payload={payload} />;
+      return <QuizCard payload={payload} subjectId={subjectId}
+                       conversationId={conversationId} sourceTaskId={sourceTaskId}
+                       onAnswered={onAnswered} />;
     case 'summary':
       return <SummaryCard payload={payload} />;
     case 'explanation':

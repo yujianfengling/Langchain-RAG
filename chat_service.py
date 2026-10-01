@@ -51,10 +51,11 @@ except ImportError as e:
 
 # 导入日志
 # 导入用户画像模块（V2.6 Agent自我学习）
+# 阶段一说明：学习记录统一走事件层（services.learning_events）并归属真实用户，
+# 不再直接调用 learning_loop 的旧回调（那些回调会按"行为"直接抬高掌握度）。
 try:
-    from services.user_profiler import record_interaction, update_knowledge_level
+    from services.user_profiler import record_interaction
     from services.adaptive_retriever import get_personalized_system_prompt
-    from services.learning_loop import on_note_generated, on_quiz_answered, on_chat_completed
     AGENT_AVAILABLE = True
 except ImportError:
     AGENT_AVAILABLE = False
@@ -103,6 +104,24 @@ def detect_detail_level(question: str) -> str:
     return DETAIL_CONCISE
 
 
+# ============ 默认文本模型 ============
+
+def _default_text_model() -> str:
+    """
+    未指定模型时使用的默认文本模型（单一解析入口，见 config/models.get_default_model）
+
+    2026-09-25：MiMo 会员到期，默认文本模型为 DeepSeek；此处不再硬编码任何提供方名。
+    """
+    from config.models import get_default_model
+    return get_default_model()
+
+
+def _resolved_provider(model: Optional[str] = None) -> str:
+    """本次实际使用的提供方键（deepseek / mimo / qwen），与 config 解析同源"""
+    from services.ai_service import resolve_model_info
+    return resolve_model_info(model).get("provider") or _default_text_model()
+
+
 # ============ 非流式聊天 ============
 
 def chat_with_ai(
@@ -116,6 +135,7 @@ def chat_with_ai(
     image_mime_type: Optional[str] = None,
     conversation_id: Optional[str] = None,
     mode: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     智能问答主函数（非流式）
@@ -131,6 +151,7 @@ def chat_with_ai(
         image_mime_type: 图片MIME类型（可选）
         conversation_id: 会话ID（V2.5.1，服务端持久化上下文）
         mode: 学习模式（V2.5.1，结构化模式）
+        user_id: 当前用户ID（阶段一：由后端身份机制取得，用于学习记录归属与个性化）
 
     Returns:
         响应字典：success, answer, sources, context_used, subject_id, model, latency, error
@@ -143,7 +164,7 @@ def chat_with_ai(
         "sources": [],
         "context_used": False,
         "subject_id": subject_id,
-        "model": model or "mimo",
+        "model": model or _default_text_model(),
         "confidence": "medium",
         "latency": 0.0,
         "error": None,
@@ -178,34 +199,39 @@ def chat_with_ai(
             message_type = result["message_type"]
             payload = result["payload"]
             content = result["content"]
-            model_name = result.get("model") or model or "mimo"
+            model_name = result.get("model") or model or _default_text_model()
 
+            structured_msg_id = None
             if conversation_id:
                 try:
                     from services.conversation_service import (
                         add_message, update_conversation_title, touch_conversation,
+                        get_conversation,
                     )
-                    add_message(conversation_id, "user", question,
-                                message_type=mode, model=model)
-                    update_conversation_title(conversation_id, _make_title(question))
-                    add_message(conversation_id, "assistant", content,
-                                message_type=message_type, payload=payload,
-                                model=model_name, latency=time.time() - start_time)
-                    touch_conversation(conversation_id, model=model_name)
+                    # 阶段一补验：只允许写入本人会话（越权则跳过持久化，不影响本次回答）
+                    if get_conversation(conversation_id, user_id=user_id):
+                        add_message(conversation_id, "user", question,
+                                    message_type=mode,
+                                    model=model or _default_text_model())
+                        update_conversation_title(conversation_id, _make_title(question),
+                                                  user_id=user_id)
+                        saved = add_message(conversation_id, "assistant", content,
+                                            message_type=message_type, payload=payload,
+                                            model=model_name, latency=time.time() - start_time)
+                        structured_msg_id = saved.get("id") if isinstance(saved, dict) else None
+                        touch_conversation(conversation_id, model=model_name, user_id=user_id)
+                    else:
+                        logger.warning(f"会话 {conversation_id} 不属于当前用户，"
+                                       f"跳过结构化消息持久化")
                 except Exception as e:
                     logger.error(f"写入结构化消息失败: {e}", exc_info=True)
 
-
-            # V2.6: 学习闭环回调
-            if AGENT_AVAILABLE:
-                try:
-                    if mode == "smart_note":
-                        on_note_generated("default_user", subject_id or "", question, payload)
-                    elif mode == "quiz":
-                        from services.user_profiler import record_interaction
-                        record_interaction("default_user", "quiz", subject_id, question, f"生成{len(payload.get('quiz', []))}道题", model=model_name)
-                except Exception as e:
-                    logger.warning(f"学习闭环回调失败（不影响主流程）: {e}")
+            # 阶段一：结构化学习事件（归属真实用户；只记录行为，不伪造掌握度）
+            _record_structured_interaction(
+                user_id=user_id, subject_id=subject_id, mode=mode, question=question,
+                payload=payload, model=model_name, conversation_id=conversation_id,
+                message_id=structured_msg_id,
+            )
 
             response.update({
                 "success": True,
@@ -243,7 +269,8 @@ def chat_with_ai(
                     get_conversation, add_message, get_recent_history,
                     update_conversation_title, touch_conversation,
                 )
-                conv = get_conversation(conversation_id)
+                # 阶段一补验：对象级归属校验（不属于本人按"不存在"处理）
+                conv = get_conversation(conversation_id, user_id=user_id)
                 if not conv:
                     response["error"] = "会话不存在，请刷新后重试"
                     response["latency"] = time.time() - start_time
@@ -252,11 +279,14 @@ def chat_with_ai(
                     response["error"] = "会话学科与当前学科不一致，请切换会话"
                     response["latency"] = time.time() - start_time
                     return response
-                add_message(conversation_id, "user", question, model=model)
-                update_conversation_title(conversation_id, _make_title(question))
-                touch_conversation(conversation_id, model=model)
+                add_message(conversation_id, "user", question,
+                            model=model or _default_text_model())
+                update_conversation_title(conversation_id, _make_title(question),
+                                          user_id=user_id)
+                touch_conversation(conversation_id, model=model, user_id=user_id)
                 # 服务端读取最近历史（优先 DB，不信任前端 history）
-                db_history = get_recent_history(conversation_id, max_turns=10)
+                db_history = get_recent_history(conversation_id, max_turns=10,
+                                                user_id=user_id)
                 history = db_history if db_history else (history or [])
             except Exception as e:
                 logger.error(f"会话上下文处理失败: {e}", exc_info=True)
@@ -281,13 +311,10 @@ def chat_with_ai(
             context = ""
         response["sources"] = extract_sources(context_docs) if context_used else []
 
-        # 3. 详细程度判断 + 构造Prompt（V2.5.3：默认简洁，仅明确要求时展开）
+        # 3. 详细程度判断 + 构造Prompt（简洁优先；阶段二接入真实学习状态）
         detail_level = detect_detail_level(question)
-        system_message = (
-            _DEFAULT_SYSTEM_MESSAGE
-            if detail_level == DETAIL_CONCISE
-            else _get_expanded_system_message()
-        )
+        system_message, teaching_ctx = _personalized_system_message(
+            user_id, subject_id, detail_level, question=question)
         if history:
             formatted_history = _format_history(history)
             prompt = get_education_prompt_with_context(question, context, formatted_history)
@@ -305,25 +332,50 @@ def chat_with_ai(
             max_tokens=max_tokens,
         )
         response["detail_level"] = detail_level
+        if teaching_ctx:
+            # 透出"为什么这样安排"，前端可展示，也便于验收核查
+            response["teaching"] = {
+                "mode": teaching_ctx.get("teaching_mode"),
+                "reasons": teaching_ctx.get("reasons"),
+                "signals": teaching_ctx.get("signals"),
+                "applied": teaching_ctx.get("applied"),
+            }
 
         # 5. 获取模型信息
-        from services.model_service import get_model_config
-        model_config = get_model_config(model)
-        response["model"] = model_config.get("name", model or "mimo")
+        #    约定：model = 实际调用的模型名（如 deepseek-chat），provider = 提供方键（如 deepseek）；
+        #    两者都由后端解析结果决定，保证"显示 = 实际调用"。
+        from services.model_service import get_model_config, get_model_provider
+        provider_key = model or _default_text_model()
+        try:
+            resolved_name = get_model_provider(provider_key).config.get("model_name")
+        except Exception:
+            resolved_name = get_model_config(provider_key).get("model_name")
+        response["provider"] = provider_key
+        response["provider_display"] = get_model_config(provider_key).get("name", provider_key)
+        response["model"] = resolved_name or provider_key
 
         # 6. 持久化 assistant 消息（会话存在时）
+        assistant_msg_id = None
         if conversation_id:
             try:
                 from services.conversation_service import add_message, touch_conversation
                 model_name = response["model"]
-                add_message(
+                saved = add_message(
                     conversation_id, "assistant", answer,
                     message_type="chat", sources=response.get("sources", []),
                     model=model_name, latency=time.time() - start_time,
                 )
-                touch_conversation(conversation_id, model=model_name)
+                assistant_msg_id = saved.get("id") if isinstance(saved, dict) else None
+                touch_conversation(conversation_id, model=model_name, user_id=user_id)
             except Exception as e:
                 logger.error(f"写入assistant消息失败: {e}", exc_info=True)
+
+        # 6b. 记录学习交互（阶段一：与非流式/流式统一走事件层，幂等）
+        _record_chat_interaction(
+            user_id=user_id, subject_id=subject_id, question=question,
+            answer=answer, model=response.get("model"), latency=time.time() - start_time,
+            conversation_id=conversation_id, message_id=assistant_msg_id,
+        )
 
         # 7. 返回结果
         response["success"] = True
@@ -357,6 +409,7 @@ def chat_stream(
     image_mime_type: Optional[str] = None,
     conversation_id: Optional[str] = None,
     mode: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Generator[Dict[str, Any], None, None]:
     """
     智能问答流式接口（SSE，真流式）
@@ -420,7 +473,8 @@ def chat_stream(
                 get_conversation, add_message, get_recent_history,
                 update_conversation_title, touch_conversation,
             )
-            conv_meta = get_conversation(conversation_id)
+            # 阶段一补验：只允许在本人会话上读写（否则本次回答不落库）
+            conv_meta = get_conversation(conversation_id, user_id=user_id)
             if not conv_meta:
                 yield {"type": "error", "message": "会话不存在，请刷新后重试",
                        "error_type": "invalid_request"}
@@ -444,6 +498,7 @@ def chat_stream(
                 model=model,
                 conversation_id=conversation_id,
                 start_time=start_time,
+                user_id=user_id,
             )
             return
 
@@ -452,16 +507,19 @@ def chat_stream(
         # 1. 持久化用户消息（会话存在时）
         if conv_meta:
             try:
-                add_message(conversation_id, "user", question, model=model)
-                update_conversation_title(conversation_id, _make_title(question))
-                touch_conversation(conversation_id, model=model)
+                add_message(conversation_id, "user", question,
+                            model=model or _default_text_model())
+                update_conversation_title(conversation_id, _make_title(question),
+                                          user_id=user_id)
+                touch_conversation(conversation_id, model=model, user_id=user_id)
             except Exception as e:
                 logger.error(f"写入用户消息失败: {e}", exc_info=True)
 
         # 2. 服务端读取最近历史（优先 DB；无会话时回退前端 history）
         if conv_meta:
             try:
-                db_history = get_recent_history(conversation_id, max_turns=10)
+                db_history = get_recent_history(conversation_id, max_turns=10,
+                                                user_id=user_id)
                 history = db_history if db_history else (history or [])
             except Exception as e:
                 logger.warning(f"读取会话历史失败: {e}")
@@ -487,13 +545,10 @@ def chat_stream(
             context = ""
         sources = extract_sources(context_docs) if context_used else []
 
-        # 5. 详细程度判断 + 构造Prompt（V2.5.3：默认简洁，仅明确要求时展开）
+        # 5. 详细程度判断 + 构造Prompt（简洁优先；阶段二接入真实学习状态）
         detail_level = detect_detail_level(question)
-        system_message = (
-            _DEFAULT_SYSTEM_MESSAGE
-            if detail_level == DETAIL_CONCISE
-            else _get_expanded_system_message()
-        )
+        system_message, teaching_ctx = _personalized_system_message(
+            user_id, subject_id, detail_level, question=question)
         if history:
             formatted_history = _format_history(history)
             prompt = get_education_prompt_with_context(question, context, formatted_history)
@@ -504,12 +559,14 @@ def chat_stream(
         from services.model_service import get_model_provider, get_model_config
         provider = get_model_provider(model)
         provider_config = provider.config
-        model_name = provider_config.get("model_name", model or "mimo")
+        model_name = provider_config.get("model_name", model or _default_text_model())
 
         # 7. 发送start事件
         yield {
             "type": "start",
             "model": model_name,
+            # 提供方键（deepseek / mimo / qwen），前端据此显示"实际使用的提供方"
+            "provider": provider.model_name,
             "confidence": "high" if context_used else "medium",
             "context_used": context_used,
             "subject_id": subject_id,
@@ -550,25 +607,42 @@ def chat_stream(
         )
 
         # 9. 持久化 assistant 消息（会话存在时）
+        assistant_msg_id = None
         if conv_meta:
             try:
-                add_message(
+                saved = add_message(
                     conversation_id, "assistant", full_answer,
                     message_type="chat", sources=sources,
                     model=model_name, latency=elapsed,
                 )
-                touch_conversation(conversation_id, model=model_name)
+                assistant_msg_id = saved.get("id") if isinstance(saved, dict) else None
+                touch_conversation(conversation_id, model=model_name, user_id=user_id)
             except Exception as e:
                 logger.error(f"写入assistant消息失败: {e}", exc_info=True)
+
+        # 9b. 记录学习交互（阶段一：流式路径此前漏记，现与非流式统一）
+        _record_chat_interaction(
+            user_id=user_id, subject_id=subject_id, question=question,
+            answer=full_answer, model=model_name, latency=elapsed,
+            conversation_id=conversation_id, message_id=assistant_msg_id,
+        )
 
         # 10. 发送done事件（一次性携带来源与统计）
         yield {
             "type": "done",
             "sources": sources,
             "model": model_name,
+            "provider": provider.model_name,
             "elapsed": elapsed,
             "ttft": ttft,
             "full_answer": full_answer,
+            # 教学策略与依据（前端可展示"为什么这样讲"）
+            "teaching": ({
+                "mode": teaching_ctx.get("teaching_mode"),
+                "reasons": teaching_ctx.get("reasons"),
+                "signals": teaching_ctx.get("signals"),
+                "applied": teaching_ctx.get("applied"),
+            } if teaching_ctx else None),
         }
 
     except AIServiceError as e:
@@ -596,6 +670,7 @@ def _handle_structured_mode(
     model: Optional[str],
     conversation_id: Optional[str],
     start_time: float,
+    user_id: Optional[str] = None,
 ) -> Generator[Dict[str, Any], None, None]:
     """
     结构化学习模式统一入口（V2.5.1）
@@ -609,7 +684,7 @@ def _handle_structured_mode(
     # 发送start事件
     yield {
         "type": "start",
-        "model": model or "mimo",
+        "model": model or _default_text_model(),
         "confidence": "high",
         "context_used": False,
         "subject_id": subject_id,
@@ -623,9 +698,10 @@ def _handle_structured_mode(
                 add_message, update_conversation_title, touch_conversation,
             )
             add_message(conversation_id, "user", question,
-                        message_type=mode, model=model)
-            update_conversation_title(conversation_id, _make_title(question))
-            touch_conversation(conversation_id, model=model)
+                        message_type=mode, model=model or _default_text_model())
+            update_conversation_title(conversation_id, _make_title(question),
+                                      user_id=user_id)
+            touch_conversation(conversation_id, model=model, user_id=user_id)
         except Exception as e:
             logger.error(f"写入结构化用户消息失败: {e}", exc_info=True)
 
@@ -634,26 +710,37 @@ def _handle_structured_mode(
         message_type = result.get("message_type", mode)
         payload = result.get("payload") or {}
         content = result.get("content") or ""
-        model_name = result.get("model", model or "mimo")
+        model_name = result.get("model") or model or _default_text_model()
 
         # 持久化 assistant 结构化消息
+        structured_msg_id = None
         if conversation_id:
             try:
                 from services.conversation_service import add_message, touch_conversation
-                add_message(
+                saved = add_message(
                     conversation_id, "assistant", content,
                     message_type=message_type, payload=payload,
                     model=model_name, latency=time.time() - start_time,
                 )
-                touch_conversation(conversation_id, model=model_name)
+                structured_msg_id = saved.get("id") if isinstance(saved, dict) else None
+                touch_conversation(conversation_id, model=model_name, user_id=user_id)
             except Exception as e:
                 logger.error(f"写入结构化assistant消息失败: {e}", exc_info=True)
+
+        # 阶段一：结构化学习事件（流式路径此前完全漏记）
+        _record_structured_interaction(
+            user_id=user_id, subject_id=subject_id, mode=mode, question=question,
+            payload=payload, model=model_name, conversation_id=conversation_id,
+            message_id=structured_msg_id,
+        )
 
         # done 事件携带 message_type + payload，前端渲染结构化 Card
         yield {
             "type": "done",
             "sources": [],
             "model": model_name,
+            # 结构化模式的实际提供方（未指定时即后端默认文本模型，当前 DeepSeek）
+            "provider": _resolved_provider(model),
             "elapsed": time.time() - start_time,
             "ttft": None,
             "full_answer": content,
@@ -743,6 +830,122 @@ def _dispatch_structured(
         "content": res.get("advice", "学习建议"),
         "model": res.get("model") or "",
     }
+
+
+def _record_structured_interaction(
+    user_id: Optional[str],
+    subject_id: Optional[str],
+    mode: Optional[str],
+    question: str,
+    payload: Any,
+    model: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    message_id: Optional[str] = None,
+) -> None:
+    """
+    记录结构化模式（智能笔记 / 自测题生成）的学习事件（阶段一）。
+
+    - 归属真实用户（由后端身份机制传入），不再写死 default_user
+    - 只记录"生成过"这一行为；掌握度仍只由真实作答证据决定
+    - 经事件层幂等（同一消息重复触发不会重复记录）
+    """
+    if not user_id:
+        return
+    event_type = {"smart_note": "note_generated",
+                  "quiz": "quiz_question_generated"}.get(mode or "")
+    if not event_type:
+        return
+    data = payload if isinstance(payload, dict) else {}
+    key = (f"{event_type}:{message_id}" if message_id
+           else f"{event_type}:{conversation_id or '-'}:{abs(hash(question))}")
+    try:
+        from services.learning_events import emit_event
+        emit_event(
+            event_type=event_type,
+            idempotency_key=key,
+            user_id=user_id,
+            subject_id=subject_id,
+            payload={
+                "topic": question,
+                "title": data.get("title"),
+                "model": model,
+                "quiz_count": len(data.get("quiz") or []),
+            },
+        )
+    except Exception as e:
+        logger.warning(f"记录结构化学习事件失败（不影响生成结果）: {e}")
+
+
+def _record_chat_interaction(
+    user_id: Optional[str],
+    subject_id: Optional[str],
+    question: str,
+    answer: str,
+    model: Optional[str],
+    latency: Optional[float],
+    conversation_id: Optional[str] = None,
+    message_id: Optional[str] = None,
+) -> None:
+    """
+    记录问答学习交互（阶段一：流式/非流式统一入口）。
+
+    - 归属真实用户（由后端身份机制传入）
+    - 通过事件层幂等；失败不影响回答
+    - 回写 interaction_id 到会话消息，供反馈按钮正确关联
+    """
+    if not user_id:
+        return
+    key = f"chat:{message_id}" if message_id else f"chat:{conversation_id}:{abs(hash(question))}"
+    try:
+        from services.learning_events import emit_event
+        emit_event(
+            event_type="chat_interaction",
+            idempotency_key=key,
+            user_id=user_id,
+            subject_id=subject_id,
+            payload={
+                "question": question,
+                "answer": answer,
+                "model": model,
+                "latency": latency,
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+            },
+        )
+    except Exception as e:
+        logger.warning(f"记录问答交互失败（不影响回答）: {e}")
+
+
+def _personalized_system_message(user_id: Optional[str], subject_id: Optional[str],
+                                 detail_level: str, question: str = "") -> tuple:
+    """
+    构造 system message：默认简洁；用户要求详细时展开；并按**真实学习状态**调整教学策略。
+
+    画像来源见 services/teaching_context.build_teaching_context：
+    - 学生明确设置的表达偏好（优先级最高）
+    - 与当前问题相关的知识点作答证据（只取相关的一个知识点，避免堆历史）
+    - 最近错误（不含答案）
+    - 当前任务/目标/剩余时间
+    - 生效中的学习记忆（可被学生更正/关闭）
+
+    画像不足时返回基础提示词，不虚构学生水平。
+    返回 (system_message, teaching_context)，便于接口层把"为什么这样安排"透出给前端。
+    """
+    base = (_DEFAULT_SYSTEM_MESSAGE if detail_level == DETAIL_CONCISE
+            else _get_expanded_system_message())
+    if not user_id or not subject_id:
+        return base, None
+    try:
+        from services.teaching_context import build_teaching_context
+        ctx = build_teaching_context(user_id, subject_id, question=question,
+                                    detail_level=detail_level)
+        block = ctx.get("prompt_block") or ""
+        if not block:
+            return base, ctx
+        return f"{base}\n\n{block}", ctx
+    except Exception as e:
+        logger.warning(f"教学上下文构建失败，使用默认提示词: {e}")
+        return base, None
 
 
 def _get_expanded_system_message() -> str:
@@ -847,13 +1050,15 @@ def check_chat_service_status() -> Dict[str, Any]:
 
 
 # 便捷函数
-def quick_chat(question: str, subject_id: Optional[str] = None) -> str:
+def quick_chat(question: str, subject_id: Optional[str] = None,
+               user_id: Optional[str] = None) -> str:
     """
-    快速问答（简化接口）
+    快速问答（简化接口，供脚本/调试使用）
 
     Args:
         question: 用户问题
-        subject_id: 学科ID
+        subject_id: 学科ID（可选）
+        user_id: 用户ID（可选；无用户上下文时不写学习记录，避免误记到他人名下）
 
     Returns:
         AI回答字符串
@@ -861,13 +1066,13 @@ def quick_chat(question: str, subject_id: Optional[str] = None) -> str:
     Raises:
         RuntimeError: 问答失败
     """
-    response = chat_with_ai(question, subject_id)
+    response = chat_with_ai(question, subject_id, user_id=user_id)
     if response["success"]:
-        # V2.6: 记录用户交互（Agent自我学习）
-        if AGENT_AVAILABLE:
+        # V2.6: 记录用户交互（Agent自我学习）——必须有真实用户归属
+        if AGENT_AVAILABLE and user_id:
             try:
                 record_interaction(
-                    user_id="default_user",
+                    user_id=user_id,
                     interaction_type="chat",
                     subject_id=subject_id,
                     question=question,

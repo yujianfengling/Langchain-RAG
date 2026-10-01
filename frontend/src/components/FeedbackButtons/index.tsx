@@ -4,14 +4,20 @@ import { LikeOutlined, DislikeOutlined, CheckCircleOutlined } from '@ant-design/
 import { submitFeedback } from '../../api/agent';
 
 interface FeedbackButtonsProps {
-  messageId?: string;
-  userId?: string;
+  /** 关联的真实用户交互记录 ID（由后端回写到消息上） */
+  interactionId?: string | null;
   onFeedback?: (type: 'good' | 'bad') => void;
 }
 
+/**
+ * 回答反馈按钮
+ *
+ * 阶段一修正：
+ * - 用户身份由后端依据登录令牌判定，前端不再提交 user_id
+ * - interaction_id 使用后端回写的真实交互 ID（此前误用 message_id，导致关联失败）
+ */
 const FeedbackButtons: React.FC<FeedbackButtonsProps> = ({
-  messageId,
-  userId = 'default_user',
+  interactionId,
   onFeedback,
 }) => {
   const [feedback, setFeedback] = useState<'good' | 'bad' | null>(null);
@@ -25,8 +31,7 @@ const FeedbackButtons: React.FC<FeedbackButtonsProps> = ({
     setSubmitting(true);
     try {
       await submitFeedback({
-        user_id: userId,
-        interaction_id: messageId,
+        interaction_id: interactionId || undefined,
         feedback_type: 'rating',
         feedback_score: type === 'good' ? 1 : -1,
       });
@@ -38,6 +43,7 @@ const FeedbackButtons: React.FC<FeedbackButtonsProps> = ({
       onFeedback?.(type);
     } catch (error) {
       console.error('提交反馈失败:', error);
+      message.error('反馈提交失败，请稍后重试');
     } finally {
       setSubmitting(false);
     }
@@ -47,8 +53,7 @@ const FeedbackButtons: React.FC<FeedbackButtonsProps> = ({
     setSubmitting(true);
     try {
       await submitFeedback({
-        user_id: userId,
-        interaction_id: messageId,
+        interaction_id: interactionId || undefined,
         feedback_type: 'correction',
         feedback_score: -1,
         feedback_detail: detailText,

@@ -31,8 +31,16 @@ import httpx
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from api.app import app
+from tests.fixtures_isolated import (
+    register_and_login, start_isolated_env, stop_isolated_env,
+)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 隔离环境（模块级）：临时 data/ + 临时库，避免读写正式数据
+_ENV = {}
+# 需要登录的接口所用的令牌（知识图谱/知识库接口现已要求身份）
+AUTH = {}
 
 # 长任务 Mock 睡眠时长（秒）
 LONG_TASK_SLEEP = 4
@@ -43,6 +51,16 @@ THRESHOLD_MS = 500
 GRAPH_SUBJECT = "test_resp_graph"
 
 BASE_URL = "http://test"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def isolated_env():
+    """整个模块在隔离数据目录里运行（不写正式 data/）"""
+    tmpdir, data_dir, patchers = start_isolated_env(("数据结构", GRAPH_SUBJECT))
+    _ENV["tmpdir"] = tmpdir
+    AUTH["headers"] = {"X-User-Token": register_and_login("resp_user")}
+    yield
+    stop_isolated_env(tmpdir, patchers)
 
 
 @pytest.fixture
@@ -232,8 +250,8 @@ async def test_health_responds_during_learning_plan(client):
 # ===== 5. Knowledge Graph（已后台化，验证不阻塞）=====
 
 def _ensure_graph_stub():
-    from rag.rag_service import _safe_dir_name
-    d = os.path.join(PROJECT_ROOT, "data", "vector_store", _safe_dir_name(GRAPH_SUBJECT))
+    from rag.rag_service import _safe_dir_name, _VECTOR_STORE_BASE
+    d = os.path.join(_VECTOR_STORE_BASE, _safe_dir_name(GRAPH_SUBJECT))
     os.makedirs(d, exist_ok=True)
     p = os.path.join(d, "index.pkl")
     if not os.path.exists(p):
@@ -243,8 +261,8 @@ def _ensure_graph_stub():
 
 def _clean_graph_stub():
     import shutil
-    from rag.rag_service import _safe_dir_name
-    d = os.path.join(PROJECT_ROOT, "data", "vector_store", _safe_dir_name(GRAPH_SUBJECT))
+    from rag.rag_service import _safe_dir_name, _VECTOR_STORE_BASE
+    d = os.path.join(_VECTOR_STORE_BASE, _safe_dir_name(GRAPH_SUBJECT))
     if os.path.exists(d):
         shutil.rmtree(d, ignore_errors=True)
 
@@ -253,7 +271,7 @@ async def _wait_graph_done(client, timeout=10):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            r = await client.get(f"/api/knowledge/{GRAPH_SUBJECT}/graph/status")
+            r = await client.get(f"/api/knowledge/{GRAPH_SUBJECT}/graph/status", headers=AUTH["headers"])
             st = r.json().get("data", {}).get("status")
             if st in ("success", "failed", "interrupted", "idle"):
                 return st
@@ -279,7 +297,7 @@ async def test_health_responds_during_knowledge_graph_build(client):
                 side_effect=_slow_build):
             ms, ok = await _assert_health_responsive(
                 client,
-                lambda: client.post(f"/api/knowledge/{GRAPH_SUBJECT}/graph/build"),
+                lambda: client.post(f"/api/knowledge/{GRAPH_SUBJECT}/graph/build", headers=AUTH["headers"]),
                 entered)
             await _wait_graph_done(client)
 
@@ -307,7 +325,7 @@ async def test_chat_available_during_knowledge_graph(client):
              mock.patch("chat_service.extract_sources", return_value=[]), \
              mock.patch("chat_service._call_llm_stream", side_effect=_fast_stream):
             long_task = asyncio.create_task(client.post(
-                f"/api/knowledge/{GRAPH_SUBJECT}/graph/build"))
+                f"/api/knowledge/{GRAPH_SUBJECT}/graph/build", headers=AUTH["headers"]))
             await asyncio.sleep(0.5)
 
             start = time.monotonic()

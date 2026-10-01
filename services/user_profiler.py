@@ -4,6 +4,7 @@
 实现用户建模、反馈收集、知识水平跟踪，为自适应检索和主动学习提供数据基础。
 """
 
+from config.path_config import get_data_dir
 import json
 import os
 import sqlite3
@@ -13,7 +14,8 @@ from typing import List, Dict, Any, Optional
 
 from utils.logger import logger
 
-_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+# 数据根目录统一来自 config.path_config（支持 EDU_DATA_DIR 覆盖）
+_DATA_DIR = str(get_data_dir())
 DB_PATH = os.path.join(_DATA_DIR, "user_agent.db")
 
 INTERACTION_TYPES = ("chat", "quiz", "note", "plan", "feedback")
@@ -75,6 +77,15 @@ def _init_db():
         CREATE INDEX IF NOT EXISTS idx_preferences_user ON learning_preferences(user_id);
         """)
         conn.commit()
+
+        # 阶段一新增列（知识点稳定 ID / 证据计数 / 掌握状态等）：
+        # 与 learning_data 共用列定义，保证"新建库"与"历史库迁移"结构一致，
+        # 不依赖应用启动顺序（脚本/测试/独立调用同样正确）。
+        try:
+            from services.learning_data import ensure_columns
+            ensure_columns(conn, "knowledge_mastery")
+        except Exception as e:
+            logger.warning(f"知识掌握表结构补齐失败: {e}")
     finally:
         conn.close()
 
@@ -192,17 +203,35 @@ def get_user_interactions(user_id, subject_id=None, interaction_type=None, limit
 # ==================== 反馈管理 ====================
 
 def submit_feedback(user_id, interaction_id=None, feedback_type="rating", feedback_score=None, feedback_detail=None, correction_text=None):
+    """
+    提交反馈。
+
+    阶段一补验：`interaction_id` 由客户端传入，必须校验归属，
+    否则可以覆写他人交互记录的反馈分（越权写入）。
+
+    - interaction_id 不存在或不属于当前用户 → 不写入反馈分（fail-closed）
+    """
     if feedback_type not in FEEDBACK_TYPES:
         raise UserProfileError(f"无效的反馈类型: {feedback_type}")
     if feedback_score is not None and feedback_score not in (1, -1, 0):
         raise UserProfileError("反馈分数必须是 1, -1, 或 0")
     conn = _get_db()
     try:
+        owned_interaction = False
+        if interaction_id:
+            row = conn.execute(
+                "SELECT user_id FROM user_interactions WHERE id = ?", (interaction_id,)).fetchone()
+            owned_interaction = bool(row) and row["user_id"] == user_id
+            if not owned_interaction:
+                logger.warning(f"反馈关联的交互不属于当前用户，忽略该关联: "
+                               f"user={user_id}, interaction={interaction_id}")
+                interaction_id = None
+
         fid = str(uuid.uuid4())
         now = _now()
         conn.execute("INSERT INTO user_feedback (id, user_id, interaction_id, feedback_type, feedback_score, feedback_detail, correction_text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (fid, user_id, interaction_id, feedback_type, feedback_score, feedback_detail, correction_text, now))
-        if interaction_id and feedback_score is not None:
-            conn.execute("UPDATE user_interactions SET feedback_score = ? WHERE id = ?", (feedback_score, interaction_id))
+        if owned_interaction and interaction_id and feedback_score is not None:
+            conn.execute("UPDATE user_interactions SET feedback_score = ? WHERE id = ? AND user_id = ?", (feedback_score, interaction_id, user_id))
         conn.commit()
         logger.info(f"收到用户反馈: {fid}, 类型: {feedback_type}, 分数: {feedback_score}")
         return fid
@@ -231,6 +260,13 @@ def get_user_feedback_stats(user_id):
 # ==================== 知识点掌握 ====================
 
 def update_knowledge_mastery(user_id, subject_id, knowledge_point, is_correct, mastery_delta=0.1):
+    """
+    [已废弃 · 请勿使用] 旧掌握度写入
+
+    问题：由调用方传入 is_correct 与 delta 直接加减掌握度，与阶段一
+    "后端权威判分 + 掌握度只由独立作答证据计算"的口径冲突。
+    替代：services/mastery_service.record_evidence / record_behavior。
+    """
     conn = _get_db()
     try:
         now = _now()
@@ -255,38 +291,70 @@ def update_knowledge_mastery(user_id, subject_id, knowledge_point, is_correct, m
 
 
 def get_weak_points(user_id, subject_id, threshold=0.4):
-    conn = _get_db()
+    """
+    薄弱知识点（阶段一：基于真实作答证据）
+
+    只返回"已有独立作答证据、且估计值低于阈值"的知识点。
+    无证据的知识点属于"待评估"，不混入薄弱列表，也不给默认分数
+    （避免"从没测过"被当成"已经掌握"或"薄弱"）。
+    """
     try:
-        return [_row_to_dict(r) for r in conn.execute("SELECT * FROM knowledge_mastery WHERE user_id = ? AND subject_id = ? AND mastery_level < ? ORDER BY mastery_level ASC", (user_id, subject_id, threshold)).fetchall()]
+        from services.mastery_service import list_mastery
+        points = [
+            m for m in list_mastery(user_id, subject_id)
+            if m["mastery_level"] is not None and m["mastery_level"] < threshold
+        ]
+        points.sort(key=lambda m: m["mastery_level"])
+        return points
     except Exception as e:
         raise UserProfileError(f"获取薄弱知识点失败: {str(e)}")
-    finally:
-        conn.close()
 
 
 def get_strong_points(user_id, subject_id, threshold=0.7):
-    conn = _get_db()
+    """强项知识点（阶段一：基于真实作答证据；口径同 get_weak_points）"""
     try:
-        return [_row_to_dict(r) for r in conn.execute("SELECT * FROM knowledge_mastery WHERE user_id = ? AND subject_id = ? AND mastery_level > ? ORDER BY mastery_level DESC", (user_id, subject_id, threshold)).fetchall()]
+        from services.mastery_service import list_mastery
+        points = [
+            m for m in list_mastery(user_id, subject_id)
+            if m["mastery_level"] is not None and m["mastery_level"] > threshold
+        ]
+        points.sort(key=lambda m: m["mastery_level"], reverse=True)
+        return points
     except Exception as e:
         raise UserProfileError(f"获取强项知识点失败: {str(e)}")
-    finally:
-        conn.close()
 
 
 # ==================== 学习偏好 ====================
 
 def set_learning_preference(user_id, preference_type, preference_value):
+    """
+    设置学习偏好（学生显式表达）。
+
+    阶段二：同时写入"学习记忆"的 preference 类型，使：
+    - 学生可在记忆页面看到并管理自己的显式设置
+    - 显式设置优先于系统推断（同 key 的推断不再参与教学）
+    """
     conn = _get_db()
     try:
         now = _now()
         conn.execute("INSERT INTO learning_preferences (id, user_id, preference_type, preference_value, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(user_id, preference_type) DO UPDATE SET preference_value = ?", (str(uuid.uuid4()), user_id, preference_type, preference_value, now, preference_value))
         conn.commit()
-        return True
     except Exception as e:
         raise UserProfileError(f"设置学习偏好失败: {str(e)}")
     finally:
         conn.close()
+
+    # 同步为显式记忆（失败不影响偏好本体，仅记录告警）
+    try:
+        from services import learning_memory
+        learning_memory.set_memory(
+            user_id=user_id, key=preference_type, value=str(preference_value),
+            memory_type=learning_memory.MEMORY_PREFERENCE,
+            scope=learning_memory.SCOPE_GLOBAL,
+            note="学生在设置中显式指定")
+    except Exception as e:
+        logger.warning(f"学习偏好同步到记忆失败（偏好已保存）: {e}")
+    return True
 
 
 def get_learning_preferences(user_id):
@@ -302,17 +370,46 @@ def get_learning_preferences(user_id):
 # ==================== 分析功能 ====================
 
 def analyze_user_performance(user_id, subject_id):
+    """
+    用户表现分析
+
+    阶段一修正：掌握度统计只统计"已有独立作答证据"的知识点，
+    无证据的记为 pending（待评估），不再用默认值参与平均分。
+    """
     conn = _get_db()
     try:
         istat = dict(conn.execute("SELECT COUNT(*) as total_interactions, AVG(feedback_score) as avg_feedback, SUM(CASE WHEN feedback_score = 1 THEN 1 ELSE 0 END) as positive_count, SUM(CASE WHEN feedback_score = -1 THEN 1 ELSE 0 END) as negative_count FROM user_interactions WHERE user_id = ? AND subject_id = ?", (user_id, subject_id)).fetchone())
-        mstat = dict(conn.execute("SELECT COUNT(*) as total_points, AVG(mastery_level) as avg_mastery, SUM(CASE WHEN mastery_level >= 0.7 THEN 1 ELSE 0 END) as strong_points, SUM(CASE WHEN mastery_level < 0.4 THEN 1 ELSE 0 END) as weak_points FROM knowledge_mastery WHERE user_id = ? AND subject_id = ?", (user_id, subject_id)).fetchone())
         ti = istat.get("total_interactions", 0)
         pr = (istat.get("positive_count", 0) / ti) if ti > 0 else 0
-        return {"interaction_stats": istat, "mastery_stats": mstat, "positive_rate": pr, "learning_effectiveness": "good" if pr > 0.7 else "needs_improvement"}
+        istat["positive_rate"] = round(pr, 4)
     except Exception as e:
         raise UserProfileError(f"分析用户表现失败: {str(e)}")
     finally:
         conn.close()
+
+    try:
+        from services.mastery_service import summarize_mastery
+        summary = summarize_mastery(user_id, subject_id)
+    except Exception as e:
+        raise UserProfileError(f"分析用户表现失败: {str(e)}")
+
+    dist = summary["distribution"]
+    mstat = {
+        "total_points": summary["total_points"],
+        "graded_points": dist["strong"] + dist["medium"] + dist["weak"],
+        "pending_points": dist["pending"],
+        # 无证据时不返回平均掌握度（None 表示"尚不可评估"）
+        "avg_mastery": (round(summary["accuracy"], 4) if summary["accuracy"] is not None else None),
+        "strong_points": dist["strong"],
+        "weak_points": dist["weak"],
+    }
+    return {
+        "interaction_stats": istat,
+        "mastery_stats": mstat,
+        "mastery_summary": summary,
+        "positive_rate": pr,
+        "learning_effectiveness": "good" if pr > 0.7 else "needs_improvement",
+    }
 
 
 __all__ = [

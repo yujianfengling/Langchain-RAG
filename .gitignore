@@ -75,11 +75,16 @@ config.json
 # 运行时数据库
 *.db
 *.db-journal
+# SQLite WAL/SHM 伴生文件：含数据库内容（聊天正文、会话令牌），绝不能提交
+*.db-wal
+*.db-shm
+*-wal
+*-shm
 
 # CodeBuddy项目数据
 .codebuddy/
   
-# ====== ���Բ�������ʱ�ļ� ======  
+# ====== ���Բ�������ʱ�ļ� ======  
 data/temp_*/  
 data/*_RawData.json  
 data/*_raw_results.json  
@@ -89,6 +94,28 @@ test_v*.py
 test_rag_effect*.py  
 *_load_stats.json  
   
-# ====== ���������Ŀ¼�� ======  
+# ====== ���������Ŀ¼�� ======  
 V2.*_RC_*.md  
 data/knowledge_graph/  
+
+# ====== 阶段一：浏览器验收截图（本地产物，不提交） ======
+tests/_screenshots/
+
+# ====== 凭据（2026-09-26：仓库内不得出现真实密钥）======
+config/local_secrets.json
+*.pem
+*.key
+
+# ====== 本地语音栈（模型、缓存、参考音频、录音，均不提交）======
+speech_stack/
+models_cache/
+data/audio_cache/
+data/tts_cache/
+data/recordings/
+*.onnx
+*.pth
+*.ckpt
+*.safetensors
+
+# 迁移备份（本地产物，含业务库副本，不提交）
+data/backups/

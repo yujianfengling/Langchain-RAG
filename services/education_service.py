@@ -15,6 +15,12 @@ class EducationServiceError(Exception):
     pass
 
 
+def _resolved_model_name(model: str = None) -> str:
+    """本次实际调用的模型名（如实标注，替代此前的占位符 "current"）"""
+    from services.ai_service import resolve_model_info
+    return resolve_model_info(model).get("model") or ""
+
+
 def generate_summary(text: str, model: str = None) -> Dict[str, Any]:
     """
     生成知识点总结
@@ -66,7 +72,7 @@ def generate_summary(text: str, model: str = None) -> Dict[str, Any]:
                     "success": True,
                     "key_points": parsed_result.get("key_points", []),
                     "summary": parsed_result.get("summary", ""),
-                    "model": "current",
+                    "model": _resolved_model_name(model),
                 }
         except (json.JSONDecodeError, ValueError):
             pass
@@ -82,7 +88,7 @@ def generate_summary(text: str, model: str = None) -> Dict[str, Any]:
                 }
             ],
             "summary": result,
-            "model": "current",
+            "model": _resolved_model_name(model),
         }
         
     except AIServiceError as e:
@@ -139,7 +145,7 @@ def generate_explanation(question: str, model: str = None) -> Dict[str, Any]:
             "success": True,
             "question": question,
             "explanation": result,
-            "model": "current",
+            "model": _resolved_model_name(model),
         }
         
     except AIServiceError as e:
@@ -199,7 +205,7 @@ def generate_advice(history: List[Dict[str, Any]] = None, model: str = None) -> 
         return {
             "success": True,
             "advice": result,
-            "model": "current",
+            "model": _resolved_model_name(model),
         }
         
     except AIServiceError as e:

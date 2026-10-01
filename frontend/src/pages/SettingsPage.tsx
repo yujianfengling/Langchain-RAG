@@ -3,6 +3,8 @@ import { Layout, Typography, Space, Card } from 'antd';
 import { SettingOutlined, InfoCircleOutlined, UserOutlined } from '@ant-design/icons';
 import UserProfileDashboard from '../components/UserProfileDashboard';
 import PersonalizationSettings from '../components/PersonalizationSettings';
+import SpeechSettings from '../components/SpeechSettings';
+import TeacherActivation from '../components/TeacherActivation';
 import SubjectSelector from '../components/SubjectSelector';
 
 const { Header, Content } = Layout;
@@ -46,6 +48,13 @@ const SettingsPage: React.FC = () => {
           {/* 个性化设置 */}
           <div style={{ marginBottom: 24 }}>
             <PersonalizationSettings userId="default_user" subjectId={selectedSubject} />
+          </div>
+
+          {/* 语音设置（本地 ASR / TTS，2026-09-26） */}
+          <div style={{ marginBottom: 24 }}>
+            <TeacherActivation />
+
+        <SpeechSettings />
           </div>
 
           {/* 学科选择 */}

@@ -21,7 +21,6 @@ interface KnowledgeExtractionPanelProps {
 }
 
 const KnowledgeExtractionPanel: React.FC<KnowledgeExtractionPanelProps> = ({
-  userId = 'default_user',
   subjectId,
   compact = false,
 }) => {
@@ -49,7 +48,7 @@ const KnowledgeExtractionPanel: React.FC<KnowledgeExtractionPanelProps> = ({
 
   useEffect(() => {
     loadData();
-  }, [userId, subjectId]);
+  }, [subjectId]);
 
   const handleValidate = async (knowledgeId: string) => {
     setValidating(knowledgeId);

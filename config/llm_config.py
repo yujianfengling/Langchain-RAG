@@ -5,13 +5,25 @@ LLM配置模块
 
 from typing import Optional, Dict, Any
 from .base import BaseConfig, Field, PYDANTIC_V2
+from .models import get_default_model, TEXT_MODELS
 
 
 class LLMConfig(BaseConfig):
     """LLM配置"""
     
-    # 默认模型提供商
-    provider: str = Field("mimo", validation_alias="LLM_PROVIDER")
+    # 默认文本模型提供商
+    # 与 config/models.get_default_model() 保持同一来源（读取 LLM_MODEL 并校验），
+    # 避免"代码默认值改了、却仍被旧环境变量或配置默认值覆盖"。
+    # 2026-09-25：MiMo 会员到期，默认文本模型为 DeepSeek。
+    # 如需显式固定，可设置 LLM_PROVIDER（优先级最高，但只应填 TEXT_MODELS 中的值）。
+    provider: str = Field(default_factory=get_default_model,
+                          validation_alias="LLM_PROVIDER")
+
+    def resolved_text_model(self) -> str:
+        """当前生效的默认文本模型（未知取值回落到 DEFAULT_MODEL）"""
+        if self.provider not in TEXT_MODELS:
+            return get_default_model()
+        return self.provider
     
     # 模型配置（使用新的ModelProvider架构）
     # 具体配置在 config/models.py 中管理

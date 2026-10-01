@@ -20,7 +20,6 @@ interface PersonalizationSettingsProps {
 }
 
 const PersonalizationSettings: React.FC<PersonalizationSettingsProps> = ({
-  userId = 'default_user',
   onSettingsChange,
 }) => {
   const [form] = Form.useForm();
@@ -30,7 +29,7 @@ const PersonalizationSettings: React.FC<PersonalizationSettingsProps> = ({
   const loadSettings = async () => {
     setLoading(true);
     try {
-      const res = await getUserProfile(userId);
+      const res = await getUserProfile();
       const profile = res?.data;
       if (profile) {
         form.setFieldsValue({
@@ -48,7 +47,7 @@ const PersonalizationSettings: React.FC<PersonalizationSettingsProps> = ({
 
   useEffect(() => {
     loadSettings();
-  }, [userId]);
+  }, []);
 
   const handleSave = async () => {
     setSaving(true);
@@ -56,11 +55,11 @@ const PersonalizationSettings: React.FC<PersonalizationSettingsProps> = ({
       const values = form.getFieldsValue();
 
       // 更新学习风格
-      await updateLearningStyle(userId, values.learningStyle);
+      await updateLearningStyle(values.learningStyle);
 
       // 更新其他偏好
-      await setLearningPreference(userId, 'detail_level', values.detailLevel.toString());
-      await setLearningPreference(userId, 'auto_voice', values.autoVoice.toString());
+      await setLearningPreference('detail_level', values.detailLevel.toString());
+      await setLearningPreference('auto_voice', values.autoVoice.toString());
 
       message.success('设置已保存');
       onSettingsChange?.();

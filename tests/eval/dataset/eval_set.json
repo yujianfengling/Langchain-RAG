@@ -1,0 +1,336 @@
+{
+  "_说明": "教学效果评估的固定评测集。每个样本都带判定依据，脚本按这些依据自动判分；人工可复核。",
+  "_版本": "2026-09-27 / v1",
+  "_课程章节": "数据结构 · 二叉树（材料见 dataset/materials/）",
+  "rag": {
+    "_说明": "RAG 样本。answerable=true 表示材料里有明确答案，必须命中要点；false 表示材料里没有，必须明确说明不知道而不是编造。expect_source 为期望被引用的资料文件名（用于验证引用可定位到原文）。",
+    "samples": [
+      {
+        "id": "rag-01",
+        "question": "二叉树的定义是什么？",
+        "answerable": true,
+        "expect_source": "01_二叉树的定义与性质.txt",
+        "must_contain_any": [
+          [
+            "最多有两棵子树",
+            "最多有两棵"
+          ],
+          [
+            "左右",
+            "次序"
+          ]
+        ],
+        "note": "定义与左右子树次序，材料第一节"
+      },
+      {
+        "id": "rag-02",
+        "question": "前序遍历的顺序是什么？",
+        "answerable": true,
+        "expect_source": "02_二叉树的遍历.txt",
+        "must_contain_any": [
+          [
+            "根",
+            "左",
+            "右"
+          ],
+          [
+            "根左右",
+            "根结点"
+          ]
+        ],
+        "note": "前序=根左右"
+      },
+      {
+        "id": "rag-03",
+        "question": "中序遍历有什么用途？为什么二叉搜索树用它？",
+        "answerable": true,
+        "expect_source": "03_二叉搜索树.txt",
+        "must_contain_any": [
+          [
+            "有序",
+            "递增",
+            "从小到大",
+            "排序"
+          ]
+        ],
+        "note": "BST 中序得到递增序列"
+      },
+      {
+        "id": "rag-04",
+        "question": "深度为 k 的二叉树最多有多少个结点？",
+        "answerable": true,
+        "expect_source": "01_二叉树的定义与性质.txt",
+        "must_contain_any": [
+          [
+            "2^k - 1",
+            "2的k次方-1",
+            "2^k-1",
+            "2^k − 1",
+            "2 的 k 次方减 1"
+          ]
+        ],
+        "note": "性质 2"
+      },
+      {
+        "id": "rag-05",
+        "question": "叶子结点数与度为 2 的结点数有什么关系？",
+        "answerable": true,
+        "expect_source": "01_二叉树的定义与性质.txt",
+        "must_contain_any": [
+          [
+            "n0 = n2 + 1",
+            "n0=n2+1",
+            "叶子结点数",
+            "度为 2 的结点数"
+          ]
+        ],
+        "note": "性质 3：n0 = n2 + 1"
+      },
+      {
+        "id": "rag-06",
+        "question": "在二叉搜索树里删除一个有两个孩子的结点，怎么处理？",
+        "answerable": true,
+        "expect_source": "03_二叉搜索树.txt",
+        "must_contain_any": [
+          [
+            "中序后继",
+            "中序前驱",
+            "右子树最小",
+            "左子树最大"
+          ]
+        ],
+        "note": "删除的第三种情况"
+      },
+      {
+        "id": "rag-07",
+        "question": "这门课这学期的期末考试成绩占比是多少？",
+        "answerable": false,
+        "must_contain_any": [
+          [
+            "没有",
+            "未提及",
+            "无法",
+            "找不到",
+            "不在",
+            "不包含",
+            "没有相关"
+          ]
+        ],
+        "note": "材料里完全没有考核信息，必须承认不知道",
+        "must_not_assert": [
+          "平时成绩",
+          "期末考试占",
+          "30%",
+          "40%",
+          "50%",
+          "60%"
+        ],
+        "_判定说明": "①必须明确说明材料未覆盖；②不得把这些内容说成来自课程材料；补充课外常识时必须标注为一般性/通用知识",
+        "allow_general_knowledge_labelled": true
+      },
+      {
+        "id": "rag-08",
+        "question": "红黑树和 AVL 树在本课程材料里是怎么讲的？",
+        "answerable": false,
+        "must_contain_any": [
+          [
+            "没有",
+            "未提及",
+            "无法",
+            "找不到",
+            "不在",
+            "不包含",
+            "没有相关"
+          ]
+        ],
+        "note": "材料里没有红黑树/AVL，必须说明材料未覆盖",
+        "must_not_assert": [
+          "旋转次数",
+          "红黑性质",
+          "平衡因子不超过"
+        ],
+        "_判定说明": "①必须明确说明材料未覆盖；②不得把这些内容说成来自课程材料；补充课外常识时必须标注为一般性/通用知识",
+        "allow_general_knowledge_labelled": true
+      }
+    ]
+  },
+  "loop": {
+    "_说明": "教学闭环样本。题目与标准答案、期望判分结果固定；用于验证 判分→错题→掌握度→复习→教师学情 的一致性。",
+    "questions": [
+      {
+        "id": "q1",
+        "knowledge_point": "二叉树遍历",
+        "type": "single_choice",
+        "question": "前序遍历的访问顺序是？",
+        "options": [
+          "根、左、右",
+          "左、根、右",
+          "左、右、根",
+          "右、根、左"
+        ],
+        "answer_index": 0
+      },
+      {
+        "id": "q2",
+        "knowledge_point": "二叉树遍历",
+        "type": "single_choice",
+        "question": "中序遍历的访问顺序是？",
+        "options": [
+          "根、左、右",
+          "左、根、右",
+          "左、右、根",
+          "右、左、根"
+        ],
+        "answer_index": 1
+      },
+      {
+        "id": "q3",
+        "knowledge_point": "二叉树遍历",
+        "type": "single_choice",
+        "question": "后序遍历的访问顺序是？",
+        "options": [
+          "根、左、右",
+          "左、根、右",
+          "左、右、根",
+          "根、右、左"
+        ],
+        "answer_index": 2
+      },
+      {
+        "id": "q4",
+        "knowledge_point": "二叉搜索树",
+        "type": "single_choice",
+        "question": "对二叉搜索树做中序遍历，得到的是？",
+        "options": [
+          "递增有序序列",
+          "递减有序序列",
+          "无序序列",
+          "层序序列"
+        ],
+        "answer_index": 0
+      }
+    ],
+    "students": [
+      {
+        "key": "stu_good",
+        "plan": {
+          "q1": "correct",
+          "q2": "correct",
+          "q3": "correct",
+          "q4": "correct"
+        },
+        "expect": {
+          "wrong_count": 0,
+          "has_review": false
+        }
+      },
+      {
+        "key": "stu_mid",
+        "plan": {
+          "q1": "correct",
+          "q2": "wrong",
+          "q3": "wrong",
+          "q4": "correct"
+        },
+        "expect": {
+          "wrong_count": 2,
+          "has_review": true
+        }
+      }
+    ],
+    "repeat_case": {
+      "_说明": "重复提交/重做后的统计口径：原始次数增加、去重后不变、掌握判定按最新一次",
+      "student": "stu_mid",
+      "question_id": "q2",
+      "first": "wrong",
+      "then": "correct"
+    }
+  },
+  "agent": {
+    "_说明": "Agent 样本。检查是否依据该学生的真实错题/进度给建议，以及改计划是否走确认机制。",
+    "goal": "我三天后要考二叉树这一章，每天只有 30 分钟，帮我复习",
+    "expect_steps_any": [
+      [
+        "查看学习记录",
+        "查看薄弱",
+        "学习记录"
+      ],
+      [
+        "时间预算",
+        "预算",
+        "检查时间"
+      ]
+    ],
+    "expect_mentions_student_data": [
+      "二叉树",
+      "遍历"
+    ],
+    "_确认机制说明": "重大计划调整必须先给建议、由学生确认后才应用；未经确认不得直接改任务日期",
+    "expect_tools": [
+      "get_learning_state",
+      "analyze_budget"
+    ],
+    "expect_write_via_proposal": [
+      "propose_adjustment",
+      "adjustment",
+      "proposals"
+    ],
+    "_判定说明": "以**工具调用记录**为客观依据（而不是界面文案）：必须调用读取该生学习状态的工具、必须做时间预算检查；涉及调整计划时必须通过 propose_adjustment 之类的**提议**通道，不得静默改任务日期。",
+    "observed_tools_v1": [
+      "get_learning_state",
+      "analyze_budget",
+      "schedule_review",
+      "generate_note",
+      "create_plan",
+      "explain_plan",
+      "propose_adjustment"
+    ]
+  },
+  "voice": {
+    "_说明": "语音样本。只验证流程与耗时，并导出音频供人工试听；**不以程序跑通代表音质通过人工验收**。",
+    "samples": [
+      {
+        "id": "voice-01",
+        "text": "二叉树的定义是什么？",
+        "kind": "question"
+      },
+      {
+        "id": "voice-02",
+        "text": "前序遍历的顺序是根、左、右。中序遍历的顺序是左、根、右。",
+        "kind": "answer"
+      },
+      {
+        "id": "voice-03",
+        "text": "显存占用约 8GB，准确率提升了 3.14 倍，耗时 1.5 秒。",
+        "kind": "numbers"
+      }
+    ]
+  },
+  "trial": {
+    "_说明": "真实试用方案（本轮只准备材料，不代替真实试用结论）",
+    "status": "待真实试用验证",
+    "pre_post_test": {
+      "知识点": [
+        "二叉树定义与性质",
+        "三种遍历",
+        "二叉搜索树查找与删除"
+      ],
+      "题量": 12,
+      "形式": "10 道单选 + 2 道简答（简答由教师按评分要点人工判分）",
+      "安排": "试用前测（第 0 天）→ 使用系统学习 1 周 → 后测（第 7 天），前测后测同难度不同题"
+    },
+    "task": [
+      "在系统里完成教师布置的 1 次练习（4 题），查看自己的错题本",
+      "对至少 1 个做错的知识点使用「学习助手」生成一次复习安排",
+      "至少向 AI 提问 3 个课程问题，并判断回答是否有资料依据",
+      "完成后填写反馈表（见 docs/TEACHING_EVAL.md 附录）"
+    ],
+    "feedback_form": [
+      "AI 回答是否解决了你的问题？（1-5 分）",
+      "引用/来源是否能帮你找到原文？（1-5 分）",
+      "错题本与复习安排对你有帮助吗？（1-5 分）",
+      "语音朗读是否听得清、听得懂？（1-5 分，可选）",
+      "最需要改进的一点是什么？（开放题）"
+    ]
+  }
+}

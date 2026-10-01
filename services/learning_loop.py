@@ -3,11 +3,18 @@
 
 将笔记、计划、问答、测验等学习活动联动，实现完整的学习闭环。
 
-设计原则：
-- 笔记生成 → 自动记录知识点到用户画像
-- 测验完成 → 更新知识点掌握度
-- 学习计划 → 跟踪任务完成进度
-- 问答历史 → 分析学习模式
+⚠️ 阶段一重要说明（掌握度口径修正）
+本模块中的 on_quiz_answered / on_plan_task_completed / _ensure_knowledge_point
+会按"行为"直接抬高或初始化掌握度（任务完成 +Δ、笔记生成初始 0.5），
+属于"行为=掌握"的错误口径，**已不再被任何接口调用，请勿重新接线**。
+
+阶段一的正确口径：
+- 学习行为 → mastery_service.record_behavior（只累计行为，不影响掌握度）
+- 真实作答证据 → mastery_service.record_evidence（掌握度唯一来源）
+- 事件入口 → services/learning_events + services/learning_handlers
+
+保留本模块仅用于历史接口的读取型函数（get_learning_progress_summary）
+与可追溯性。
 """
 
 from typing import Dict, Any, Optional, List
@@ -67,9 +74,11 @@ def on_quiz_answered(
     quiz_context: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    测验答案提交后的回调
-    
-    更新知识点掌握度并返回学习建议
+    [已废弃 · 请勿使用] 旧测验回调
+
+    问题：is_correct 由调用方（曾经是前端请求体）传入，且按 mastery_delta 直接抬高掌握度，
+    与阶段一"后端权威判分 + 掌握度只由作答证据决定"的口径冲突。
+    替代：POST /api/quiz/answer（services/quiz_service.submit_attempt）→ 事件层 → mastery_service。
     """
     try:
         # 更新知识点掌握度
@@ -113,9 +122,10 @@ def on_plan_task_completed(
     actual_minutes: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    学习计划任务完成后的回调
-    
-    更新知识点掌握度
+    [已废弃 · 请勿使用] 旧任务完成回调
+
+    问题：把"读完/做完任务"当作掌握（is_correct=True 直接加掌握度）。
+    替代：learning_service.complete_task → plan_task_completed 事件 → 只记录学习行为。
     """
     try:
         # 根据任务类型给予不同的掌握度增量
@@ -193,65 +203,55 @@ def get_learning_progress_summary(
 ) -> Dict[str, Any]:
     """
     获取学习进度摘要
-    
+
+    阶段一修正：掌握度分布以"独立作答证据"为唯一口径（mastery_service），
+    无证据的知识点单列为 pending，不再混入 weak/strong。
+
     Returns:
         {
             "total_interactions": int,
             "knowledge_points_count": int,
-            "mastery_distribution": {"strong": int, "medium": int, "weak": int},
+            "mastery_distribution": {"strong", "medium", "weak", "pending"},
             "recent_activity": list,
             "suggestions": list,
         }
     """
     try:
-        from services.user_profiler import (
-            get_user_interactions,
-            get_weak_points,
-            get_strong_points,
-            analyze_user_performance,
-        )
-        
+        from services.user_profiler import get_user_interactions, analyze_user_performance
+        from services.mastery_service import summarize_mastery
+
         # 获取交互统计
         performance = analyze_user_performance(user_id, subject_id)
-        
-        # 获取知识点分布
-        weak = get_weak_points(user_id, subject_id, threshold=0.4)
-        strong = get_strong_points(user_id, subject_id, threshold=0.7)
-        
-        # 计算中等掌握度的知识点数量
-        from services.user_profiler import _get_db, _row_to_dict
-        conn = _get_db()
-        try:
-            cursor = conn.execute(
-                """SELECT COUNT(*) as count FROM knowledge_mastery 
-                   WHERE user_id = ? AND subject_id = ? 
-                   AND mastery_level >= 0.4 AND mastery_level <= 0.7""",
-                (user_id, subject_id)
-            )
-            medium_count = cursor.fetchone()["count"]
-        finally:
-            conn.close()
-        
+
+        # 掌握度分布（唯一口径：证据驱动）
+        summary = summarize_mastery(user_id, subject_id)
+        dist = summary["distribution"]
+
         # 获取最近活动
         recent = get_user_interactions(user_id, subject_id, limit=5)
-        
-        # 生成建议
+
+        # 生成建议（只依据真实证据与行为，不编造学情）
         suggestions = []
-        if len(weak) > 3:
+        if dist["weak"] > 3:
             suggestions.append("您有多个薄弱知识点，建议集中复习")
-        if len(strong) > 5:
+        if dist["strong"] > 5:
             suggestions.append("您已掌握多个知识点，可以尝试更高难度的内容")
+        if dist["pending"] > 0:
+            suggestions.append(f"还有 {dist['pending']} 个知识点尚无作答记录，建议先做一次自测")
         if not recent:
             suggestions.append("开始学习之旅吧！尝试提问或生成笔记")
-        
+
         return {
             "total_interactions": performance.get("interaction_stats", {}).get("total_interactions", 0),
-            "knowledge_points_count": len(weak) + medium_count + len(strong),
+            "knowledge_points_count": summary["total_points"],
             "mastery_distribution": {
-                "strong": len(strong),
-                "medium": medium_count,
-                "weak": len(weak),
+                "strong": dist["strong"],
+                "medium": dist["medium"],
+                "weak": dist["weak"],
+                "pending": dist["pending"],
             },
+            "evidence_total": summary["evidence_total"],
+            "accuracy": summary["accuracy"],
             "recent_activity": recent,
             "suggestions": suggestions,
             "positive_rate": performance.get("positive_rate", 0),
@@ -269,7 +269,13 @@ def get_learning_progress_summary(
 
 
 def _ensure_knowledge_point(user_id: str, subject_id: str, knowledge_point: str) -> None:
-    """确保知识点存在于用户画像中（如果不存在则创建初始记录）"""
+    """
+    [已废弃 · 请勿使用] 旧知识点初始化
+
+    问题：凭空写入 mastery_level=0.5，属于伪造学情（无任何作答证据）。
+    替代：mastery_service.get_mastery 在读不到证据时返回 mastery_level=None / status=pending，
+    由前端显示"待评估"，而不是给一个假分数。
+    """
     try:
         from services.user_profiler import _get_db, _now
         import uuid

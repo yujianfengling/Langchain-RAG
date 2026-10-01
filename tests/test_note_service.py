@@ -17,6 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tests.fixtures_isolated import IsolatedDataTestCase
 from services.note_service import (
     NoteServiceError,
     generate_smart_note,
@@ -85,7 +86,11 @@ class TestNormalizeQuiz(unittest.TestCase):
         self.assertEqual(_normalize_quiz(raw, "x"), [])
 
 
-class TestGenerateSmartNote(unittest.TestCase):
+class TestGenerateSmartNote(IsolatedDataTestCase):
+    """笔记生成：使用隔离夹具创建所需学科与"已就绪"知识库，不依赖本机正式数据"""
+
+    SUBJECTS = ("数据结构",)
+
     def test_evidence_sufficient_builds_five_sections(self):
         """证据充足：五段结构完整、quiz 规范化、sources 关联"""
         llm_output = json.dumps({

@@ -12,7 +12,22 @@ from langchain_core.documents import Document
 logger = logging.getLogger(__name__)
 
 # 向量存储目录配置（使用绝对路径，避免工作目录不一致导致写入失败）
-VECTOR_STORE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "vector_store")
+def _vector_store_dir() -> str:
+    """
+    向量库根目录（**运行时解析**，与写入端保持一致）
+
+    修复（2026-09-26，教师端验收时发现）：
+    此处原先硬编码为 `<项目根>/data/vector_store`，绕过了 `EDU_DATA_DIR`。
+    结果是"隔离数据目录"下的构建/上传写到隔离目录，而**检索从这里读正式目录**，
+    索引找不到就静默降级为关键词检索 / 检索不可用（表现为回答凭空少了资料依据）。
+    统一改为由 `config.path_config.get_data_dir()` 推导，读写同源。
+    """
+    from config.path_config import get_data_dir
+    return str(get_data_dir() / "vector_store")
+
+
+# 兼容别名（模块导入时的取值；模块内部一律使用 _vector_store_dir() 动态解析）
+VECTOR_STORE_DIR = _vector_store_dir()
 
 
 def create_vector_store(
@@ -47,7 +62,7 @@ def create_vector_store(
         
         # 确定存储路径
         if persist_dir is None:
-            persist_dir = os.path.join(VECTOR_STORE_DIR, collection_name)
+            persist_dir = os.path.join(_vector_store_dir(), collection_name)
         
         os.makedirs(persist_dir, exist_ok=True)
         
@@ -138,7 +153,7 @@ def load_vector_store(
         
         # 确定存储路径
         if persist_dir is None:
-            persist_dir = os.path.join(VECTOR_STORE_DIR, collection_name)
+            persist_dir = os.path.join(_vector_store_dir(), collection_name)
         
         index_path = os.path.join(persist_dir, "index.faiss")
         docs_path = os.path.join(persist_dir, "index.pkl")
@@ -394,9 +409,9 @@ class GlobalFAISS:
         """列出所有可用的集合"""
         collections = []
         
-        if os.path.exists(VECTOR_STORE_DIR):
-            for item in os.listdir(VECTOR_STORE_DIR):
-                item_path = os.path.join(VECTOR_STORE_DIR, item)
+        if os.path.exists(_vector_store_dir()):
+            for item in os.listdir(_vector_store_dir()):
+                item_path = os.path.join(_vector_store_dir(), item)
                 if os.path.isdir(item_path):
                     # 检查是否有FAISS索引文件
                     index_path = os.path.join(item_path, "index.faiss")
@@ -421,7 +436,7 @@ class GlobalFAISS:
                 del cls._instances[collection_name]
             
             # 删除磁盘文件
-            persist_dir = os.path.join(VECTOR_STORE_DIR, collection_name)
+            persist_dir = os.path.join(_vector_store_dir(), collection_name)
             if os.path.exists(persist_dir):
                 import shutil
                 shutil.rmtree(persist_dir)
@@ -439,7 +454,7 @@ class GlobalFAISS:
         if collection_name in cls._instances:
             return True
         
-        index_path = os.path.join(VECTOR_STORE_DIR, collection_name, "index.faiss")
+        index_path = os.path.join(_vector_store_dir(), collection_name, "index.faiss")
         return os.path.exists(index_path)
 
 
@@ -533,5 +548,5 @@ __all__ = [
     'get_retriever',
     'FAISSVectorStore',
     'GlobalFAISS',
-    'VECTOR_STORE_DIR'
+    'VECTOR_STORE_DIR',
 ]

@@ -364,10 +364,63 @@ body {
 }
 
 /* ============ 响应式 ============ */
-@media (max-width: 768px) {
-  .ant-layout-sider { display: none !important; }
+
+/* 顶栏：默认只在窄屏出现（宽屏用侧边栏） */
+.app-topbar {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  height: 52px;
+  padding: 0 10px;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 120;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+/*
+ * ≤900px：侧边栏整体换成"顶栏 + 抽屉导航"。
+ * 800px 时侧边栏仍会占 220px，把内容挤到 981px 造成横向溢出（按钮被挤出可视区），
+ * 所以断点取 900 而不是 768。
+ */
+@media (max-width: 900px) {
+  /* 只隐藏**应用外壳**的侧边栏：用 .app-sider 精确指定，
+     否则会连带隐藏页面内部的 Sider（ChatPage 的历史对话栏就踩过这个坑，
+     连带把「学科选择器」一起隐藏，手机端直接没法提问） */
+  .app-sider { display: none !important; }
+  .app-sider-wrap { display: none !important; }
+  .app-topbar { display: flex; }
+  .app-content-narrow { padding-top: 52px; }
   .ant-menu-horizontal { font-size: 12px; }
   .ant-card { margin-bottom: 12px; }
+  /* 弹窗留出边距，保证底部按钮始终可点 */
+  .ant-modal { max-width: calc(100vw - 24px); margin: 12px auto; }
+}
+
+/* 很窄的手机（≤420px）：顶栏只留图标与登录入口，避免品牌名挤压 */
+@media (max-width: 420px) {
+  .app-topbar-title { font-size: 14px; }
+}
+
+/*
+ * 表格在窄屏下改为"卡片内横向滚动"，而不是把整个页面撑宽。
+ * 需要 antd Table 配 scroll={{ x: 'max-content' }} 才生效（见各页面）。
+ */
+.app-table-scroll .ant-table-content,
+.app-table-scroll .ant-table-body {
+  overflow-x: auto !important;
+}
+
+/*
+ * 窄屏下标签页交给 antd 自己处理（多余标签会收进「更多」下拉）。
+ * 注意：不要给 .ant-tabs-nav-wrap 加 overflow-x —— 实测会导致标签位置与
+ * 点击区域错位（点「错题本」实际切到了别的标签），因为 antd 用 transform 滚动。
+ */
+@media (max-width: 900px) {
+  .ant-statistic-content { font-size: 20px !important; }
 }
 
 /* 侧边栏菜单覆盖 */

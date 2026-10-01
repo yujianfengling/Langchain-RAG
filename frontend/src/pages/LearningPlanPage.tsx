@@ -1,23 +1,26 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
-  Card, Input, Button, Typography, Space, List, Tag, Timeline,
-  Empty, message, Popconfirm,
+  Alert, Button, Card, DatePicker, Empty, Input, List, Popconfirm, Space,
+  Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   CalendarOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined,
-  PlayCircleOutlined, CheckCircleOutlined,
+  CheckCircleOutlined, ExclamationCircleOutlined, ReadOutlined,
 } from '@ant-design/icons';
+import dayjs from 'dayjs';
 import SubjectSelector from '../components/SubjectSelector';
+import { isLoggedIn } from '../api/auth';
+import { AUTH_CHANGED_EVENT } from '../components/UserAuth';
 import {
-  generatePlan, getPlans, deletePlan, updateTaskStatus,
-  LearningPlan, LearningTask, TaskStatus, TaskType,
+  generatePlan, getPlans, deletePlan, LearningPlan, LearningTask, TaskType,
 } from '../api/learning';
+import { completeTask, rescheduleTask } from '../api/student';
 
 const { TextArea } = Input;
-const { Title, Paragraph, Text } = Typography;
+const { Title, Text } = Typography;
 
-// 任务类型标签映射
 const TASK_TYPE_META: Record<TaskType, { color: string; label: string }> = {
   READ: { color: 'cyan', label: '阅读' },
   REVIEW: { color: 'purple', label: '复习' },
@@ -25,48 +28,27 @@ const TASK_TYPE_META: Record<TaskType, { color: string; label: string }> = {
   PRACTICE: { color: 'orange', label: '练习' },
 };
 
-const TASK_STATUS_META: Record<TaskStatus, { color: string; label: string }> = {
-  TODO: { color: 'default', label: '未开始' },
-  IN_PROGRESS: { color: 'processing', label: '进行中' },
-  COMPLETED: { color: 'success', label: '已完成' },
-};
-
-// 状态按钮（TODO→IN_PROGRESS→COMPLETED 流转）
-const StatusAction: React.FC<{ task: LearningTask; onChanged: (t: LearningTask) => void }> = ({ task, onChanged }) => {
-  const [loading, setLoading] = useState(false);
-
-  const nextStatus: TaskStatus =
-    task.status === 'TODO' ? 'IN_PROGRESS' : task.status === 'IN_PROGRESS' ? 'COMPLETED' : 'COMPLETED';
-
-  const handleClick = async () => {
-    setLoading(true);
-    try {
-      const res = await updateTaskStatus(task.id, nextStatus);
-      onChanged(res.data);
-      if (nextStatus === 'COMPLETED') message.success('任务已完成');
-    } catch (e) {
-      message.error('更新任务状态失败');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const icon = nextStatus === 'COMPLETED' ? <CheckCircleOutlined /> : <PlayCircleOutlined />;
-  const label = task.status === 'TODO' ? '开始' : task.status === 'IN_PROGRESS' ? '完成' : '已完成';
-
-  return (
-    <Button size="small" icon={icon} onClick={handleClick} loading={loading} disabled={task.status === 'COMPLETED'}>
-      {label}
-    </Button>
-  );
-};
+const TODAY = () => dayjs().format('YYYY-MM-DD');
 
 const LearningPlanPage: React.FC = () => {
+  const navigate = useNavigate();
   const [subjectId, setSubjectId] = useState<string>('');
   const [goal, setGoal] = useState('');
   const [plans, setPlans] = useState<LearningPlan[]>([]);
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [busyTask, setBusyTask] = useState<string | null>(null);
+  const [loggedIn, setLoggedIn] = useState(isLoggedIn());
+
+  useEffect(() => {
+    const sync = () => setLoggedIn(isLoggedIn());
+    window.addEventListener('storage', sync);
+    window.addEventListener(AUTH_CHANGED_EVENT, sync);
+    return () => {
+      window.removeEventListener('storage', sync);
+      window.removeEventListener(AUTH_CHANGED_EVENT, sync);
+    };
+  }, []);
 
   const loadPlans = useCallback(async (sid?: string) => {
     setLoading(true);
@@ -125,26 +107,152 @@ const LearningPlanPage: React.FC = () => {
     }
   };
 
-  // 按 day 分组（通过 priority 推断天序，此处简单按任务顺序分组）
-  const groupTasksByDay = (tasks: LearningTask[]): LearningTask[][] => {
-    const groups: LearningTask[][] = [];
-    let current: LearningTask[] = [];
-    for (const t of tasks) {
-      current.push(t);
-      // 简化：按 2-3 个任务一组作为一天的近似（真实 day 字段在生成时用 priority 表示）
-      if (current.length >= 2) {
-        groups.push(current);
-        current = [];
-      }
+  /** 完成任务：走学生端幂等接口（只记行为；测验任务需先作答） */
+  const handleComplete = async (task: LearningTask) => {
+    setBusyTask(task.id);
+    try {
+      await completeTask(task.id, task.actual_minutes || undefined);
+      message.success('任务已完成');
+      await loadPlans(subjectId || undefined);
+    } catch (e: any) {
+      const errType = e?.response?.data?.error_type;
+      message[errType === 'quiz_attempt_required' ? 'warning' : 'error'](
+        e?.response?.data?.message || '完成任务失败');
+    } finally {
+      setBusyTask(null);
     }
-    if (current.length) groups.push(current);
-    return groups.length ? groups : [[]];
+  };
+
+  const handleReschedule = async (task: LearningTask, dateStr: string) => {
+    setBusyTask(task.id);
+    try {
+      await rescheduleTask(task.id, dateStr, '学生手动调整');
+      message.success('计划日期已调整（已保留原日期与调整记录）');
+      await loadPlans(subjectId || undefined);
+    } catch (e: any) {
+      message.error(e?.response?.data?.message || '调整日期失败');
+    } finally {
+      setBusyTask(null);
+    }
+  };
+
+  // 任务所属计划的学科（任务未带 subject_id 时从计划取）
+  const planSubjectId = (task: LearningTask) => {
+    const plan = plans.find((p) => p.id === task.plan_id);
+    return plan?.subject_id || subjectId;
+  };
+
+  /** 带上下文跳到 AI 学习助手（去自测 / 生成笔记 / 阅读） */
+  const jumpToChat = (task: LearningTask, mode: 'quiz' | 'smart_note') => {
+    navigate('/chat', {
+      state: {
+        preset: {
+          mode,
+          input: task.knowledge_point || task.title,
+          taskId: task.id,
+          subjectId: task.subject_id || planSubjectId(task),
+        },
+      },
+    });
+  };
+
+  const renderTask = (t: LearningTask) => {
+    const typeMeta = TASK_TYPE_META[t.task_type] || TASK_TYPE_META.READ;
+    const planned = t.planned_date;
+    const overdue = !!planned && planned < TODAY() && t.status !== 'COMPLETED';
+    const isToday = planned === TODAY();
+    return (
+      <List.Item
+        key={t.id}
+        actions={[
+          <Button
+            key="do"
+            size="small"
+            type="primary"
+            ghost
+            icon={t.task_type === 'QUIZ' ? <ExclamationCircleOutlined /> : <ReadOutlined />}
+            onClick={() => jumpToChat(t, t.task_type === 'QUIZ' ? 'quiz' : 'smart_note')}
+          >
+            {t.task_type === 'QUIZ' ? '去自测' : '看笔记'}
+          </Button>,
+          <Button
+            key="done"
+            size="small"
+            icon={<CheckCircleOutlined />}
+            loading={busyTask === t.id}
+            disabled={t.status === 'COMPLETED'}
+            onClick={() => handleComplete(t)}
+          >
+            完成
+          </Button>,
+          <DatePicker
+            key="date"
+            size="small"
+            placeholder="改期"
+            value={null}
+            disabledDate={(d) => !!d && d < dayjs().startOf('day')}
+            onChange={(d: any) => d && handleReschedule(t, d.format('YYYY-MM-DD'))}
+            style={{ width: 116 }}
+          />,
+        ]}
+      >
+        <List.Item.Meta
+          title={
+            <Space size={8} wrap>
+              <Tag color={typeMeta.color}>{typeMeta.label}</Tag>
+              <Text delete={t.status === 'COMPLETED'}>{t.title}</Text>
+              {isToday && t.status !== 'COMPLETED' && <Tag color="blue">今日</Tag>}
+              {overdue && <Tag color="error">已逾期</Tag>}
+              {t.source === 'auto_review' && <Tag color="purple">错题自动安排</Tag>}
+              {t.status === 'COMPLETED' && <Tag color="success">已完成</Tag>}
+              {!!t.defer_count && (
+                <Tooltip title={`原计划日期：${t.original_planned_date || '—'}`}>
+                  <Tag>已改期 {t.defer_count} 次</Tag>
+                </Tooltip>
+              )}
+            </Space>
+          }
+          description={
+            <Space direction="vertical" size={2}>
+              {t.description && <Text type="secondary">{t.description}</Text>}
+              <Space size={12} wrap>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  <CalendarOutlined /> 计划日期：{planned || '未排期'}
+                </Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>预计 {t.estimated_minutes} 分钟</Text>
+                {t.knowledge_point && (
+                  <Text type="secondary" style={{ fontSize: 12 }}>知识点：{t.knowledge_point}</Text>
+                )}
+              </Space>
+            </Space>
+          }
+        />
+      </List.Item>
+    );
+  };
+
+  /** 按真实计划日期分组（不再用"每 2 个任务算一天"的近似） */
+  const groupByDate = (tasks: LearningTask[]) => {
+    const groups = new Map<string, LearningTask[]>();
+    for (const t of tasks) {
+      const key = t.planned_date || '未排期';
+      const list = groups.get(key) || [];
+      list.push(t);
+      groups.set(key, list);
+    }
+    return Array.from(groups.entries()).sort(([a], [b]) => {
+      if (a === '未排期') return 1;
+      if (b === '未排期') return -1;
+      return a < b ? -1 : 1;
+    });
   };
 
   const renderPlan = (plan: LearningPlan) => {
-    // 合理防御：列表接口可能未携带 tasks（或旧数据缺字段），避免迭代崩溃
     const tasks = Array.isArray(plan.tasks) ? plan.tasks : [];
-    const days = groupTasksByDay(tasks);
+    const groups = groupByDate(tasks);
+    const overdueCount = tasks.filter(
+      (t) => t.planned_date
+        && t.planned_date! < TODAY() && t.status !== 'COMPLETED').length;
     return (
       <Card
         size="small"
@@ -157,6 +265,7 @@ const LearningPlanPage: React.FC = () => {
             <Tag color={plan.status === 'ACTIVE' ? 'processing' : 'default'}>
               {plan.status === 'ACTIVE' ? '进行中' : plan.status}
             </Tag>
+            {overdueCount > 0 && <Tag color="error">{overdueCount} 项逾期</Tag>}
           </Space>
         }
         extra={
@@ -165,52 +274,28 @@ const LearningPlanPage: React.FC = () => {
           </Popconfirm>
         }
       >
-        <Paragraph type="secondary" style={{ marginBottom: 12 }}>
-          目标：{plan.goal}
-          {plan.start_date && <Text style={{ marginLeft: 8 }}>（{plan.start_date} ~ {plan.end_date}）</Text>}
-        </Paragraph>
-        <Timeline
-          items={days.map((dayTasks, idx) => ({
-            children: (
-              <div>
-                <Text strong>Day {idx + 1}</Text>
-                <List
-                  size="small"
-                  dataSource={dayTasks}
-                  style={{ marginTop: 8 }}
-                  renderItem={(t) => {
-                    const typeMeta = TASK_TYPE_META[t.task_type] || TASK_TYPE_META.READ;
-                    const statusMeta = TASK_STATUS_META[t.status] || TASK_STATUS_META.TODO;
-                    return (
-                      <List.Item
-                        actions={[<StatusAction key={t.id} task={t} onChanged={(nt) => {
-                          setPlans((prev) => prev.map((p) =>
-                            p.id === plan.id
-                              ? { ...p, tasks: (p.tasks || []).map((tt) => (tt.id === nt.id ? nt : tt)) }
-                              : p
-                          ));
-                        }} />]}
-                      >
-                        <List.Item.Meta
-                          title={
-                            <Space size={8}>
-                              <Tag color={typeMeta.color}>{typeMeta.label}</Tag>
-                              <Text>{t.title}</Text>
-                              {t.knowledge_point && <Text type="secondary" style={{ fontSize: 12 }}>{t.knowledge_point}</Text>}
-                              <Tag color={statusMeta.color}>{statusMeta.label}</Tag>
-                              <Text type="secondary" style={{ fontSize: 12 }}>~{t.estimated_minutes}分钟</Text>
-                            </Space>
-                          }
-                          description={t.description || undefined}
-                        />
-                      </List.Item>
-                    );
-                  }}
-                />
-              </div>
-            ),
-          }))}
-        />
+        <Space direction="vertical" size={4} style={{ marginBottom: 12 }}>
+          <Text type="secondary">目标：{plan.goal}</Text>
+          {plan.start_date && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              计划周期：{plan.start_date} ~ {plan.end_date}
+            </Text>
+          )}
+        </Space>
+
+        {groups.length === 0 ? <Empty description="该计划暂无任务" /> : groups.map(([date, dayTasks]) => (
+          <div key={date} style={{ marginBottom: 12 }}>
+            <Space size={8} style={{ marginBottom: 4 }}>
+              <Text strong>{date}</Text>
+              {date === TODAY() && <Tag color="blue">今天</Tag>}
+              {date !== '未排期' && date < TODAY() && <Tag color="error">已过期</Tag>}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {dayTasks.filter((t) => t.status === 'COMPLETED').length}/{dayTasks.length} 已完成
+              </Text>
+            </Space>
+            <List size="small" dataSource={dayTasks} renderItem={renderTask} />
+          </div>
+        ))}
       </Card>
     );
   };
@@ -218,6 +303,15 @@ const LearningPlanPage: React.FC = () => {
   return (
     <div style={{ padding: 24, maxWidth: 900, margin: '0 auto' }}>
       <Title level={4}>学习计划</Title>
+
+      {!loggedIn && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="当前未登录：可以查看已有计划，但「完成 / 改期」需要登录后归属到你的账号。"
+        />
+      )}
 
       {/* 生成计划 */}
       <Card size="small" style={{ marginBottom: 16 }}>
@@ -238,7 +332,7 @@ const LearningPlanPage: React.FC = () => {
             </Button>
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            计划基于知识库知识点由 AI 生成，保存后刷新页面仍会保留。
+            计划基于知识库知识点由 AI 生成，任务带真实计划日期；逾期任务与今日任务可在「我的学习」集中处理。
           </Text>
         </Space>
       </Card>

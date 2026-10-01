@@ -15,8 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import settings, APP_VERSION
-from api.routes import chat, knowledge, subjects, models, education, notes, learning, conversations, audio, agent
+from api.routes import chat, knowledge, subjects, models, education, notes, learning, conversations, audio, agent, auth, quiz, student, memory, plan_agent, agent_run, teacher
 from api.middleware import RequestIDMiddleware, get_request_id
+# 注册学习闭环事件处理器（阶段一：作答→画像→错题→复习→计划）
+import services.learning_handlers  # noqa: F401
 from api.exceptions import (
     APIException,
     KnowledgeBaseNotFoundError,
@@ -57,6 +59,13 @@ app.include_router(learning.router, prefix="/api", tags=["学习计划"])
 app.include_router(conversations.router, prefix="/api", tags=["对话"])
 app.include_router(audio.router, prefix="/api", tags=["语音"])
 app.include_router(agent.router, prefix="/api", tags=["智能Agent"])
+app.include_router(auth.router, prefix="/api", tags=["身份"])
+app.include_router(quiz.router, prefix="/api", tags=["自测"])
+app.include_router(student.router, prefix="/api", tags=["学生端"])
+app.include_router(memory.router, prefix="/api", tags=["学习记忆"])
+app.include_router(plan_agent.router, prefix="/api", tags=["计划调整"])
+app.include_router(agent_run.router, prefix="/api", tags=["学习Agent"])
+app.include_router(teacher.router, prefix="/api", tags=["教师端"])
 
 
 # ============ 全局异常处理（统一返回格式，带request_id） ============
@@ -150,7 +159,11 @@ except Exception as e:
     logger.warning(f"RAG模块导入失败: {e}")
 
 # Vector Store目录
-_VECTOR_STORE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "vector_store")
+# 向量库目录：统一由数据根目录推导（支持 EDU_DATA_DIR 隔离），
+# 不再硬编码 <项目根>/data，避免隔离运行时判断错目录
+from config.path_config import get_data_dir  # noqa: E402
+
+_VECTOR_STORE_DIR = str(get_data_dir() / "vector_store")
 
 
 @app.get("/")
@@ -173,10 +186,11 @@ async def root():
 
 
 @app.get("/health")
+@app.get("/api/health")
 async def health_check():
     """
     健康检查接口
-    
+
     返回：
     {
         "status": "ok",
@@ -185,8 +199,15 @@ async def health_check():
             "llm": true/false,
             "rag": true/false,
             "config": true/false
+        },
+        "data_scope": {
+            "isolated": true/false,   # 是否运行在 EDU_DATA_DIR 指定的隔离数据目录
+            "dir_name": "git_text_e2e_data"   # 只给目录名，不泄露绝对路径
         }
     }
+
+    说明：`data_scope` 供自动测试/真实模型验收脚本在**写入数据前**判断当前后端
+    是否运行在隔离目录上，避免继续把测试账号与学习记录散落到正式库。
     """
     services = {
         "llm": False,
@@ -232,8 +253,79 @@ async def health_check():
             "status": overall_status,
             "version": APP_VERSION,
             "services": services,
+            "data_scope": _data_scope(),
+            "capabilities": _capabilities(),
         },
         "message": "ok",
+    }
+
+
+def _capabilities() -> dict:
+    """
+    能力清单：文本 / 视觉 / 语音，各自"用什么提供方 + 当前是否可用 + 不可用原因"
+
+    2026-09-25：默认文本模型切到 DeepSeek（MiMo 会员到期）；
+    视觉（qwen-vision）与语音（MiMo ASR/TTS）单独判定，不共用文本模型配置。
+    """
+    caps: dict = {}
+    # 文本
+    try:
+        from config.models import get_default_model, get_model_config, get_model_api_key
+        provider = get_default_model()
+        caps["text"] = {
+            "provider": provider,
+            "model": get_model_config(provider).get("model_name", ""),
+            "available": bool(get_model_api_key(provider)),
+        }
+    except Exception as e:
+        caps["text"] = {"provider": None, "available": False, "reason": str(e)}
+    # 视觉
+    try:
+        from services.multimodal_service import MultimodalService
+        svc = MultimodalService()
+        caps["vision"] = {
+            "provider": getattr(svc.vision_provider, "model_name", None),
+            "available": bool(svc.vision_provider),
+            "reason": svc.vision_unavailable_reason,
+        }
+    except Exception as e:
+        caps["vision"] = {"provider": None, "available": False, "reason": str(e)}
+    # 语音：本地 ASR / 本地 TTS 分开报告（2026-09-26 起默认走本地独立进程）
+    try:
+        from services.audio_service import (local_speech_status, mimo_speech_status,
+                                            speech_capability)
+        status = speech_capability()
+        local = status.get("local") or {}
+        caps["speech"] = status                      # 汇总（含 backend 选择）
+        caps["local_asr"] = local.get("asr") or {"available": False}
+        caps["local_tts"] = local.get("tts") or {"available": False}
+        caps["speech_service"] = {
+            "running": bool(local.get("running")),
+            "url": local.get("url"),
+            "reason": local.get("reason") or "",
+            "vram": local.get("vram") or {},
+        }
+        caps["mimo_speech"] = mimo_speech_status()
+    except Exception as e:
+        caps["speech"] = {"available": False, "reason": str(e)}
+        caps["local_asr"] = {"available": False, "reason": str(e)}
+        caps["local_tts"] = {"available": False, "reason": str(e)}
+    return caps
+
+
+def _data_scope() -> dict:
+    """当前后端所用数据目录的范围（隔离判断），不返回绝对路径"""
+    from pathlib import Path
+    from config.path_config import get_data_dir
+    default_dir = (Path(__file__).resolve().parent.parent / "data").resolve()
+    try:
+        used = get_data_dir().resolve()
+    except Exception:
+        used = default_dir
+    env_set = bool(os.environ.get("EDU_DATA_DIR", "").strip())
+    return {
+        "isolated": bool(env_set and used != default_dir),
+        "dir_name": used.name,
     }
 
 

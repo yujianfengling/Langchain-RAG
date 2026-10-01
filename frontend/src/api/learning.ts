@@ -9,13 +9,27 @@ export type PlanStatus = 'ACTIVE' | 'COMPLETED' | 'ARCHIVED';
 export interface LearningTask {
   id: string;
   plan_id: string;
+  user_id?: string | null;
+  subject_id?: string | null;
   knowledge_point: string | null;
+  /** 知识点稳定 ID（阶段一：跨错题/复习/画像统一关联） */
+  knowledge_point_id?: string | null;
   task_type: TaskType;
   title: string;
   description: string | null;
   priority: number;
   estimated_minutes: number;
   status: TaskStatus;
+  /** 计划执行日期（YYYY-MM-DD） */
+  planned_date?: string | null;
+  /** 改期前的原始日期（保留可追溯） */
+  original_planned_date?: string | null;
+  /** 改期次数 */
+  defer_count?: number;
+  /** 来源：manual（计划生成）/ auto_review（错题自动安排） */
+  source?: string | null;
+  /** 触发该复习任务的作答 ID */
+  source_attempt_id?: string | null;
   completed_at: string | null;
   actual_minutes: number | null;
   created_at: string;

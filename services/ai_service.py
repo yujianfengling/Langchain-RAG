@@ -180,6 +180,32 @@ def call_llm(
         raise AIServiceError(f"LLM调用失败: {str(e)}")
 
 
+def resolve_model_info(model: Optional[str] = None) -> Dict[str, str]:
+    """
+    解析"本次实际使用的模型"信息（单一入口，供各文本服务如实在结果里标注）
+
+    Returns:
+        {"provider": 提供方键如 deepseek, "model": 实际模型名如 deepseek-chat,
+         "display_name": 展示名如 DeepSeek}
+    """
+    try:
+        from config.models import get_default_model, get_model_config
+        from services.model_service import get_model_provider
+        provider_key = model or get_default_model()
+        try:
+            api_model = get_model_provider(provider_key).config.get("model_name") or provider_key
+        except Exception:
+            api_model = get_model_config(provider_key).get("model_name") or provider_key
+        return {
+            "provider": provider_key,
+            "model": api_model,
+            "display_name": get_model_config(provider_key).get("name", provider_key),
+        }
+    except Exception as e:
+        logger.warning(f"解析模型信息失败: {e}")
+        return {"provider": model or "", "model": model or "", "display_name": model or ""}
+
+
 def get_model_info() -> Dict[str, Any]:
     """
     获取当前LLM模型信息
@@ -267,6 +293,7 @@ def check_ai_service_status() -> Dict[str, Any]:
 
 # 公开API
 __all__ = [
+    "resolve_model_info",
     "AIServiceError",
     "get_rag_context",
     "build_context_string",

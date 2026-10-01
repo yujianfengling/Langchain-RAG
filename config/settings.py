@@ -152,7 +152,8 @@ class Settings:
             配置状态字典
         """
         return {
-            "llm_provider": self._llm.provider,
+            # 当前生效的默认文本模型（未显式指定模型时的实际调用方）
+            "llm_provider": self._llm.resolved_text_model(),
             "mimo_configured": self._llm.is_provider_configured("mimo"),
             "deepseek_configured": self._llm.is_provider_configured("deepseek"),
             "qwen_configured": self._llm.is_provider_configured("qwen"),

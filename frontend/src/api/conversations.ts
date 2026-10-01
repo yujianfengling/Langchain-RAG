@@ -13,6 +13,8 @@ export interface ConversationMessage {
   model: string | null;
   latency: number | null;
   created_at: string;
+  /** 关联的用户交互记录 ID（阶段一：反馈关联真实 interaction_id） */
+  interaction_id?: string | null;
 }
 
 /**

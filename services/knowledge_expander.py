@@ -183,6 +183,23 @@ def extract_knowledge_from_qa(
         return None
 
 
+def get_knowledge(knowledge_id: str) -> Optional[Dict[str, Any]]:
+    """
+    按 ID 读取一条提取知识（教师端权限判定需要知道它属于哪个学科）
+
+    只读，不改变任何状态。
+    """
+    if not knowledge_id:
+        return None
+    conn = _get_extracted_db()
+    try:
+        row = conn.execute("SELECT * FROM extracted_knowledge WHERE id=?",
+                           (knowledge_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def validate_knowledge(knowledge_id: str) -> Dict[str, Any]:
     """
     验证提取的知识

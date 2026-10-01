@@ -1,88 +1,17 @@
 import React, { useState } from 'react';
 import {
-  Input, Button, Typography, Space, Radio, List, Tag, Divider,
-  message, Empty, Alert,
+  Input, Button, Typography, Space, Divider, message, Alert,
 } from 'antd';
 import {
   SendOutlined, BookOutlined, EditOutlined, WarningOutlined,
-  BulbOutlined, QuestionCircleOutlined, EyeOutlined,
+  BulbOutlined, QuestionCircleOutlined,
 } from '@ant-design/icons';
 import SubjectSelector from '../SubjectSelector';
-import { generateSmartNote, SmartNote, QuizItem } from '../../api/notes';
+import QuizList from '../QuizList';
+import { generateSmartNote, SmartNote } from '../../api/notes';
 
 const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
-
-// ===== 自测题组件（Task C 可复用）=====
-export const QuizList: React.FC<{ quizzes: QuizItem[] }> = ({ quizzes }) => {
-  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
-  const [selected, setSelected] = useState<Record<string, string>>({});
-
-  if (!quizzes.length) return <Empty description="暂无自测题" />;
-
-  return (
-    <List
-      dataSource={quizzes}
-      renderItem={(q, idx) => {
-        const isRevealed = !!revealed[q.id];
-        return (
-          <List.Item>
-            <div style={{ width: '100%' }}>
-              <div style={{ marginBottom: 8 }}>
-                <Tag color={q.type === 'single_choice' ? 'cyan' : q.type === 'judgement' ? 'green' : 'orange'}>
-                  {q.type === 'single_choice' ? '单选题' : q.type === 'judgement' ? '判断题' : '简答题'}
-                </Tag>
-                <Text strong>
-                  {idx + 1}. {q.question}
-                </Text>
-              </div>
-
-              {/* 选项选择区（单选/判断） */}
-              {(q.type === 'single_choice' || q.type === 'judgement') && (
-                <Radio.Group
-                  onChange={(e) => setSelected((prev) => ({ ...prev, [q.id]: e.target.value }))}
-                  value={selected[q.id]}
-                  style={{ marginBottom: 8 }}
-                >
-                  <Space direction="vertical">
-                    {q.options.map((opt) => (
-                      <Radio key={opt} value={opt}>{opt}</Radio>
-                    ))}
-                  </Space>
-                </Radio.Group>
-              )}
-
-              {/* 查看答案 */}
-              {!isRevealed ? (
-                <Button
-                  size="small"
-                  icon={<EyeOutlined />}
-                  onClick={() => setRevealed((prev) => ({ ...prev, [q.id]: true }))}
-                >
-                  查看答案
-                </Button>
-              ) : (
-                <Alert
-                  type="info"
-                  showIcon
-                  message={
-                    <Space direction="vertical" size={4}>
-                      <Text strong>答案：{q.answer}</Text>
-                      {q.explanation && <Text type="secondary">解析：{q.explanation}</Text>}
-                      {q.knowledge_point && (
-                        <Tag color="purple">知识点：{q.knowledge_point}</Tag>
-                      )}
-                    </Space>
-                  }
-                />
-              )}
-            </div>
-          </List.Item>
-        );
-      }}
-    />
-  );
-};
 
 // ===== 五段式智能笔记工具 =====
 const SmartNoteTool: React.FC = () => {
@@ -217,7 +146,7 @@ const SmartNoteTool: React.FC = () => {
               自测题
             </Space>
           </Title>
-          <QuizList quizzes={note.quiz} />
+          <QuizList quizzes={note.quiz as any} subjectId={subjectId} />
         </div>
       )}
     </div>

@@ -1,5 +1,14 @@
 """
-语音服务模块（V2.5.1 Audio Runtime Fix）
+语音服务模块（2026-09-26：本地 ASR/TTS 为主，MiMo 为可选提供方）
+
+**语音链路选择**（SPEECH_BACKEND=auto|local|mimo，默认 auto）：
+- local：调用独立进程的本地语音服务（FunASR + CosyVoice，见 speech_service/）
+- mimo ：保留原有的 MiMo ASR/TTS 适配（可选提供方，会员到期时不可用）
+- auto ：本地可用时用本地；本地不可用时再尝试 MiMo；都不可用 → 如实报错
+
+本地语音服务不可用（未启动 / 模型缺失 / 显存不足）时：
+- 文字问答、学习闭环等功能完全不受影响
+- 语音接口返回明确原因（error_type + message），**不会**用文本模型假装完成语音处理
 
 MiMo ASR/TTS 均走 OpenAI 兼容 /v1/chat/completions（不是 /audio/* 路径）：
 
@@ -32,15 +41,18 @@ MiMo ASR/TTS 均走 OpenAI 兼容 /v1/chat/completions（不是 /audio/* 路径�
 
 import base64
 import hashlib
+import io
 import json
 import os
 import re
 import requests
 import logging
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from utils.logger import logger
+from services import local_speech
+from services.tts_text import readable_text, split_sentences
 
 # 音频大小限制（20MB，与知识库上传一致）
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
@@ -54,6 +66,8 @@ DEFAULT_TTS_VOICE = "mimo_default"
 # 超时
 ASR_TIMEOUT = 30
 TTS_TIMEOUT = 30
+# MiMo TTS 单次请求的文本上限（超出不再静默截断，而是提示改用逐句接口）
+MAX_MIMO_TTS_CHARS = 2000
 
 # TTS 缓存目录与 TTL（V2.5.3）
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -65,8 +79,12 @@ TTS_CACHE_MAX_FILES = 200
 # HTTP 状态 → 结构化错误类型映射（禁止暴露上游响应正文）
 _STATUS_TO_ERROR = {
     400: ("audio_invalid_format", "音频格式或请求参数错误"),
-    401: ("invalid_api_key", "语音服务 API Key 无效"),
-    403: ("unauthorized", "语音服务访问被拒绝"),
+    # 2026-09-25：语音能力由 MiMo 提供（mimo-v2.5-asr / mimo-v2.5-tts）。
+    # MiMo 会员到期后凭证被供应商拒绝，这里把原因写清楚，避免被误解成"网络故障"。
+    401: ("invalid_api_key",
+          "MiMo 语音凭证被供应商拒绝（会员到期或凭证失效），语音识别/合成当前不可用；"
+          "文字学习功能不受影响"),
+    403: ("unauthorized", "语音服务访问被拒绝（MiMo 凭证无权限，会员可能已到期）"),
     404: ("audio_endpoint_not_found", "语音服务端点不存在"),
     429: ("rate_limited", "语音服务请求过于频繁，请稍后重试"),
 }
@@ -136,17 +154,27 @@ def _raise_status_error(status_code: int, fallback_type: str) -> None:
 
 def transcribe_audio(audio_data: bytes, filename: Optional[str] = None) -> str:
     """
-    语音识别：音频 → 文本（mimo-v2.5-asr，走 /chat/completions）
+    语音识别：音频 → 文本
 
-    Args:
-        audio_data: 音频字节（WAV 或 MP3）
-        filename: 文件名（用于判断扩展名，可选）
+    默认走**本地 ASR**（FunASR paraformer-zh，独立进程）；
+    SPEECH_BACKEND=mimo 时走 MiMo（可选提供方）；auto 模式下本地不可用才回退 MiMo。
 
     Returns:
         识别文本
 
     Raises:
-        AudioServiceError: 携带 error_type
+        AudioServiceError: 携带 error_type（本地不可用时给出具体原因）
+    """
+    text = transcribe_audio_detailed(audio_data, filename=filename)["text"]
+    return text
+
+
+def transcribe_audio_detailed(audio_data: bytes, filename: Optional[str] = None) -> Dict[str, Any]:
+    """
+    语音识别（返回文本 + 服务来源信息，便于前端与验收核对"实际用的是什么"）
+
+    Returns:
+        {"text": str, "service": "local"|"mimo", "engine": str, "latency_ms": float}
     """
     if not audio_data or len(audio_data) == 0:
         raise AudioServiceError("音频数据为空", error_type="audio_invalid_format")
@@ -166,10 +194,42 @@ def transcribe_audio(audio_data: bytes, filename: Optional[str] = None) -> str:
         raise AudioServiceError(
             "不支持的音频格式，请使用 WAV 或 MP3", error_type="audio_invalid_format")
 
+    # ---------- 本地 ASR（默认路径）----------
+    _local_asr_failure = ""
+    mode = local_speech.backend_mode()
+    if mode in ("local", "auto"):
+        try:
+            # 直接调用（不做前置健康探测：省一次往返，也避免服务忙时探测瞬时超时导致误判）
+            result = local_speech.transcribe(audio_data, filename or f"audio.{fmt}")
+            text = (result.get("text") or "").strip()
+            if not text:
+                raise AudioServiceError("本地识别结果为空，请说得更清楚一些",
+                                        error_type="asr_empty_result")
+            logger.info(f"[ASR] 本地识别完成：engine={result.get('engine')} "
+                        f"chars={len(text)} latency_ms={result.get('latency_ms')}")
+            return {"text": text, "service": "local",
+                    "engine": result.get("engine") or "local",
+                    "latency_ms": result.get("latency_ms"),
+                    "duration_s": result.get("duration_s")}
+        except local_speech.LocalSpeechError as e:
+            if mode == "local":
+                # 明确指定本地：不回退，如实报错
+                raise AudioServiceError(
+                    f"本地语音识别不可用：{e.message}", error_type=e.error_type)
+            logger.warning(f"[ASR] 本地不可用，尝试 MiMo 回退：{e.message}")
+            _local_asr_failure = e.message
+        except AudioServiceError:
+            raise
+
+    # ---------- MiMo ASR（可选提供方）----------
     config = _get_audio_config("mimo-asr")
     api_key = config.get("api_key")
     if not api_key:
-        raise AudioServiceError("语音识别服务未配置 API Key", error_type="asr_api_error")
+        raise AudioServiceError(
+            "语音识别不可用：本地语音服务未就绪"
+            + (f"（{_local_asr_failure}）" if _local_asr_failure else "")
+            + "，且未配置 MiMo API Key",
+            error_type="asr_api_error")
 
     url = normalize_chat_completions_url(config["base_url"])
 
@@ -222,9 +282,11 @@ def transcribe_audio(audio_data: bytes, filename: Optional[str] = None) -> str:
     text = _extract_asr_text(data)
     text = text.strip()
     if not text:
-        logger.warning("[ASR] 识别结果为空")
-        return ""
-    return text
+        # 不再静默返回空串：调用方需要知道"没识别出来"而不是"识别成空"
+        raise AudioServiceError("识别结果为空，请重新录制或说得更清楚一些",
+                                error_type="asr_empty_result")
+    return {"text": text, "service": "mimo", "engine": config.get("model_name"),
+            "latency_ms": None, "duration_s": None}
 
 
 def _extract_asr_text(data: Dict[str, Any]) -> str:
@@ -323,6 +385,8 @@ def prepare_tts_text(text: str, max_chars: Optional[int] = None) -> str:
         cleaned += "这里包含一段代码，请查看屏幕内容。"
 
     # 9. 长度限制：在句子边界截断
+    #    注意：这是**调用方显式要求**的上限（max_chars 非空）才会触发；
+    #    正常朗读路径不再传 max_chars，由 services/tts_text.split_sentences 按句切分且不丢字。
     if max_chars is not None and len(cleaned) > max_chars:
         cut = cleaned[:max_chars]
         # 优先在句号/问号/感叹号/换行处截断（边界在 30% 之后即可，保证完整句子）
@@ -390,7 +454,8 @@ def _tts_cache_set(cache_key: str, audio: bytes) -> None:
         logger.warning(f"[TTS] 缓存写入失败（不影响返回）: {e}")
 
 
-def synthesize_speech(text: str, voice: Optional[str] = None, style: Optional[str] = None) -> bytes:
+def synthesize_speech(text: str, voice: Optional[str] = None, style: Optional[str] = None,
+                      timeout: Optional[int] = None) -> bytes:
     """
     语音合成：文本 → 音频（mimo-v2.5-tts，走 /chat/completions）
 
@@ -398,6 +463,7 @@ def synthesize_speech(text: str, voice: Optional[str] = None, style: Optional[st
         text: 待合成文本
         voice: 音色（可选，默认 mimo_default，预置音色）
         style: 风格（可选，结构化预留，不实现 voiceclone/voicedesign）
+        timeout: 请求超时秒数（可选；能力探测时用较短超时，避免拖慢 /health）
 
     Returns:
         WAV 音频字节
@@ -412,7 +478,12 @@ def synthesize_speech(text: str, voice: Optional[str] = None, style: Optional[st
     clean_text = prepare_tts_text(text)
     if not clean_text:
         raise AudioServiceError("文本清洗后为空，无法合成", error_type="empty_text")
-    clean_text = clean_text[:2000]
+    if len(clean_text) > MAX_MIMO_TTS_CHARS:
+        # 旧实现是 clean_text[:2000] 静默砍掉后半段 —— 现在明确报错并给出正确用法
+        raise AudioServiceError(
+            f"文本过长（{len(clean_text)} 字 > {MAX_MIMO_TTS_CHARS} 字上限）："
+            f"请改用逐句合成接口 /api/audio/tts（会自动按句切分且不丢字）",
+            error_type="text_too_long")
 
     voice = voice or DEFAULT_TTS_VOICE
 
@@ -427,6 +498,7 @@ def synthesize_speech(text: str, voice: Optional[str] = None, style: Optional[st
     if cached is not None:
         logger.debug(f"[TTS] cache hit: model={config['model_name']} chars={len(clean_text)}")
         return cached
+    _skip_cache = bool(timeout)  # 能力探测这种短超时调用不走缓存写入
 
     url = normalize_chat_completions_url(config["base_url"])
 
@@ -452,7 +524,7 @@ def synthesize_speech(text: str, voice: Optional[str] = None, style: Optional[st
             url,
             headers={"Authorization": f"Bearer {api_key}"},
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            timeout=TTS_TIMEOUT,
+            timeout=timeout or TTS_TIMEOUT,
         )
     except requests.exceptions.Timeout:
         raise AudioServiceError("语音合成超时，请重试", error_type="timeout")
@@ -481,8 +553,9 @@ def synthesize_speech(text: str, voice: Optional[str] = None, style: Optional[st
     if not audio_bytes:
         raise AudioServiceError("语音合成返回空音频", error_type="response_parse_error")
 
-    # V2.5.3：成功才写缓存（失败结果不写入）
-    _tts_cache_set(cache_key, audio_bytes)
+    # V2.5.3：成功才写缓存（失败结果不写入；能力探测的短超时调用跳过缓存）
+    if not _skip_cache:
+        _tts_cache_set(cache_key, audio_bytes)
 
     return audio_bytes
 
@@ -504,9 +577,356 @@ def _extract_tts_audio_b64(data: Dict[str, Any]) -> str:
         return ""
 
 
+# ==================== 逐句 TTS（本地优先，MiMo 可选） ====================
+
+def synthesize_segments(text: str, voice: Optional[str] = None, speed: float = 1.0,
+                        max_chars: Optional[int] = None) -> Dict[str, Any]:
+    """
+    把一段回答转成"按句切分的语音"，供前端顺序播放
+
+    流程：
+        1. 朗读文本规范化（services/tts_text）：去 Markdown、代码块/公式/表格改为可读提示
+        2. 按句子切成短段（**不丢字**；超长句在次级边界续切）
+        3. 本地 TTS 逐段合成（本地不可用且允许回退时，用 MiMo 逐段合成）
+
+    Args:
+        text: 原始回答
+        voice: 音色（本地为 CosyVoice 预置音色；MiMo 为 mimo_default）
+        speed: 语速（本地 TTS 支持）
+        max_chars: 朗读长度上限；**超过时显式返回 truncated/omitted_chars**，不静默丢弃
+
+    Returns:
+        {
+          "items": [{"seq", "text", "audio_b64", "duration_s", "latency_ms"}],
+          "service": "local"|"mimo", "engine": str, "voice": str, "sample_rate": int,
+          "segments_total": int, "truncated": bool, "omitted_chars": int, "hints": [str]
+        }
+
+    Raises:
+        AudioServiceError: 携带 error_type（不可用时给出具体原因）
+    """
+    prep = readable_text(text or "", max_chars=max_chars)
+    readable = prep["text"]
+    if not readable.strip():
+        raise AudioServiceError("没有可朗读的内容", error_type="empty_text")
+
+    segments = split_sentences(readable)
+    if not segments:
+        raise AudioServiceError("没有可朗读的内容", error_type="empty_text")
+
+    local_failure = ""
+    mode = local_speech.backend_mode()
+    if mode in ("local", "auto"):
+        try:
+            # 直接调用（同上：不做前置探测）
+            data = local_speech.synthesize_segments(segments, voice=voice, speed=speed)
+            items = [{"seq": it.get("seq"), "text": it.get("text"),
+                      "audio_b64": it.get("audio_b64"),
+                      "duration_s": it.get("duration_s"),
+                      "latency_ms": it.get("latency_ms")}
+                     for it in (data.get("items") or [])]
+            logger.info(f"[TTS] 本地合成完成：engine={data.get('engine')} "
+                        f"voice={data.get('voice')} segments={len(items)}")
+            return {
+                "items": items, "service": "local",
+                # 实际用于朗读的文本（归一化 + 切分后）——便于核对"读的是什么"
+                "speech_text": readable,
+                "segments_text": segments,
+                "engine": data.get("engine") or "local",
+                "voice": data.get("voice") or (voice or ""),
+                "sample_rate": data.get("sample_rate") or 22050,
+                "segments_total": len(segments),
+                "truncated": prep["truncated"], "omitted_chars": prep["omitted_chars"],
+                "hints": prep["hints"],
+            }
+        except local_speech.LocalSpeechError as e:
+            if mode == "local":
+                raise AudioServiceError(f"本地语音合成不可用：{e.message}",
+                                        error_type=e.error_type)
+            logger.warning(f"[TTS] 本地不可用，尝试 MiMo 回退：{e.message}")
+            local_failure = e.message
+
+    # ---------- MiMo TTS（可选提供方，逐段合成） ----------
+    items = []
+    sample_rate = None
+    for seq, seg in enumerate(segments):
+        try:
+            wav = synthesize_speech(seg, voice=voice)  # 内部已含 MiMo 的清洗/缓存/错误映射
+        except AudioServiceError as e:
+            if local_failure:
+                # 两条链路都失败：把本地失败原因一并报出，避免误导为"只是 MiMo 的问题"
+                raise AudioServiceError(
+                    f"语音合成不可用：本地语音服务失败（{local_failure}）；"
+                    f"MiMo 回退也失败（{e.message}）",
+                    error_type=e.error_type)
+            raise
+        items.append({"seq": seq, "text": seg, "audio_b64": base64.b64encode(wav).decode("ascii"),
+                      "duration_s": None, "latency_ms": None})
+    return {
+        "items": items, "service": "mimo", "speech_text": readable,
+        "segments_text": segments,
+        "engine": _get_audio_config("mimo-tts").get("model_name"),
+        "voice": voice or DEFAULT_TTS_VOICE, "sample_rate": sample_rate or 24000,
+        "segments_total": len(segments),
+        "truncated": prep["truncated"], "omitted_chars": prep["omitted_chars"],
+        "hints": prep["hints"],
+    }
+
+
+def synthesize_speech_detailed(text: str, voice: Optional[str] = None,
+                               max_chars: Optional[int] = None) -> Dict[str, Any]:
+    """
+    单段合成（保留给"播放一条消息"这类简单场景）：返回合并后的 WAV
+
+    与 synthesize_segments 的区别：这里把逐段音频在服务端拼成一段，
+    适合不需要"边播边合成"的调用方。
+    """
+    result = synthesize_segments(text, voice=voice, max_chars=max_chars)
+    merged = concat_wav_base64([it["audio_b64"] for it in result["items"]],
+                               result.get("sample_rate") or 22050)
+    result["audio_b64"] = merged
+    return result
+
+
+def concat_wav_base64(items: List[str], sample_rate: int) -> str:
+    """把多段 WAV(base64) 顺序拼接成一段（保证顺序，不丢句）"""
+    import wave
+
+    frames = bytearray()
+    params = None
+    for b64 in items:
+        if not b64:
+            continue
+        raw = base64.b64decode(b64)
+        try:
+            with wave.open(io.BytesIO(raw), "rb") as w:
+                if params is None:
+                    params = w.getparams()
+                frames += w.readframes(w.getnframes())
+        except Exception as e:
+            logger.warning(f"[TTS] 拼接跳过损坏分段：{e}")
+    if params is None:
+        raise AudioServiceError("没有可拼接的音频", error_type="tts_failed")
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setparams(params)
+        w.writeframes(bytes(frames))
+    return base64.b64encode(out.getvalue()).decode("ascii")
+
+
+# ==================== 语音能力状态（本地 ASR / 本地 TTS / MiMo 可选） ====================
+#
+# 2026-09-26：默认语音链路改为**本地**（FunASR + CosyVoice，独立进程）。
+# 这里分别报告四条链路的状态，便于 /health 与前端准确区分：
+#   text / vision（在 api/app.py 里）+ local_asr / local_tts（这里）+ mimo（可选提供方）
+# 本地不可用时：如实给出原因（服务未启动 / 模型缺失 / 显存不足），文字功能不受影响。
+
+_SPEECH_PROBE: Dict[str, Any] = {"ts": 0.0, "available": None, "reason": "", "model": ""}
+SPEECH_PROBE_TTL_SECONDS = 600
+SPEECH_PROBE_TIMEOUT = 6
+
+
+def local_speech_status(force: bool = False) -> Dict[str, Any]:
+    """本地语音服务状态（ASR / TTS 分开）"""
+    h = local_speech.health(force=force)
+    asr = h.get("asr") or {}
+    tts = h.get("tts") or {}
+    return {
+        "service": "local",
+        "url": local_speech.base_url(),
+        "running": bool(h.get("running")),
+        "reason": h.get("reason") or "",
+        "asr": {
+            "provider": "local",
+            "engine": asr.get("engine"),
+            "available": bool(asr.get("ready")),
+            "state": asr.get("state"),
+            "model": asr.get("model"),
+            "device": asr.get("device"),
+            "load_seconds": asr.get("load_seconds"),
+            "error": asr.get("error"),
+            "error_type": asr.get("error_type"),
+        },
+        "tts": {
+            "provider": "local",
+            "engine": tts.get("engine"),
+            "available": bool(tts.get("ready")),
+            "state": tts.get("state"),
+            "model_dir": tts.get("model_dir"),
+            "voices": tts.get("voices") or [],
+            "device": tts.get("device"),
+            "load_seconds": tts.get("load_seconds"),
+            "error": tts.get("error"),
+            "error_type": tts.get("error_type"),
+        },
+        "vram": h.get("vram") or {"available": False},
+    }
+
+
+def mimo_speech_status(probe: bool = False) -> Dict[str, Any]:
+    """MiMo 语音（可选提供方）状态；probe=True 时做一次真实探测（默认关闭，避免拖慢 /health）"""
+    info = {
+        "provider": "mimo",
+        "asr_model": _get_audio_config("mimo-asr").get("model_name", ""),
+        "tts_model": _get_audio_config("mimo-tts").get("model_name", ""),
+        "available": False,
+        "reason": "",
+    }
+    if not _get_audio_config("mimo-tts").get("api_key"):
+        info["reason"] = "未配置 MiMo API Key（MIMO_API_KEY）"
+        return info
+    if probe:
+        # 真实探测一次（成功才算可用；凭证被拒时给出真实原因）
+        probed = _probe_mimo_tts(force=True)
+        info.update({k: v for k, v in probed.items()
+                     if k in ("available", "reason", "provider", "asr_model", "tts_model")})
+        return info
+    info["reason"] = "未探测（MiMo 为可选提供方，当前默认语音链路为本地）"
+    return info
+
+
+def speech_capability(force: bool = False) -> Dict[str, Any]:
+    """
+    语音能力汇总（供 /health 与前端展示）
+
+    Returns:
+        {
+          "backend": "local"|"mimo",
+          "asr": {...}, "tts": {...},
+          "local": {...}, "mimo": {...},
+          "available": bool, "reason": str
+        }
+    """
+    mode = local_speech.backend_mode()
+    local = local_speech_status(force=force)
+    # 强制 MiMo 时才做真实探测（避免默认路径打外网）
+    mimo = mimo_speech_status(probe=force if mode == "mimo" else False)
+
+    if mode == "mimo":
+        chosen, asr, tts = "mimo", None, None
+        available = bool(mimo.get("available"))
+        reason = mimo.get("reason") or ("" if available else "MiMo 语音当前不可用")
+    else:
+        chosen = "local"
+        asr, tts = local["asr"], local["tts"]
+
+    if mode == "mimo":
+        pass
+    elif local["running"]:
+        available = bool(asr and asr.get("available")) and bool(tts and tts.get("available"))
+        reason = "" if available else (local["reason"] or
+                                       (asr or {}).get("error") or (tts or {}).get("error") or
+                                       "本地语音模型尚未就绪（首次使用需要下载/加载模型）")
+    else:
+        available = False
+        reason = local["reason"] or "本地语音服务未启动"
+
+    return {
+        "backend": chosen,
+        "available": available,
+        "reason": reason,
+        "asr": asr or {**mimo, "available": False},
+        "tts": tts or {**mimo, "available": False},
+        "local": local,
+        "mimo": mimo,
+        "asr_model": (asr or {}).get("model") or mimo.get("asr_model"),
+        "tts_model": (tts or {}).get("engine") or mimo.get("tts_model"),
+    }
+
+
+def list_local_voices() -> Dict[str, Any]:
+    """本地可用音色（本地不可用时给出原因，不返回假音色）"""
+    status = local_speech_status()
+    if not status["running"]:
+        return {"voices": [], "default": "", "engine": "local",
+                "reason": status["reason"] or "本地语音服务未启动"}
+    voices = (status["tts"] or {}).get("voices") or []
+    if not voices:
+        voices_local = local_speech.list_voices()
+        voices = voices_local
+    return {
+        "voices": voices,
+        "default": ((status["tts"] or {}).get("engine") and
+                    (status["tts"] or {}).get("default_voice")) or
+                   (voices[0] if voices else ""),
+        "engine": (status["tts"] or {}).get("engine") or "local",
+        "available": bool((status["tts"] or {}).get("available")),
+        "reason": "" if voices else ((status["tts"] or {}).get("error") or
+                                    "本地 TTS 尚未就绪"),
+    }
+
+
+def warmup_local_speech() -> Dict[str, Any]:
+    """预热本地语音模型（模型加载一次后常驻）"""
+    try:
+        data = local_speech.warmup()
+    except local_speech.LocalSpeechError as e:
+        raise AudioServiceError(f"本地语音服务不可用：{e.message}", e.error_type)
+    local_speech.reset_health_cache()
+    return {"engines": data.get("engines") or {}, "status": local_speech_status(force=True)}
+
+
+def _probe_mimo_tts(force: bool = False) -> Dict[str, Any]:
+    """
+    对 MiMo TTS 做一次真实探测（带缓存）
+
+    返回 {"provider": "mimo", "available": bool, "reason": str, ...}
+    说明：这是**可选提供方**的探测；默认语音链路是本地，不会在 /health 里被动调用它。
+    """
+    import time as _time
+
+    asr_model = _get_audio_config("mimo-asr").get("model_name", "")
+    tts_model = _get_audio_config("mimo-tts").get("model_name", "")
+    info = {"provider": "mimo", "asr_model": asr_model, "tts_model": tts_model,
+            "available": False, "reason": ""}
+
+    api_key = _get_audio_config("mimo-tts").get("api_key")
+    if not api_key:
+        info["reason"] = "未配置 MiMo API Key（MIMO_API_KEY）"
+        return info
+
+    now = _time.time()
+    if (not force and _SPEECH_PROBE["available"] is not None
+            and now - _SPEECH_PROBE["ts"] < SPEECH_PROBE_TTL_SECONDS):
+        info["available"] = bool(_SPEECH_PROBE["available"])
+        info["reason"] = _SPEECH_PROBE["reason"]
+        return info
+
+    try:
+        synthesize_speech("你好", timeout=SPEECH_PROBE_TIMEOUT)
+        _SPEECH_PROBE.update(ts=now, available=True, reason="", model=tts_model)
+        info["available"] = True
+    except AudioServiceError as e:
+        reason = e.message
+        if e.error_type in ("invalid_api_key", "unauthorized"):
+            reason = f"MiMo 语音凭证被供应商拒绝（会员到期/凭证失效）；错误类型 {e.error_type}"
+        _SPEECH_PROBE.update(ts=now, available=False, reason=reason, model=tts_model)
+        info["reason"] = reason
+    except Exception as e:
+        reason = f"MiMo 语音探测失败：{e}"
+        _SPEECH_PROBE.update(ts=now, available=False, reason=reason, model=tts_model)
+        info["reason"] = reason
+    return info
+
+
+def reset_speech_probe() -> None:
+    """清空语音能力探测缓存（测试/运维用）"""
+    _SPEECH_PROBE.update(ts=0.0, available=None, reason="", model="")
+
+
 # 公开API
 __all__ = [
     "AudioServiceError",
+    "speech_capability",
+    "local_speech_status",
+    "mimo_speech_status",
+    "synthesize_segments",
+    "synthesize_speech_detailed",
+    "transcribe_audio_detailed",
+    "concat_wav_base64",
+    "list_local_voices",
+    "warmup_local_speech",
+    "reset_speech_probe",
     "transcribe_audio",
     "synthesize_speech",
     "prepare_tts_text",

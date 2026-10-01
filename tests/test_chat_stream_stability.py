@@ -173,7 +173,12 @@ class TestChatStreamService(unittest.TestCase):
         types = [e["type"] for e in events]
         self.assertEqual(types, ["start", "delta", "delta", "done"])
         start = events[0]
-        self.assertEqual(start["model"], "mimo-v2.5-pro")
+        # 未指定 model 时必须使用后端默认文本模型（2026-09-25 起为 DeepSeek），
+        # 断言写成"从配置解析出的默认模型"而不是字面量，避免默认值变更后测试变成假绿
+        from config.models import get_default_model, get_model_config
+        expected_model = get_model_config(get_default_model())["model_name"]
+        self.assertEqual(start["model"], expected_model)
+        self.assertEqual(start["provider"], get_default_model())
         self.assertTrue(start["context_used"])
         done = events[-1]
         self.assertEqual(done["type"], "done")

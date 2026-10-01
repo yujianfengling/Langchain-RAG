@@ -31,6 +31,8 @@ class MultimodalService:
             vision_provider: 视觉模型提供商，如果为None则自动获取
         """
         self.vision_provider = vision_provider
+        # 视觉能力不可用时的原因（供接口层原样返回，避免只报"不可用"而说不清为什么）
+        self.vision_unavailable_reason = ""
         self._ensure_vision_provider()
     
     def _ensure_vision_provider(self):
@@ -46,6 +48,7 @@ class MultimodalService:
         if mode == "ocr":
             logger.info("[Multimodal] VISION_MODE=ocr，跳过Vision模型，直接使用OCR")
             self.vision_provider = None
+            self.vision_unavailable_reason = "VISION_MODE=ocr：已按配置跳过大模型识图，改用 OCR"
             return
         
         if self.vision_provider is not None:
@@ -57,29 +60,51 @@ class MultimodalService:
             api_key = get_model_api_key("qwen-vision")
             if api_key:
                 self.vision_provider = get_model_provider("qwen-vision")
+                self.vision_unavailable_reason = ""
                 logger.info("[Multimodal] 使用 qwen-vision 视觉模型")
                 return
         except Exception:
             pass
         
-        # 2. 回退到默认模型（MiMo等，使用vision_model_name如果有的话）
+        # 2. 回退到**具备视觉能力**的提供方（MiMo 视觉），而不是默认文本模型
+        #
+        # 2026-09-25：默认文本模型是 DeepSeek（纯文本），把图片交给它会必然失败。
+        # 因此这里只接受显式声明了 vision_model_name 的提供方（当前为 MiMo），
+        # 且要求其凭证存在；否则视觉能力标记为不可用并说明原因，由调用方返回明确错误，
+        # 而不是拿文本模型冒充视觉模型。
         try:
             from services.model_service import OpenAICompatibleProvider
-            default_provider = get_model_provider()
-            vision_model = default_provider.config.get("vision_model_name")
-            if vision_model and vision_model != default_provider.model_name:
-                vision_config = {**default_provider.config, "model_name": vision_model}
+            from config.models import get_model_config, get_model_api_key
+
+            vision_model = ""
+            vision_config = None
+            for provider_name in ("mimo",):   # 目前唯一声明了 vision_model_name 的提供方
+                cfg = get_model_config(provider_name)
+                vm = cfg.get("vision_model_name")
+                if vm and get_model_api_key(provider_name):
+                    vision_model = vm
+                    vision_config = {**cfg, "model_name": vm}
+                    break
+
+            if vision_config:
+                self.vision_unavailable_reason = ""
                 self.vision_provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
                 self.vision_provider.model_name = vision_model
                 self.vision_provider.config = vision_config
-                self.vision_provider.api_key = default_provider.api_key
+                self.vision_provider.api_key = get_model_api_key(
+                    "mimo" if vision_model.startswith("mimo") else "qwen-vision")
                 logger.info(f"[Multimodal] qwen-vision 未配置，使用 {vision_model} 作为视觉模型")
             else:
-                self.vision_provider = default_provider
-                logger.info(f"[Multimodal] qwen-vision 未配置，回退到默认模型 {self.vision_provider.model_name} 尝试视觉功能")
+                self.vision_provider = None
+                self.vision_unavailable_reason = (
+                    "视觉能力当前不可用：未配置可用的视觉模型凭证"
+                    "（qwen-vision 的 DASHSCOPE_API_KEY 未配置；MiMo 凭证已失效/会员到期）。"
+                    "文本问答与学习功能不受影响。")
+                logger.warning(f"[Multimodal] {self.vision_unavailable_reason}")
         except Exception as e:
             logger.warning(f"[Multimodal] 无法初始化视觉模型: {e}")
             self.vision_provider = None
+            self.vision_unavailable_reason = f"视觉能力初始化失败：{e}"
     
     def describe_image(self, image_path: str, mime_type: Optional[str] = None, prompt: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -97,7 +122,9 @@ class MultimodalService:
             ValueError: 如果视觉模型不可用或调用失败
         """
         if not self.vision_provider:
-            raise ValueError("视觉模型不可用，请配置通义千问视觉模型")
+            raise ValueError(self.vision_unavailable_reason
+                             or "视觉模型不可用，请配置通义千问视觉模型"
+                                "（DASHSCOPE_API_KEY 或可用的视觉提供方凭证）")
         
         # 读取图片并转换为base64
         try:

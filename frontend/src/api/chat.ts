@@ -1,3 +1,4 @@
+import { authHeaders } from './axios';
 import apiClient from './axios';
 import { ChatRequest, ChatResponse, SourceInfo } from '../types';
 
@@ -12,6 +13,8 @@ export const sendMessage = async (request: ChatRequest): Promise<ChatResponse> =
 export interface StreamStartEvent {
   type: 'start';
   model?: string;
+  /** 提供方键（deepseek / mimo / qwen）——由后端解析结果给出，保证"显示 = 实际调用" */
+  provider?: string;
   subject_id?: string;
   context_used?: boolean;
 }
@@ -23,11 +26,18 @@ export interface StreamDoneEvent {
   type: 'done';
   sources?: SourceInfo[];
   model?: string;
+  provider?: string;
   elapsed?: number;
   ttft?: number | null;
   full_answer?: string;
   message_type?: string; // 结构化模式：smart_note|summary|explanation|advice|quiz
   payload?: any; // 结构化负载（前端据此渲染 Card）
+  /** 本轮教学策略与依据（阶段二：画像 → 教学安排，可解释） */
+  teaching?: {
+    mode?: string;
+    reasons?: string[];
+    signals?: Record<string, any>;
+  } | null;
 }
 export interface StreamErrorEvent {
   type: 'error';
@@ -59,7 +69,8 @@ export const sendMessageStream = (
     try {
       response = await fetch('/api/chat/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // 必须携带登录令牌：后端据此判定会话归属与学习记录归属
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(request),
         signal: controller.signal,
       });

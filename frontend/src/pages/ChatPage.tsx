@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Layout, Button, Empty, Space, Typography, message, Popconfirm, Spin } from 'antd';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { Layout, Button, Drawer, Empty, Space, Typography, message, Popconfirm, Spin } from 'antd';
 import { MessageOutlined, PlusOutlined, DeleteOutlined, RocketOutlined, AimOutlined, ExperimentOutlined, SettingOutlined } from '@ant-design/icons';
-import ChatBox from '../components/ChatBox';
+import ChatBox, { ChatPreset } from '../components/ChatBox';
 import SubjectSelector from '../components/SubjectSelector';
+import { ttsPlayer } from '../utils/ttsPlayer';
 import { getSubjects } from '../api/subjects';
 import { getConversations, createConversation, deleteConversation } from '../api/conversations';
 import { Subject, Conversation } from '../types';
@@ -11,17 +13,26 @@ import LearningPathPanel from '../components/LearningPathPanel';
 import KnowledgeExtractionPanel from '../components/KnowledgeExtractionPanel';
 import CollapsiblePanel from '../components/CollapsiblePanel';
 import PersonalizationSettings from '../components/PersonalizationSettings';
+import { useIsNarrow } from '../hooks/useIsNarrow';
 
 const { Sider, Content } = Layout;
 const { Text } = Typography;
 
 const ChatPage: React.FC = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  // 窄屏下原本的"历史对话"侧栏会被隐藏，连带把学科选择器一起藏掉 →
+  // 学生手机上无法选学科、发送按钮永久禁用。窄屏改为顶部一行学科选择 + 抽屉历史。
+  const isNarrow = useIsNarrow();
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedSubject, setSelectedSubject] = useState<string>('');
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConvId, setActiveConvId] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  // 带上下文跳转预设（阶段一：从"我的学习"/学习计划"去自测"进入）
+  const [preset, setPreset] = useState<ChatPreset | undefined>(undefined);
 
   // 加载学科列表
   const loadSubjects = useCallback(async () => {
@@ -52,6 +63,20 @@ const ChatPage: React.FC = () => {
     loadConversations();
   }, [loadSubjects, loadConversations]);
 
+  // 读取带上下文跳转的预设并清理路由 state（避免返回时重复应用）
+  useEffect(() => {
+    const incoming = (location.state as any)?.preset as
+      (ChatPreset & { subjectId?: string }) | undefined;
+    if (!incoming) return;
+    if (incoming.subjectId) {
+      setSelectedSubject(incoming.subjectId);
+      setActiveConvId('');
+      loadConversations(incoming.subjectId);
+    }
+    setPreset({ mode: incoming.mode, input: incoming.input, taskId: incoming.taskId });
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.state, location.pathname, navigate, loadConversations]);
+
   // 学科切换时不得继续沿用其他学科的 conversation
   const handleSubjectChange = (sid: string) => {
     setSelectedSubject(sid);
@@ -65,6 +90,8 @@ const ChatPage: React.FC = () => {
       message.warning('请先选择学科');
       return;
     }
+    // 用户主动切换会话：立即停止正在朗读的旧回答（不等接口返回）
+    ttsPlayer.stop();
     setCreating(true);
     try {
       const res: any = await createConversation(selectedSubject);
@@ -110,8 +137,10 @@ const ChatPage: React.FC = () => {
 
   return (
     <Layout style={{ height: '100%' }}>
-      {/* 左侧历史对话栏 */}
+      {/* 左侧历史对话栏（窄屏不渲染，改用下面的抽屉，避免挤掉内容与学科选择器） */}
+      {!isNarrow && (
       <Sider
+        className="chat-history-sider"
         width={280}
         style={{
           background: '#fff',
@@ -215,7 +244,7 @@ const ChatPage: React.FC = () => {
                   {convs.map(c => (
                     <div
                       key={c.id}
-                      onClick={() => setActiveConvId(c.id)}
+                      onClick={() => { ttsPlayer.stop(); setActiveConvId(c.id); }}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -265,6 +294,65 @@ const ChatPage: React.FC = () => {
           </div>
         </div>
       </Sider>
+      )}
+
+      {/* 窄屏：历史对话抽屉（入口在下面聊天区顶部） */}
+      {isNarrow && (
+        <Drawer
+          placement="left"
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          width={280}
+          title="历史对话"
+        >
+          <Button
+            block
+            icon={<PlusOutlined />}
+            onClick={() => { handleNewConversation(); setHistoryOpen(false); }}
+            disabled={!selectedSubject}
+            style={{ marginBottom: 12 }}
+          >
+            新建对话
+          </Button>
+          {conversations.length === 0 ? (
+            <Empty description="还没有历史对话" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          ) : (
+            grouped.map(([sid, convs]) => (
+              <div key={sid} style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 12, color: '#94a3b8', fontWeight: 600, padding: '4px 8px' }}>
+                  ▼ {subjectName(sid)}
+                </div>
+                {convs.map((c) => (
+                  <div
+                    key={c.id}
+                    onClick={() => { ttsPlayer.stop(); setActiveConvId(c.id); setHistoryOpen(false); }}
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      padding: '8px 10px', borderRadius: 8, cursor: 'pointer',
+                      background: activeConvId === c.id ? '#f0fdfa' : 'transparent',
+                    }}
+                  >
+                    <Space size={8} style={{ minWidth: 0, flex: 1 }}>
+                      <MessageOutlined style={{ color: '#94a3b8', fontSize: 13 }} />
+                      <Text style={{ fontSize: 13 }} ellipsis>{c.title || '新对话'}</Text>
+                    </Space>
+                    <Popconfirm
+                      title="删除该会话？"
+                      description="会话及其全部消息将被删除"
+                      okText="删除" cancelText="取消"
+                      onConfirm={(e) => { e?.stopPropagation(); handleDeleteConversation(c.id); }}
+                      onCancel={(e) => e?.stopPropagation()}
+                    >
+                      <Button type="text" size="small" danger icon={<DeleteOutlined />}
+                        onClick={(e) => e.stopPropagation()} />
+                    </Popconfirm>
+                  </div>
+                ))}
+              </div>
+            ))
+          )}
+        </Drawer>
+      )}
 
       {/* 右侧聊天区域 */}
       <Layout style={{ overflow: 'hidden', height: '100%' }}>
@@ -276,6 +364,28 @@ const ChatPage: React.FC = () => {
           display: 'flex',
           flexDirection: 'column',
         }}>
+          {isNarrow && (
+            <Space style={{ width: '100%', marginBottom: 10 }} size={8}>
+              <Button icon={<MessageOutlined />} onClick={() => setHistoryOpen(true)}>
+                历史对话
+              </Button>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                disabled={!selectedSubject}
+                onClick={handleNewConversation}
+              >
+                新建
+              </Button>
+              <div style={{ flex: 1, minWidth: 140 }}>
+                <SubjectSelector
+                  value={selectedSubject}
+                  onChange={handleSubjectChange}
+                  style={{ width: '100%' }}
+                />
+              </div>
+            </Space>
+          )}
           <ChatBox
             subjectId={selectedSubject}
             subjects={subjects}
@@ -286,6 +396,8 @@ const ChatPage: React.FC = () => {
               loadConversations(selectedSubject);
             }}
             onSubjectChange={setSelectedSubject}
+            preset={preset}
+            onPresetConsumed={() => setPreset(undefined)}
           />
         </Content>
       </Layout>

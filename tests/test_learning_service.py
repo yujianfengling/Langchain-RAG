@@ -18,6 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from tests.fixtures_isolated import IsolatedDataTestCase
 from services import learning_service
 from services.learning_service import (
     LearningServiceError,
@@ -29,9 +30,6 @@ from services.learning_service import (
     _parse_plan_json,
 )
 
-# 隔离测试数据库
-TEST_DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "data", "test_learning.db")
 
 
 def _make_llm_plan_output():
@@ -53,18 +51,15 @@ def _make_llm_plan_output():
     }, ensure_ascii=False)
 
 
-class LearningServiceTestBase(unittest.TestCase):
-    def setUp(self):
-        learning_service.DB_PATH = TEST_DB
-        learning_service._init_db()
+class LearningServiceTestBase(IsolatedDataTestCase):
+    """
+    学习计划服务测试基类
 
-    def tearDown(self):
-        if os.path.exists(TEST_DB):
-            os.remove(TEST_DB)
-        for suffix in ("-wal", "-shm"):
-            p = TEST_DB + suffix
-            if os.path.exists(p):
-                os.remove(p)
+    阶段一补验：改用隔离夹具（临时 data/ 与临时库，真实注册学科 + "已就绪"知识库），
+    不再依赖正式库预存学科，也不再往正式库写测试数据。
+    """
+
+    SUBJECTS = ("数据结构",)
 
 
 class TestPersistence(LearningServiceTestBase):

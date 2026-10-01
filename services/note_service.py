@@ -121,6 +121,48 @@ def _parse_note_json(text: str) -> Dict[str, Any]:
     return {}
 
 
+def _resolved_model_name(model: Optional[str] = None) -> str:
+    """
+    本次实际调用的模型名（如 deepseek-chat）
+
+    说明：此前这些位置写死为空串或 "current"，导致结构化消息（笔记/自测/总结）
+    在会话里丢失模型标记，界面只能显示"模型: "。这里统一如实标注。
+    """
+    from services.ai_service import resolve_model_info
+    return resolve_model_info(model).get("model") or ""
+
+
+def _persist_and_publicize(
+    subject_id: str,
+    topic: str,
+    quiz: List[Dict[str, Any]],
+    source: str = "note",
+) -> List[Dict[str, Any]]:
+    """
+    将生成的题目持久化到题库，并返回"可下发给前端"的公开题目。
+
+    关键约束（阶段一）：
+    - 公开题目**不含标准答案与解析**，答案只能通过"提交作答"或"显式查看答案"获得
+    - 返回项携带服务端题目 ID 与选项 ID，前端据此提交，由后端权威判分
+    - 未入库成功时降级为原始题目（无服务端 ID，前端应提示不可提交判分），
+      不伪造题目 ID
+
+    Returns:
+        公开题目列表
+    """
+    if not quiz:
+        return []
+    try:
+        from services.quiz_service import persist_questions
+        return persist_questions(subject_id, topic, quiz, source=source)
+    except Exception as e:
+        logger.warning(f"题目入库失败（降级为未入库题目，不参与判分）: {e}")
+        return [
+            {**item, "server_persisted": False}
+            for item in quiz if isinstance(item, dict)
+        ]
+
+
 def _normalize_quiz(raw: Any, knowledge_point: str) -> List[Dict[str, Any]]:
     """规范化自测题列表（统一字段结构）"""
     if not isinstance(raw, list):
@@ -201,7 +243,7 @@ def generate_quiz(
         if not context_used or not context:
             # 无证据降级：不编造题目
             logger.info(f"自测题证据不足（subject={subject_id}, topic={topic}）")
-            return {"quiz": [], "model": "", "context_used": False, "evidence_count": 0}
+            return {"quiz": [], "model": _resolved_model_name(model), "context_used": False, "evidence_count": 0}
 
         prompt = f"""你是一名教育自测题生成助手。请基于【知识库证据】生成自测题。
 
@@ -238,9 +280,11 @@ def generate_quiz(
                                    error_type="structured_output_error")
 
         quiz = _normalize_quiz(raw.get("quiz"), topic)
+        # 阶段一：题目入库并返回服务端题目 ID（测验模式提交前不返回标准答案）
+        public_quiz = _persist_and_publicize(subject_id, topic, quiz, source="quiz")
         return {
-            "quiz": quiz,
-            "model": "",
+            "quiz": public_quiz,
+            "model": _resolved_model_name(model),
             "context_used": True,
             "evidence_count": len(sources),
         }
@@ -309,7 +353,7 @@ def generate_smart_note(
                 "mistakes": {"content": "当前知识库中没有足够的证据来确定易错点。", "sources": []},
                 "class_tips": {"content": "当前知识库中没有足够的课堂提示证据。", "sources": []},
                 "quiz": [],
-                "model": "",
+                "model": _resolved_model_name(model),
                 "context_used": False,
                 "evidence_count": 0,
             }
@@ -348,6 +392,8 @@ def generate_smart_note(
         mistakes = _module(raw.get("mistakes"))
         class_tips = _module(raw.get("class_tips"))
         quiz = _normalize_quiz(raw.get("quiz"), topic)
+        # 阶段一：题目入库，返回不含答案的公开题目（答案经提交/查看答案接口获取）
+        display_quiz = _persist_and_publicize(subject_id, topic, quiz, source="note")
 
         return {
             "title": str(raw.get("title") or f"{topic}复习笔记"),
@@ -355,8 +401,8 @@ def generate_smart_note(
             "example": example,
             "mistakes": mistakes,
             "class_tips": class_tips,
-            "quiz": quiz,
-            "model": "",
+            "quiz": display_quiz,
+            "model": _resolved_model_name(model),
             "context_used": True,
             "evidence_count": len(sources),
         }

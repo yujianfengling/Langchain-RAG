@@ -4,13 +4,14 @@
 import asyncio
 import json
 import threading
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
-from typing import List
+from typing import List, Optional
 
 from api.schemas.chat_schema import ChatRequest, ChatResponse
 from api.schemas.response_schema import SuccessResponse, ErrorResponse
+from api.deps import get_current_user
 from chat_service import chat_with_ai, chat_stream
 from api.exceptions import LLMServiceError, RAGServiceError
 from utils.logger import logger
@@ -19,12 +20,15 @@ router = APIRouter()
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, user_id: str = Depends(get_current_user)):
     """
     AI聊天接口（非流式）
 
     V2.5.2：chat_with_ai 为同步阻塞（RAG + LLM requests），
     通过 run_in_threadpool 移出事件循环，避免长时间阻塞其他请求。
+
+    阶段一：用户身份由后端统一机制取得（不信任请求体传入的 user_id），
+    用于学习记录归属与个性化提示。
 
     - **question**: 用户问题
     - **subject_id**: 学科ID
@@ -46,6 +50,7 @@ async def chat(request: ChatRequest):
             request.image_mime_type,
             request.conversation_id,
             request.mode,
+            user_id,
         )
 
         # 检查是否成功
@@ -63,8 +68,16 @@ async def chat(request: ChatRequest):
             success=True,
             answer=result["answer"],
             sources=result.get("sources", []),
-            model=result.get("model", "mimo"),
+            model=result.get("model"),
+            provider=result.get("provider"),
+            provider_display=result.get("provider_display"),
             latency=result.get("latency", 0.0),
+            context_used=result.get("context_used", False),
+            # 结构化模式：卡片数据必须透出，否则前端无法渲染笔记/题单
+            message_type=result.get("message_type"),
+            payload=result.get("payload"),
+            detail_level=result.get("detail_level"),
+            teaching=result.get("teaching"),
         )
     except (LLMServiceError, RAGServiceError, HTTPException):
         raise
@@ -76,7 +89,7 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail="服务器内部错误，请稍后重试")
 
 
-async def _chat_stream_async(request: ChatRequest):
+async def _chat_stream_async(request: ChatRequest, user_id: Optional[str] = None):
     """
     流式聊天（V2.5.2 Queue 模式）
 
@@ -85,6 +98,8 @@ async def _chat_stream_async(request: ChatRequest):
 
     取消传播：客户端断开 → 本生成器被取消 → finally 置 stop_event
     → worker 线程停止迭代并 close 上游生成器（关闭 requests 连接，不再产生 token）。
+
+    阶段一：user_id 由路由层从后端身份机制取得并透传，用于学习记录归属。
     """
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue(maxsize=32)
@@ -102,6 +117,7 @@ async def _chat_stream_async(request: ChatRequest):
                 image_mime_type=request.image_mime_type,
                 conversation_id=request.conversation_id,
                 mode=request.mode,
+                user_id=user_id,
             )
             for event in gen:
                 if stop_event.is_set():
@@ -151,9 +167,11 @@ def _safe_close(gen):
 
 
 @router.post("/chat/stream")
-async def chat_stream_endpoint(request: ChatRequest):
+async def chat_stream_endpoint(request: ChatRequest, user_id: str = Depends(get_current_user)):
     """
     流式聊天接口（SSE）
+
+    阶段一：用户身份由后端统一机制取得，用于学习记录归属与个性化提示。
 
     - **question**: 用户问题
     - **subject_id**: 学科ID
@@ -163,7 +181,7 @@ async def chat_stream_endpoint(request: ChatRequest):
     """
     try:
         return StreamingResponse(
-            _chat_stream_async(request),
+            _chat_stream_async(request, user_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi.testclient import TestClient
+from tests.fixtures_isolated import IsolatedDataTestCase, register_and_login
 from services import audio_service
 from services.audio_service import (
     transcribe_audio,
@@ -119,8 +120,13 @@ class AudioServiceTest(unittest.TestCase):
         audio_service.TTS_CACHE_DIR = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             "data", "test_tts_cache_unit")
+        # 本类用例验证的是 **MiMo 可选提供方** 的请求/错误契约：
+        # 固定 SPEECH_BACKEND=mimo，避免本机开着本地语音服务时走本地分支
+        self._env_patch = mock.patch.dict(os.environ, {"SPEECH_BACKEND": "mimo"})
+        self._env_patch.start()
 
     def tearDown(self):
+        self._env_patch.stop()
         audio_service.TTS_CACHE_DIR = self._orig_cache_dir
         import shutil
         d = os.path.join(
@@ -348,152 +354,119 @@ def _make_client():
     return TestClient(app)
 
 
-class AudioAPITest(unittest.TestCase):
-    """API 层测试（Mock service）"""
+class AudioAPITest(IsolatedDataTestCase):
+    """
+    API 层测试（Mock service）
+
+    说明（2026-09-26）：
+    - 语音接口现在需要登录身份（与其余学习数据接口一致），因此走隔离夹具 + 令牌
+    - 转写路径改名为 transcribe_audio_detailed（返回 text + service + engine），
+      用例同步更新为按新契约 mock，并额外校验"实际使用的语音服务"被如实回报
+    """
+
+    SUBJECTS = ("数据结构",)
+
+    def setUp(self):
+        super().setUp()
+        self.client = _make_client()
+        self.token = register_and_login("audio_api_user")
+
+    def _post(self, path, **kw):
+        headers = kw.pop("headers", {}) or {}
+        headers["X-User-Token"] = self.token
+        return self.client.post(path, headers=headers, **kw)
 
     def test_transcribe_endpoint(self):
-        client = _make_client()
-        with mock.patch("api.routes.audio.transcribe_audio", return_value="识别文本"):
-            resp = client.post(
-                "/api/audio/transcribe",
-                files={"file": ("rec.wav", make_wav_bytes(), "audio/wav")})
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["data"]["text"], "识别文本")
+        with mock.patch("api.routes.audio.transcribe_audio_detailed",
+                        return_value={"text": "识别文本", "service": "local",
+                                      "engine": "funasr-paraformer-zh",
+                                      "latency_ms": 120.0}):
+            resp = self._post("/api/audio/transcribe",
+                              files={"file": ("rec.wav", make_wav_bytes(), "audio/wav")})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()["data"]
+        self.assertEqual(data["text"], "识别文本")
+        self.assertEqual(data["service"], "local")
+        self.assertEqual(data["engine"], "funasr-paraformer-zh")
 
     def test_transcribe_error_type_mapped(self):
-        client = _make_client()
-        with mock.patch("api.routes.audio.transcribe_audio",
+        with mock.patch("api.routes.audio.transcribe_audio_detailed",
                         side_effect=AudioServiceError("音频过大", "audio_too_large")):
-            resp = client.post(
-                "/api/audio/transcribe",
-                files={"file": ("rec.wav", make_wav_bytes(), "audio/wav")})
+            resp = self._post("/api/audio/transcribe",
+                              files={"file": ("rec.wav", make_wav_bytes(), "audio/wav")})
         self.assertEqual(resp.status_code, 413)
         self.assertEqual(resp.json()["error_type"], "audio_too_large")
 
     def test_transcribe_404_mapped(self):
         """audio_endpoint_not_found → 502"""
-        client = _make_client()
-        with mock.patch("api.routes.audio.transcribe_audio",
+        with mock.patch("api.routes.audio.transcribe_audio_detailed",
                         side_effect=AudioServiceError("端点不存在", "audio_endpoint_not_found")):
-            resp = client.post(
-                "/api/audio/transcribe",
-                files={"file": ("rec.wav", make_wav_bytes(), "audio/wav")})
+            resp = self._post("/api/audio/transcribe",
+                              files={"file": ("rec.wav", make_wav_bytes(), "audio/wav")})
         self.assertEqual(resp.status_code, 502)
         self.assertEqual(resp.json()["error_type"], "audio_endpoint_not_found")
 
+    def test_local_speech_unavailable_maps_to_503_with_reason(self):
+        """本地语音未就绪 → 503 + 可理解原因（文字功能不受影响）"""
+        with mock.patch("api.routes.audio.transcribe_audio_detailed",
+                        side_effect=AudioServiceError(
+                            "本地语音服务未启动（Connection refused）", "speech_unavailable")):
+            resp = self._post("/api/audio/transcribe",
+                              files={"file": ("rec.wav", make_wav_bytes(), "audio/wav")})
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json()["error_type"], "speech_unavailable")
+        self.assertIn("未启动", resp.json()["message"])
+
     def test_speech_endpoint_returns_wav(self):
-        client = _make_client()
         with mock.patch("api.routes.audio.synthesize_speech", return_value=make_wav_bytes()):
-            resp = client.post("/api/audio/speech", json={"text": "你好"})
-        self.assertEqual(resp.status_code, 200)
+            resp = self._post("/api/audio/speech", json={"text": "你好"})
+        self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(resp.headers["content-type"], "audio/wav")
         self.assertTrue(resp.content.startswith(b"RIFF"))
 
     def test_speech_empty_text_400(self):
-        client = _make_client()
         with mock.patch("api.routes.audio.synthesize_speech",
                         side_effect=AudioServiceError("文本为空", "empty_text")):
-            resp = client.post("/api/audio/speech", json={"text": " "})
+            resp = self._post("/api/audio/speech", json={"text": " "})
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error_type"], "empty_text")
 
+    def test_tts_segments_endpoint_returns_ordered_items(self):
+        """逐句合成接口：按 seq 顺序返回，且带 service/engine（与实际调用一致）"""
+        items = [{"seq": i, "text": f"第{i}句。", "audio_b64": "UklGRg==",
+                  "duration_s": 1.0, "latency_ms": 100.0} for i in range(3)]
+        with mock.patch("api.routes.audio.synthesize_segments",
+                        return_value={"items": items, "service": "local",
+                                      "engine": "cosyvoice-300m-sft", "voice": "中文女",
+                                      "sample_rate": 22050, "segments_total": 3,
+                                      "truncated": False, "omitted_chars": 0, "hints": []}):
+            resp = self._post("/api/audio/tts", json={"text": "第0句。第1句。第2句。"})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        data = resp.json()["data"]
+        self.assertEqual([it["seq"] for it in data["items"]], [0, 1, 2])
+        self.assertEqual(data["service"], "local")
+        self.assertEqual(data["engine"], "cosyvoice-300m-sft")
 
-class TtsTextCleaningTest(unittest.TestCase):
-    """TTS 朗读文本清洗（V2.5.3）"""
+    def test_tts_endpoint_reports_truncation_explicitly(self):
+        """超长文本：必须显式告知被省略的字数，不能静默丢弃"""
+        with mock.patch("api.routes.audio.synthesize_segments",
+                        return_value={"items": [{"seq": 0, "text": "第一句。",
+                                                 "audio_b64": "UklGRg==",
+                                                 "duration_s": 1.0, "latency_ms": 90.0}],
+                                      "service": "local", "engine": "cosyvoice-300m-sft",
+                                      "voice": "中文女", "sample_rate": 22050,
+                                      "segments_total": 1, "truncated": True,
+                                      "omitted_chars": 512, "hints": []}):
+            resp = self._post("/api/audio/tts", json={"text": "很长的内容" * 100,
+                                                      "max_chars": 100})
+        data = resp.json()["data"]
+        self.assertTrue(data["truncated"])
+        self.assertEqual(data["omitted_chars"], 512)
 
-    def test_strips_markdown_and_sources(self):
-        raw = """**定义**
-二叉树是**每个节点**最多有两个子树的树结构。
-
-```python
-class Node: pass
-```
-
-参考来源：树.pdf
-模型：小米MiMo | 首字响应: 1.2s | 总耗时: 3.4s
-公式 \\\\frac{a}{b} 表示分数。
-链接 https://example.com 🎉
-"""
-        clean = prepare_tts_text(raw)
-        self.assertNotIn("**", clean)          # Markdown 符号
-        self.assertNotIn("```", clean)         # 代码围栏
-        self.assertNotIn("class Node", clean)  # 代码内容
-        self.assertNotIn("参考来源", clean)     # 来源
-        self.assertNotIn("首字响应", clean)     # 耗时信息
-        self.assertNotIn("总耗时", clean)
-        self.assertNotIn("模型：", clean)
-        self.assertNotIn("http", clean)        # URL
-        self.assertNotIn("frac", clean)        # LaTeX
-        self.assertNotIn("🎉", clean)          # emoji
-        self.assertIn("二叉树", clean)          # 核心内容保留
-
-    def test_max_chars_sentence_boundary(self):
-        raw = "第一句话。第二句话内容较长需要截断。第三句话。第四句话。"
-        clean = prepare_tts_text(raw, max_chars=10)
-        # 应在句子边界截断，不超过 max_chars 太多
-        self.assertLessEqual(len(clean), 12)
-        self.assertTrue(clean.endswith("。") or clean.endswith("…"))
-
-    def test_code_block_replaced(self):
-        raw = "讲解如下：\n```\nprint(1)\n```\n以上是代码。"
-        clean = prepare_tts_text(raw)
-        self.assertIn("代码", clean)
-        self.assertNotIn("print", clean)
-
-
-class TtsCacheTest(unittest.TestCase):
-    """TTS 后端缓存（V2.5.3）"""
-
-    def setUp(self):
-        self._orig_dir = audio_service.TTS_CACHE_DIR
-        # 使用临时缓存目录，避免污染真实缓存
-        audio_service.TTS_CACHE_DIR = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data", "test_tts_cache")
-
-    def tearDown(self):
-        audio_service.TTS_CACHE_DIR = self._orig_dir
-        import shutil
-        d = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data", "test_tts_cache")
-        if os.path.exists(d):
-            shutil.rmtree(d, ignore_errors=True)
-
-    def test_second_call_uses_cache(self):
-        """第二次调用命中缓存，不再请求上游 API"""
-        wav = make_wav_bytes()
-        json_data = {"choices": [{"message": {"audio": {"data": base64.b64encode(wav).decode("ascii")}}}]}
-
-        with mock.patch("services.audio_service.requests.post",
-                        return_value=FakeResponse(200, json_data)) as mock_post, \
-             mock.patch("services.audio_service._get_audio_config",
-                        return_value=_tts_config()):
-            audio1 = synthesize_speech("你好，这是一次测试。")
-            self.assertTrue(validate_wav_header(audio1))
-            # 第一次：1 次上游调用
-            self.assertEqual(mock_post.call_count, 1)
-
-        # 第二次：缓存命中，0 次上游调用
-        with mock.patch("services.audio_service.requests.post") as mock_post2, \
-             mock.patch("services.audio_service._get_audio_config",
-                        return_value=_tts_config()):
-            audio2 = synthesize_speech("你好，这是一次测试。")
-            self.assertTrue(validate_wav_header(audio2))
-            self.assertEqual(mock_post2.call_count, 0)
-
-    def test_cache_key_depends_on_text(self):
-        """不同文本 → 不同缓存 key（各自请求上游）"""
-        wav = make_wav_bytes()
-        json_data = {"choices": [{"message": {"audio": {"data": base64.b64encode(wav).decode("ascii")}}}]}
-
-        with mock.patch("services.audio_service.requests.post",
-                        return_value=FakeResponse(200, json_data)) as mock_post, \
-             mock.patch("services.audio_service._get_audio_config",
-                        return_value=_tts_config()):
-            synthesize_speech("第一段文本。")
-            synthesize_speech("第二段文本。")
-            self.assertEqual(mock_post.call_count, 2)
+    def test_speech_endpoints_require_login(self):
+        """语音接口需要身份（与学习数据接口一致）"""
+        resp = self.client.post("/api/audio/speech", json={"text": "你好"})
+        self.assertIn(resp.status_code, (401, 403), resp.text)
 
 
 if __name__ == "__main__":

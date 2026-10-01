@@ -1,6 +1,7 @@
 # services/subject_service.py
 # 学科管理业务服务层
 
+from config.path_config import get_data_dir
 import json
 import logging
 from pathlib import Path
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 # 学科数据文件路径
-SUBJECTS_FILE = PROJECT_ROOT / "data" / "subjects.json"
+SUBJECTS_FILE = get_data_dir() / "subjects.json"
 
 
 class SubjectServiceError(Exception):

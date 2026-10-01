@@ -21,8 +21,11 @@ logger = logging.getLogger(__name__)
 
 # 项目根目录（绝对路径，用于构建所有数据目录）
 _PROJECT_ROOT = str(Path(__file__).parent.parent)
-_VECTOR_STORE_BASE = os.path.join(_PROJECT_ROOT, "data", "vector_store")
-_SUBJECTS_DATA_BASE = os.path.join(_PROJECT_ROOT, "data", "subjects")
+# 数据根目录统一来自 config.path_config（支持 EDU_DATA_DIR 覆盖）
+from config.path_config import get_data_dir as _get_data_dir  # noqa: E402
+_DATA_ROOT = str(_get_data_dir())
+_VECTOR_STORE_BASE = os.path.join(_DATA_ROOT, "vector_store")
+_SUBJECTS_DATA_BASE = os.path.join(_DATA_ROOT, "subjects")
 
 
 def _safe_dir_name(subject_id: str) -> str:

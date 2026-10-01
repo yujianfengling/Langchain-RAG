@@ -3,7 +3,7 @@
 
 import logging
 import os
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -13,6 +13,10 @@ from api.schemas.knowledge_schema import (
     KnowledgeStatsResponse,
     DocumentListResponse,
     UploadResponse,
+)
+from api.deps import (
+    require_current_user, require_knowledge_admin,
+    require_subject_read, require_subject_write,
 )
 from api.schemas.response_schema import SuccessResponse
 from api.exceptions import KnowledgeBaseNotFoundError, RAGServiceError, ValidationError
@@ -35,7 +39,7 @@ router = APIRouter()
 
 
 @router.get("/knowledge", response_model=KnowledgeListResponse)
-async def list_knowledge():
+async def list_knowledge(user_id: str = Depends(require_current_user)):
     """
     获取知识库列表
     
@@ -43,19 +47,62 @@ async def list_knowledge():
     """
     try:
         subjects = list_knowledge_bases()
+        # 课程资料边界：课程学科只对本课程教师/在班学生可见
+        subjects = await _readable_subjects(user_id, subjects)
         return KnowledgeListResponse(subjects=subjects)
     except KnowledgeServiceError as e:
         raise RAGServiceError(str(e))
 
 
+async def _guard_subject_write(subject_id: str, user_id: str) -> None:
+    """
+    非路径参数场景的学科写权限校验（upload 的 subject_id 在表单里，build 在请求体里）。
+
+    课程学科：仅授课教师/管理员；历史全局学科：回退既有 knowledge admin 白名单。
+    """
+    from api.deps import require_subject_write
+    await require_subject_write(subject_id, user_id)
+
+
+def _student_visible_names(user_id: str, subject_id: str):
+    """
+    课程学科下"该用户可见的文件名"集合；None = 不做文件级过滤（历史全局学科/授课教师）
+    """
+    try:
+        from services import teaching_access
+        return teaching_access.student_visible_document_names(user_id, subject_id)
+    except Exception as e:
+        # 归属信息异常时不误伤历史数据，但要在日志里留痕
+        logging.getLogger(__name__).warning(f"课程资料可见性判定失败: {e}")
+        return None
+
+
+async def _readable_subjects(user_id: str, subjects: list) -> list:
+    """过滤出当前用户可读的学科（课程学科只对本课程教师/在班学生可见）"""
+    from services import teaching_access
+    out = []
+    for item in subjects:
+        sid = item.get("subject_id") if isinstance(item, dict) else getattr(item, "subject_id", None)
+        try:
+            if teaching_access.can_read_subject(user_id, sid):
+                out.append(item)
+        except Exception:
+            out.append(item)  # 归属信息读取异常时不误伤历史数据
+    return out
+
+
 @router.post("/knowledge/build", response_model=SuccessResponse)
-async def build_knowledge(request: KnowledgeBuildRequest):
+async def build_knowledge(request: KnowledgeBuildRequest,
+                          user_id: str = Depends(require_knowledge_admin)):
     """
     构建知识库
-    
+
     - **subject_id**: 学科ID
     - **path**: 知识库源文件目录路径
+
+    教师端补充：课程所属学科只有授课教师能构建（不因白名单未配置而放行）。
     """
+    await _guard_subject_write(request.subject_id, user_id)
     try:
         # V2.5.2：构建知识库为同步重操作（embedding），移出事件循环
         result = await run_in_threadpool(
@@ -73,18 +120,20 @@ async def build_knowledge(request: KnowledgeBuildRequest):
             message=f"知识库 {request.subject_id} 构建成功",
         )
     except KnowledgeServiceError as e:
-        # 区分不同类型的错误
+        # 区分不同类型的错误：
+        # 路径/参数类问题属于调用方输入错误 → 400（ValidationError）
+        # 其余（解析、索引、embedding 等）→ 500（RAGServiceError）
         error_msg = str(e)
-        if "不存在" in error_msg or "不是目录" in error_msg:
+        input_errors = ("不存在", "不是目录", "没有找到", "受控目录", "不能为空",
+                        "格式不合法", "为空")
+        if any(k in error_msg for k in input_errors):
             raise ValidationError(error_msg)
-        elif "没有找到" in error_msg:
-            raise ValidationError(error_msg)
-        else:
-            raise RAGServiceError(error_msg)
+        raise RAGServiceError(error_msg)
 
 
 @router.delete("/knowledge/{subject_id}", response_model=SuccessResponse)
-async def delete_knowledge(subject_id: str):
+async def delete_knowledge(subject_id: str,
+                            user_id: str = Depends(require_subject_write)):
     """
     删除知识库
     
@@ -109,7 +158,8 @@ async def delete_knowledge(subject_id: str):
 
 
 @router.get("/knowledge/{subject_id}/stats", response_model=KnowledgeStatsResponse)
-async def get_stats(subject_id: str):
+async def get_stats(subject_id: str,
+                    user_id: str = Depends(require_subject_read)):
     """
     获取知识库统计信息
     
@@ -141,6 +191,7 @@ async def get_stats(subject_id: str):
 async def upload_file(
     subject_id: str = Form(...),
     file: UploadFile = File(...),
+    user_id: str = Depends(require_knowledge_admin),
 ):
     """
     上传文件到知识库
@@ -160,6 +211,10 @@ async def upload_file(
         import re as _re
         if not _re.match(r'^[\w\u4e00-\u9fff-]+$', subject_id):
             raise ValidationError("学科ID格式不合法（支持中文、英文、数字、下划线、连字符）")
+
+        # 2.5 课程归属校验（教师端）：subject_id 是表单字段，用不了路径依赖，
+        #     因此在读取文件内容之前显式校验；课程学科仅授课教师可写。
+        await _guard_subject_write(subject_id, user_id)
 
         # 3. 读取文件内容
         file_content = await file.read()
@@ -192,15 +247,23 @@ async def upload_file(
 
 
 @router.get("/knowledge/{subject_id}/documents", response_model=DocumentListResponse)
-async def get_documents(subject_id: str):
+async def get_documents(subject_id: str,
+                        user_id: str = Depends(require_subject_read)):
     """
     获取学科文档列表
-    
+
     - **subject_id**: 学科ID
+
+    课程资料边界：课程学科下**仅教师可见**的资料不会出现在学生看到的列表里
+    （历史全局学科保持既有行为）。
     """
     try:
         documents = get_subject_documents(subject_id=subject_id)
-        
+        allowed = _student_visible_names(user_id, subject_id)
+        if allowed is not None:
+            documents = [d for d in documents
+                         if (d.get("name") if isinstance(d, dict)
+                             else getattr(d, "name", None)) in allowed]
         return DocumentListResponse(
             subject_id=subject_id,
             documents=documents,
@@ -210,7 +273,8 @@ async def get_documents(subject_id: str):
 
 
 @router.delete("/knowledge/{subject_id}/documents/{filename}", response_model=SuccessResponse)
-async def delete_document(subject_id: str, filename: str):
+async def delete_document(subject_id: str, filename: str,
+                              user_id: str = Depends(require_subject_write)):
     """
     删除学科文档
     
@@ -240,7 +304,8 @@ async def delete_document(subject_id: str, filename: str):
 
 
 @router.post("/knowledge/{subject_id}/rebuild", response_model=SuccessResponse)
-async def rebuild_knowledge(subject_id: str):
+async def rebuild_knowledge(subject_id: str,
+                                 user_id: str = Depends(require_subject_write)):
     """
     重新构建学科知识库
     
@@ -268,7 +333,8 @@ async def rebuild_knowledge(subject_id: str):
 # ============ 知识图谱接口 ============
 
 @router.get("/knowledge/{subject_id}/graph", response_model=SuccessResponse)
-async def get_knowledge_graph(subject_id: str, node: str = None, depth: int = 1):
+async def get_knowledge_graph(subject_id: str, node: str = None, depth: int = 1,
+                              user_id: str = Depends(require_subject_read)):
     """
     获取学科知识图谱
     
@@ -303,7 +369,8 @@ async def get_knowledge_graph(subject_id: str, node: str = None, depth: int = 1)
 
 
 @router.post("/knowledge/{subject_id}/graph/build")
-async def build_knowledge_graph_api(subject_id: str):
+async def build_knowledge_graph_api(subject_id: str,
+                                         user_id: str = Depends(require_subject_write)):
     """
     提交知识图谱构建任务（后台异步执行，不阻塞事件循环）
 
@@ -313,11 +380,11 @@ async def build_knowledge_graph_api(subject_id: str):
     构建期间普通 Chat / RAG / 健康检查 / 知识库接口不受影响。
     """
     # 快速校验知识库已构建（提交前失败，避免后台任务白跑）
+    # 路径解析统一走 knowledge_service（不再硬编码项目根目录，
+    # 避免与其它接口使用不同的路径解析规则）
     try:
-        from rag.rag_service import _safe_dir_name
-        index_pkl = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "data", "vector_store", _safe_dir_name(subject_id), "index.pkl")
+        from services.knowledge_service import get_vector_store_dir
+        index_pkl = os.path.join(get_vector_store_dir(subject_id), "index.pkl")
         if not os.path.exists(index_pkl):
             return JSONResponse(
                 status_code=400,
@@ -352,7 +419,8 @@ async def build_knowledge_graph_api(subject_id: str):
 
 
 @router.get("/knowledge/{subject_id}/graph/status")
-async def get_knowledge_graph_status(subject_id: str):
+async def get_knowledge_graph_status(subject_id: str,
+                                      user_id: str = Depends(require_subject_read)):
     """
     查询知识图谱构建任务状态
 
@@ -369,14 +437,19 @@ async def get_knowledge_graph_status(subject_id: str):
 
 
 @router.get("/knowledge/graphs", response_model=SuccessResponse)
-async def list_knowledge_graphs():
+async def list_knowledge_graphs(user_id: str = Depends(require_current_user)):
     """
     列出所有已构建的知识图谱
+
+    课程资料边界：只返回当前用户可读学科的图谱（课程图谱仅本课程教师/在班学生可见）
     """
     try:
         from rag.knowledge_graph import list_graphs
+        from services import teaching_access
+        graphs = list_graphs()
+        graphs = await _readable_subjects(user_id, graphs)
         return SuccessResponse(
-            data={"graphs": list_graphs()},
+            data={"graphs": graphs},
             message="获取图谱列表成功",
         )
     except Exception as e:
@@ -386,17 +459,25 @@ async def list_knowledge_graphs():
 # ============ 文档查看接口 ============
 
 @router.get("/knowledge/{subject_id}/documents/{filename}/file")
-async def get_document_file(subject_id: str, filename: str):
+async def get_document_file(subject_id: str, filename: str,
+                             user_id: str = Depends(require_subject_read)):
     """
     查看上传的文档（PDF/Word/TXT/MD）
-    
+
     - **subject_id**: 学科ID
     - **filename**: 文件名
+
+    课程资料边界：学生的"学科可读"不等于"每个文件都可读"——
+    `teacher_only`（教师草稿）资料在班学生也拿不到（历史全局学科不受影响）。
     """
     from fastapi.responses import FileResponse
     from services.knowledge_service import get_subject_document_path, KnowledgeServiceError
     from api.exceptions import ValidationError
-    
+
+    allowed = _student_visible_names(user_id, subject_id)
+    if allowed is not None and filename not in allowed:
+        raise HTTPException(status_code=403, detail="该资料仅授课教师可见")
+
     try:
         file_path = get_subject_document_path(subject_id, filename)
         return FileResponse(

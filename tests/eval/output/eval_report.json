@@ -1,0 +1,75 @@
+{
+  "meta": {
+    "started_at": "2026-09-27T14:48:11",
+    "finished_at": "2026-09-27T14:49:28",
+    "backend": "http://127.0.0.1:8001",
+    "data_scope": "隔离数据目录（评测账号，非真实学生）",
+    "suites": [
+      "rag",
+      "loop",
+      "agent",
+      "voice"
+    ],
+    "kb_ok": true,
+    "course_subject_id": "course_5a116e2cd4",
+    "students": [
+      "stu_good",
+      "stu_mid",
+      "stu_other"
+    ]
+  },
+  "summary": {
+    "rag": {
+      "sample_count": 8,
+      "passed": 8,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "failures": [],
+      "notes": [],
+      "limits": []
+    },
+    "rag_with_distractor": {
+      "sample_count": 9,
+      "passed": 9,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "failures": [],
+      "notes": [],
+      "limits": []
+    },
+    "loop": {
+      "sample_count": 13,
+      "passed": 13,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "failures": [],
+      "notes": [],
+      "limits": []
+    },
+    "agent": {
+      "sample_count": 8,
+      "passed": 8,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "failures": [],
+      "notes": [
+        "Agent 建议的措辞由模型生成，本项只验证「是否引用了该生的真实记录」与「改计划是否走确认机制」，不评判措辞质量。"
+      ],
+      "limits": []
+    },
+    "voice": {
+      "sample_count": 9,
+      "passed": 9,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "failures": [],
+      "notes": [
+        "识别回读文本可用于粗查漏读/错读；同音字与断句仍需人工确认"
+      ],
+      "limits": [
+        "本项只验证流程与耗时；**音质/自然度必须人工试听**（样本见 output/listen/），程序跑通不代表听感合格",
+        "耗时会被 GPU 争用显著放大：首轮全量评测中同一接口出现 RTF 17.3 的离群值，单独复测为 0.90-1.00；因此以 tts-latency-repeat 的区间为准，并建议评测时不要让其他 GPU 任务同时运行"
+      ]
+    }
+  }
+}

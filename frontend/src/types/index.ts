@@ -22,7 +22,38 @@ export interface ChatRequest {
 }
 
 // 学习模式
-export type ChatMode = 'chat' | 'smart_note' | 'summary' | 'explanation' | 'advice' | 'quiz';
+export type ChatMode =
+  | 'chat' | 'smart_note' | 'summary' | 'explanation' | 'advice' | 'quiz'
+  /** 阶段二：学习助手（受约束的 Agent 运行，前端展示步骤进度并可停止） */
+  | 'agent';
+
+/** 学习助手执行步骤（仅记录工具调用与结果摘要，不含模型内部思维过程） */
+export interface AgentStepView {
+  tool: string;
+  label?: string;
+  status: 'running' | 'done' | 'failed' | 'skipped' | 'cancelled' | 'timeout';
+  summary?: string;
+  error?: string | null;
+  duration_ms?: number;
+}
+
+/** 本轮教学策略与依据（画像 → 教学安排的可解释输出） */
+/** 本轮实际用上的画像依据（由后端 build_teaching_context 产出，只记录被采用的信息） */
+export interface TeachingApplied {
+  teaching_mode?: string;
+  preferences?: string[];
+  memory?: string[];
+  knowledge_point?: string | null;
+  recent_mistakes?: number;
+  has_task_context?: boolean;
+}
+
+export interface TeachingInfo {
+  mode?: 'foundation' | 'standard' | 'advanced' | string;
+  reasons?: string[];
+  signals?: Record<string, any>;
+  applied?: TeachingApplied;
+}
 
 // 参考来源信息（与后端 extract_sources 对齐）
 export interface SourceInfo {
@@ -37,6 +68,8 @@ export interface ChatResponse {
   answer: string;
   sources: SourceInfo[];
   model: string;
+  provider?: string;
+  provider_display?: string;
   latency: number;
 }
 
@@ -110,12 +143,28 @@ export interface ChatMessage {
   timestamp: number;
   sources?: SourceInfo[];
   model?: string;
+  /** 实际提供方键（无则为历史消息，只有 model 标记） */
+  provider?: string;
   latency?: number;
   ttft?: number | null;
   image_url?: string; // 图片URL（用于显示）
   image_data?: string; // base64编码的图片数据
   message_type?: string; // 结构化消息类型：chat|smart_note|summary|explanation|advice|quiz
   payload?: any; // 结构化消息负载（V2.5.1，Card恢复渲染用）
+  /** 关联的用户交互记录 ID（阶段一：反馈必须关联真实 interaction_id，而不是 message_id） */
+  interaction_id?: string | null;
+  /** 学习助手执行步骤（阶段二：展示"正在查看学习记录/正在安排复习…"） */
+  agent_steps?: AgentStepView[];
+  /** 学习助手运行结果 */
+  agent_run?: {
+    id: string;
+    status: string;
+    error?: string | null;
+    steps?: number;
+    results?: Record<string, any>;
+  } | null;
+  /** 本轮教学策略与依据（阶段二） */
+  teaching?: TeachingInfo | null;
 }
 
 // 会话（V2.5.1 Conversation 系统）

@@ -1,4 +1,4 @@
-import apiClient from './axios';
+import apiClient, { authHeaders } from './axios';
 import { ApiResponse } from '../types';
 
 /**
@@ -26,7 +26,7 @@ export const synthesizeSpeech = async (
 ): Promise<Blob> => {
   const resp = await fetch('/api/audio/speech', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ text, voice }),
   });
   if (!resp.ok) {

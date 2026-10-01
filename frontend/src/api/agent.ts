@@ -1,11 +1,15 @@
-import axios from 'axios';
+import apiClient from './axios';
 
-const API_BASE = '/api';
+// 说明（阶段一）：
+// - 学习数据一律归属"后端当前用户"，请求体不再传 user_id
+// - 用户域路径统一使用保留字 me（后端 api.deps.resolve_user_scope 解析为当前登录用户）
+// - 统一走 apiClient，以便自动携带登录令牌
+const ME = 'me';
 
 // ============ 反馈接口 ============
 
 export interface FeedbackRequest {
-  user_id?: string;
+  /** 真实用户交互记录 ID（由后端回写到消息上），不要传 message_id */
   interaction_id?: string;
   feedback_type?: string;
   feedback_score?: number;
@@ -14,96 +18,74 @@ export interface FeedbackRequest {
 }
 
 export async function submitFeedback(data: FeedbackRequest) {
-  const res = await axios.post(`${API_BASE}/agent/feedback`, data);
-  return res.data;
+  return apiClient.post('/agent/feedback', data);
 }
 
-export async function getFeedbackStats(userId: string) {
-  const res = await axios.get(`${API_BASE}/agent/feedback/stats/${userId}`);
-  return res.data;
+export async function getFeedbackStats() {
+  return apiClient.get(`/agent/feedback/stats/${ME}`);
 }
 
 // ============ 用户画像接口 ============
 
-export async function getUserProfile(userId: string) {
-  const res = await axios.get(`${API_BASE}/agent/profile/${userId}`);
-  return res.data;
+export async function getUserProfile() {
+  return apiClient.get(`/agent/profile/${ME}`);
 }
 
-export async function updateKnowledgeLevel(userId: string, subjectId: string, level: number) {
-  const res = await axios.post(`${API_BASE}/agent/knowledge-level`, {
-    user_id: userId,
-    subject_id: subjectId,
-    level,
-  });
-  return res.data;
+export async function updateKnowledgeLevel(subjectId: string, level: number) {
+  return apiClient.post('/agent/knowledge-level', { subject_id: subjectId, level });
 }
 
-export async function updateLearningStyle(userId: string, style: string) {
-  const res = await axios.post(`${API_BASE}/agent/learning-style`, {
-    user_id: userId,
-    style,
-  });
-  return res.data;
+export async function updateLearningStyle(style: string) {
+  return apiClient.post('/agent/learning-style', { style });
 }
 
 // ============ 知识点掌握接口 ============
 
-export async function getWeakPoints(userId: string, subjectId: string, threshold?: number) {
-  const params = threshold ? `?threshold=${threshold}` : '';
-  const res = await axios.get(`${API_BASE}/agent/weak-points/${userId}/${subjectId}${params}`);
-  return res.data;
+export async function getWeakPoints(subjectId: string, threshold?: number) {
+  return apiClient.get(`/agent/weak-points/${ME}/${subjectId}`,
+    { params: threshold ? { threshold } : {} });
 }
 
-export async function getStrongPoints(userId: string, subjectId: string, threshold?: number) {
-  const params = threshold ? `?threshold=${threshold}` : '';
-  const res = await axios.get(`${API_BASE}/agent/strong-points/${userId}/${subjectId}${params}`);
-  return res.data;
+export async function getStrongPoints(subjectId: string, threshold?: number) {
+  return apiClient.get(`/agent/strong-points/${ME}/${subjectId}`,
+    { params: threshold ? { threshold } : {} });
 }
 
 // ============ 学习推荐接口 ============
 
-export async function getRecommendations(userId: string, subjectId?: string, currentTopic?: string) {
-  const params = new URLSearchParams();
-  if (subjectId) params.append('subject_id', subjectId);
-  if (currentTopic) params.append('current_topic', currentTopic);
-  const query = params.toString() ? `?${params.toString()}` : '';
-  const res = await axios.get(`${API_BASE}/agent/recommendations/${userId}${query}`);
-  return res.data;
+export async function getRecommendations(subjectId?: string, currentTopic?: string) {
+  const params: Record<string, string> = {};
+  if (subjectId) params.subject_id = subjectId;
+  if (currentTopic) params.current_topic = currentTopic;
+  return apiClient.get(`/agent/recommendations/${ME}`, { params });
 }
 
-export async function getKnowledgeGaps(userId: string, subjectId: string) {
-  const res = await axios.get(`${API_BASE}/agent/knowledge-gaps/${userId}/${subjectId}`);
-  return res.data;
+export async function getKnowledgeGaps(subjectId: string) {
+  return apiClient.get(`/agent/knowledge-gaps/${ME}/${subjectId}`);
 }
 
 // ============ 学习偏好接口 ============
 
-export async function setLearningPreference(userId: string, preferenceType: string, preferenceValue: string) {
-  const res = await axios.post(`${API_BASE}/agent/preferences`, {
-    user_id: userId,
+export async function setLearningPreference(preferenceType: string, preferenceValue: string) {
+  return apiClient.post('/agent/preferences', {
     preference_type: preferenceType,
     preference_value: preferenceValue,
   });
-  return res.data;
 }
 
-export async function getLearningPreferences(userId: string) {
-  const res = await axios.get(`${API_BASE}/agent/preferences/${userId}`);
-  return res.data;
+export async function getLearningPreferences() {
+  return apiClient.get(`/agent/preferences/${ME}`);
 }
 
 // ============ 分析接口 ============
 
-export async function analyzePerformance(userId: string, subjectId: string) {
-  const res = await axios.get(`${API_BASE}/agent/analysis/${userId}/${subjectId}`);
-  return res.data;
+export async function analyzePerformance(subjectId: string) {
+  return apiClient.get(`/agent/analysis/${ME}/${subjectId}`);
 }
 
 // ============ 交互记录接口 ============
 
 export interface RecordInteractionRequest {
-  user_id?: string;
   interaction_type: string;
   subject_id?: string;
   question?: string;
@@ -114,33 +96,37 @@ export interface RecordInteractionRequest {
 }
 
 export async function recordInteraction(data: RecordInteractionRequest) {
-  const res = await axios.post(`${API_BASE}/agent/interactions`, data);
-  return res.data;
+  return apiClient.post('/agent/interactions', data);
 }
 
-export async function getUserInteractions(userId: string, subjectId?: string, interactionType?: string, limit?: number) {
-  const params = new URLSearchParams();
-  if (subjectId) params.append('subject_id', subjectId);
-  if (interactionType) params.append('interaction_type', interactionType);
-  if (limit) params.append('limit', limit.toString());
-  const query = params.toString() ? `?${params.toString()}` : '';
-  const res = await axios.get(`${API_BASE}/agent/interactions/${userId}${query}`);
-  return res.data;
+export async function getInteractions(subjectId?: string,
+                                      interactionType?: string,
+                                      limit = 50) {
+  const params: Record<string, any> = { limit };
+  if (subjectId) params.subject_id = subjectId;
+  if (interactionType) params.interaction_type = interactionType;
+  return apiClient.get(`/agent/interactions/${ME}`, { params });
 }
 
-// ============ 测验答案接口 ============
-
+/**
+ * 提交测验作答（服务端权威判分）
+ *
+ * 阶段一：不接受 is_correct —— 对错由后端依据题库标准答案判定；
+ * 用户身份由登录令牌决定，前端不提交 user_id。
+ */
 export interface QuizAnswerRequest {
-  user_id?: string;
-  subject_id: string;
-  knowledge_point: string;
-  is_correct: boolean;
-  mastery_delta?: number;
+  question_id: string;
+  user_answer?: string | null;
+  subject_id?: string;
+  client_token?: string;
+  source_task_id?: string;
+  conversation_id?: string;
+  duration_sec?: number;
+  used_hint?: boolean;
 }
 
 export async function submitQuizAnswer(data: QuizAnswerRequest) {
-  const res = await axios.post(`${API_BASE}/agent/quiz-answer`, data);
-  return res.data;
+  return apiClient.post('/agent/quiz-answer', data);
 }
 
 // ============ 学习进度摘要接口 ============
@@ -152,15 +138,18 @@ export interface ProgressSummary {
     strong: number;
     medium: number;
     weak: number;
+    /** 待评估（无独立作答证据） */
+    pending?: number;
   };
+  evidence_total?: number;
+  accuracy?: number | null;
   recent_activity: any[];
   suggestions: string[];
   positive_rate: number;
 }
 
-export async function getProgressSummary(userId: string, subjectId: string) {
-  const res = await axios.get(`${API_BASE}/agent/progress-summary/${userId}/${subjectId}`);
-  return res.data;
+export async function getProgressSummary(subjectId: string): Promise<{ data: ProgressSummary }> {
+  return apiClient.get(`/agent/progress-summary/${ME}/${subjectId}`);
 }
 
 // ============ 学习路径接口 ============
@@ -176,9 +165,8 @@ export interface LearningPathItem {
   priority: 'high' | 'medium' | 'low';
 }
 
-export async function getLearningPath(userId: string, subjectId: string) {
-  const res = await axios.get(`${API_BASE}/agent/learning-path/${userId}/${subjectId}`);
-  return res.data;
+export async function getLearningPath(subjectId: string): Promise<{ data: LearningPathItem[] }> {
+  return apiClient.get(`/agent/learning-path/${ME}/${subjectId}`);
 }
 
 export interface LearningStats {
@@ -187,21 +175,21 @@ export interface LearningStats {
     strong: number;
     medium: number;
     weak: number;
+    /** 待评估（无独立作答证据），阶段一新增 */
+    pending?: number;
   };
   average_mastery: number;
   total_study_time: number;
   learning_efficiency: number;
 }
 
-export async function getLearningStats(userId: string, subjectId: string) {
-  const res = await axios.get(`${API_BASE}/agent/learning-stats/${userId}/${subjectId}`);
-  return res.data;
+export async function getLearningStats(subjectId: string) {
+  return apiClient.get(`/agent/learning-stats/${ME}/${subjectId}`);
 }
 
 // ============ 知识提取接口 ============
 
 export interface ExtractKnowledgeRequest {
-  user_id?: string;
   subject_id: string;
   question: string;
   answer: string;
@@ -209,18 +197,16 @@ export interface ExtractKnowledgeRequest {
 }
 
 export async function extractKnowledge(data: ExtractKnowledgeRequest) {
-  const res = await axios.post(`${API_BASE}/agent/extract-knowledge`, data);
-  return res.data;
+  return apiClient.post('/agent/extract-knowledge', data);
 }
 
 export async function validateKnowledge(knowledgeId: string) {
-  const res = await axios.post(`${API_BASE}/agent/validate-knowledge/${knowledgeId}`);
-  return res.data;
+  return apiClient.post(`/agent/validate-knowledge/${knowledgeId}`);
 }
 
 export async function addKnowledgeToKB(knowledgeId: string, subjectId: string) {
-  const res = await axios.post(`${API_BASE}/agent/add-knowledge-to-kb/${knowledgeId}?subject_id=${subjectId}`);
-  return res.data;
+  return apiClient.post(`/agent/add-knowledge-to-kb/${knowledgeId}`,
+    null, { params: { subject_id: subjectId } });
 }
 
 export interface PendingKnowledge {
@@ -233,13 +219,12 @@ export interface PendingKnowledge {
   created_at: string;
 }
 
-export async function getPendingKnowledge(subjectId?: string, limit?: number) {
-  const params = new URLSearchParams();
-  if (subjectId) params.append('subject_id', subjectId);
-  if (limit) params.append('limit', limit.toString());
-  const query = params.toString() ? `?${params.toString()}` : '';
-  const res = await axios.get(`${API_BASE}/agent/pending-knowledge${query}`);
-  return res.data;
+export async function getPendingKnowledge(subjectId?: string, limit?: number)
+  : Promise<{ data: PendingKnowledge[] }> {
+  const params: Record<string, any> = {};
+  if (subjectId) params.subject_id = subjectId;
+  if (limit) params.limit = limit;
+  return apiClient.get('/agent/pending-knowledge', { params });
 }
 
 export interface ExtractionStats {
@@ -250,8 +235,8 @@ export interface ExtractionStats {
   rejected: number;
 }
 
-export async function getExtractionStats(subjectId?: string) {
-  const params = subjectId ? `?subject_id=${subjectId}` : '';
-  const res = await axios.get(`${API_BASE}/agent/knowledge-extraction-stats${params}`);
-  return res.data;
+export async function getExtractionStats(subjectId?: string)
+  : Promise<{ data: ExtractionStats | null }> {
+  return apiClient.get('/agent/knowledge-extraction-stats',
+    { params: subjectId ? { subject_id: subjectId } : {} });
 }
