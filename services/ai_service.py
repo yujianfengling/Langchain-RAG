@@ -40,7 +40,8 @@ class AIServiceError(Exception):
 def get_rag_context(
     question: str,
     subject_id: Optional[str] = None,
-    top_k: int = 5
+    top_k: int = 5,
+    min_score: Optional[float] = None
 ) -> List:
     """
     获取RAG上下文文档
@@ -65,7 +66,8 @@ def get_rag_context(
         context_docs = retrieve_context(
             question=question,
             subject_id=subject_id,
-            top_k=top_k
+            top_k=top_k,
+            min_score=min_score
         )
         return context_docs
     except Exception as e:
@@ -231,7 +233,8 @@ def get_model_info() -> Dict[str, Any]:
 def retrieve_and_build_context(
     question: str,
     subject_id: Optional[str] = None,
-    top_k: int = 5
+    top_k: int = 5,
+    min_score: Optional[float] = None
 ) -> Dict[str, Any]:
     """
     一站式RAG检索 + 上下文构建
@@ -249,8 +252,8 @@ def retrieve_and_build_context(
             "documents": List,       # 原始文档列表
         }
     """
-    # 1. 获取RAG上下文
-    context_docs = get_rag_context(question, subject_id, top_k)
+    # 1. 获取RAG上下文（min_score 为 None 时用配置阈值）
+    context_docs = get_rag_context(question, subject_id, top_k, min_score=min_score)
     context_used = len(context_docs) > 0
     
     # 2. 构建上下文字符串
@@ -265,6 +268,45 @@ def retrieve_and_build_context(
         "context_used": context_used,
         "documents": context_docs,
     }
+
+
+def retrieve_for_teaching(
+    question: str,
+    subject_id: Optional[str] = None,
+    top_k: int = 5
+) -> Dict[str, Any]:
+    """
+    教师侧生成用的检索：先按配置阈值检索，为空时**放宽到不过滤**再检索一次。
+
+    为什么需要它（2026-09-27 合并后回归）：
+      课程资料入库时会做分块清洗，去掉 `[来源: 文件名]` 这类元信息包装。清洗本身是对的
+      （这些包装不该进上下文），但会顺带削掉与**课程标题**的字面重合——而教师在界面上
+      不填知识点时，默认查询词就是课程标题，于是严格阈值下检索为空，出题直接报
+      "课程资料为空"，把"资料其实在库里"误判成"没资料"。
+
+    这里不改全局相似度阈值（学生问答仍走配置阈值，避免答非所问），只在**教师自己课程的
+    知识库**内、且严格检索确实为空时放宽一次，让默认路径能出题；真正没有资料时
+    （知识库为空）放宽后依然为空，错误提示照旧。放宽与否通过 "relaxed" 如实上报。
+
+    Returns:
+        与 retrieve_and_build_context 同构，另加 "relaxed": bool
+    """
+    result = retrieve_and_build_context(question, subject_id, top_k)
+    if (result.get("context") or "").strip():
+        result["relaxed"] = False
+        return result
+
+    relaxed = retrieve_and_build_context(question, subject_id, top_k, min_score=0.0)
+    if (relaxed.get("context") or "").strip():
+        logger.info(
+            "教师侧检索在配置阈值下为空，已放宽阈值命中 %d 条（subject_id=%s）",
+            len(relaxed.get("documents") or []), subject_id)
+        relaxed["relaxed"] = True
+        return relaxed
+
+    # 放宽后仍为空：说明知识库确实没有可用内容，保持原样并如实标记
+    result["relaxed"] = False
+    return result
 
 
 def check_ai_service_status() -> Dict[str, Any]:
@@ -301,5 +343,6 @@ __all__ = [
     "call_llm",
     "get_model_info",
     "retrieve_and_build_context",
+    "retrieve_for_teaching",
     "check_ai_service_status",
 ]

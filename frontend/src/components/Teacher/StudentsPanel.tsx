@@ -47,6 +47,8 @@ const StudentsPanel: React.FC<StudentsPanelProps> = ({ onBack }) => {
   const [scope, setScope] = useState<string>('');
   const [overview, setOverview] = useState<ClassOverview | null>(null);
   const [selected, setSelected] = useState<string>('');
+  // 详情卡标题用的展示名（selected 是内部 user_id，直接摆出来教师认不出是谁）
+  const [selectedLabel, setSelectedLabel] = useState<string>('');
   const [detail, setDetail] = useState<StudentOverview | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -68,8 +70,9 @@ const StudentsPanel: React.FC<StudentsPanelProps> = ({ onBack }) => {
 
   useEffect(() => { load(); }, [load]);
 
-  const openStudent = async (target: string, subjectId?: string) => {
+  const openStudent = async (target: string, subjectId?: string, label?: string) => {
     setSelected(target);
+    setSelectedLabel(label || target);
     setDetailLoading(true);
     setDetailError(null);
     try {
@@ -86,8 +89,16 @@ const StudentsPanel: React.FC<StudentsPanelProps> = ({ onBack }) => {
   const columns = [
     {
       title: '学生',
-      dataIndex: 'user_id',
-      render: (v: string) => <Space><UserOutlined style={{ color: '#0f766e' }} />{v}</Space>,
+      dataIndex: 'display_name',
+      // 显示名回退：display_name → username → user_id。
+      // 后端返回的 user_id 是内部 id（user_xxxxxxxxxxxx），直接摆出来教师认不出是谁；
+      // 它只用于 rowKey 和"查看画像"的请求参数。
+      render: (_: unknown, r: StudentSummary) => (
+        <Space>
+          <UserOutlined style={{ color: '#0f766e' }} />
+          {r.display_name || r.username || r.user_id}
+        </Space>
+      ),
     },
     {
       title: '学习风格',
@@ -118,7 +129,14 @@ const StudentsPanel: React.FC<StudentsPanelProps> = ({ onBack }) => {
     {
       title: '操作',
       render: (_: unknown, r: StudentSummary) => (
-        <Button type="link" size="small" onClick={() => openStudent(r.user_id)}>查看画像</Button>
+        <Button
+          type="link"
+          size="small"
+          onClick={() => openStudent(r.user_id, undefined,
+            r.display_name || r.username || r.user_id)}
+        >
+          查看画像
+        </Button>
       ),
     },
   ];
@@ -187,7 +205,7 @@ const StudentsPanel: React.FC<StudentsPanelProps> = ({ onBack }) => {
         <Card
           size="small"
           style={{ marginTop: 12 }}
-          title={`学生画像：${selected}`}
+          title={`学生画像：${selectedLabel || selected}`}
           extra={<Button size="small" onClick={() => { setSelected(''); setDetail(null); }}>收起</Button>}
         >
           {detailLoading && <Spin />}
@@ -202,7 +220,7 @@ const StudentsPanel: React.FC<StudentsPanelProps> = ({ onBack }) => {
                       style={{ width: 200 }}
                       value={detail.current_subject || undefined}
                       options={detail.subjects.map((s) => ({ value: s, label: s }))}
-                      onChange={(v) => openStudent(selected, v)}
+                      onChange={(v) => openStudent(selected, v, selectedLabel)}
                     />
                   ) : '暂无学科记录'}
                 </Descriptions.Item>

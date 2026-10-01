@@ -131,3 +131,110 @@ class TestRagService(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestTeachingRetrievalFallback(unittest.TestCase):
+    """
+    教师侧检索降级（2026-09-27 合并后回归的固化测试）
+
+    背景：课程资料入库时会做分块清洗，去掉 `[来源: 文件名]` 这类元信息包装。清洗本身是对的，
+    但会削掉与**课程标题**的字面重合——而教师界面上不填知识点时默认查询词就是课程标题，
+    于是严格阈值下检索为空，出题直接报"课程资料为空"，把"资料在库里"误判成"没资料"。
+
+    行为约定（不可回退）：
+      1) 严格阈值有命中 → 不降级（relaxed=False），结果与原来一致；
+      2) 严格阈值为空、放宽后能命中 → 降级一次并**如实标记 relaxed=True**；
+      3) 放宽后仍为空（知识库真的没有）→ 保持为空且 relaxed=False，
+         调用方（assignment_service / lesson_plan_service）照旧报"资料为空"。
+    """
+
+    def setUp(self):
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from services import ai_service
+        self.ai_service = ai_service
+
+    def test_returns_strict_result_when_not_empty(self):
+        """严格阈值已命中时不做第二次检索（避免无谓放宽）"""
+        calls = []
+
+        def fake(question, subject_id=None, top_k=5, min_score=None):
+            calls.append(min_score)
+            return {"context": "命中内容", "documents": [1], "sources": [], "context_used": True}
+
+        orig = self.ai_service.retrieve_and_build_context
+        self.ai_service.retrieve_and_build_context = fake
+        try:
+            r = self.ai_service.retrieve_for_teaching("q", "sub")
+        finally:
+            self.ai_service.retrieve_and_build_context = orig
+
+        self.assertEqual(calls, [None], "严格检索已有结果，不应再放宽")
+        self.assertFalse(r["relaxed"])
+        self.assertEqual(r["context"], "命中内容")
+
+    def test_relaxes_once_when_strict_is_empty(self):
+        """严格为空 → 放宽重试一次，并标记 relaxed=True"""
+        calls = []
+
+        def fake(question, subject_id=None, top_k=5, min_score=None):
+            calls.append(min_score)
+            if min_score is None:
+                return {"context": "", "documents": [], "sources": [], "context_used": False}
+            return {"context": "放宽后命中", "documents": [1], "sources": [],
+                    "context_used": True}
+
+        orig = self.ai_service.retrieve_and_build_context
+        self.ai_service.retrieve_and_build_context = fake
+        try:
+            r = self.ai_service.retrieve_for_teaching("q", "sub")
+        finally:
+            self.ai_service.retrieve_and_build_context = orig
+
+        self.assertEqual(calls, [None, 0.0], "应先用配置阈值、再用 0.0 各检索一次")
+        self.assertTrue(r["relaxed"], "降级必须如实上报，不能伪装成严格命中")
+        self.assertEqual(r["context"], "放宽后命中")
+
+    def test_stays_empty_when_kb_really_empty(self):
+        """放宽后仍为空：保持为空且不标记降级（调用方据此报"资料为空"）"""
+
+        def fake(question, subject_id=None, top_k=5, min_score=None):
+            return {"context": "", "documents": [], "sources": [], "context_used": False}
+
+        orig = self.ai_service.retrieve_and_build_context
+        self.ai_service.retrieve_and_build_context = fake
+        try:
+            r = self.ai_service.retrieve_for_teaching("q", "sub")
+        finally:
+            self.ai_service.retrieve_and_build_context = orig
+
+        self.assertEqual(r["context"], "")
+        self.assertFalse(r["relaxed"], "没有资料时不能标记为已降级命中")
+        self.assertFalse(r["context_used"])
+
+    def test_min_score_overrides_configured_threshold(self):
+        """min_score 显式传入时覆盖配置阈值；不传时仍用配置阈值（学生问答行为不变）"""
+        from config.settings import settings
+        from rag import rag_service
+
+        seen = []
+        orig_hybrid = getattr(rag_service, "hybrid_retrieve", None)
+        orig_available = getattr(rag_service, "HYBRID_AVAILABLE", False)
+        if orig_hybrid is None:
+            self.skipTest("当前环境未启用混合检索")
+
+        def fake_hybrid(**kwargs):
+            seen.append(kwargs.get("threshold"))
+            return []
+
+        rag_service.hybrid_retrieve = fake_hybrid
+        rag_service.HYBRID_AVAILABLE = True
+        try:
+            rag_service.retrieve_context("q", "sub", top_k=3)
+            rag_service.retrieve_context("q", "sub", top_k=3, min_score=0.0)
+        finally:
+            rag_service.hybrid_retrieve = orig_hybrid
+            rag_service.HYBRID_AVAILABLE = orig_available
+
+        self.assertEqual(len(seen), 2, "两次检索都应由 hybrid_retrieve 承担")
+        self.assertAlmostEqual(seen[0], float(settings.SIMILARITY_THRESHOLD), places=6,
+                               msg="不传 min_score 时必须沿用配置阈值")
+        self.assertEqual(seen[1], 0.0, "传入 min_score 时必须覆盖配置阈值")

@@ -395,7 +395,8 @@ def _cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
 def retrieve_context(
     question: str,
     subject_id: Optional[str] = None,
-    top_k: int = 5
+    top_k: int = 5,
+    min_score: Optional[float] = None
 ) -> List[Document]:
     """
     根据问题检索相关上下文（v2.0 混合检索 + Rerank）
@@ -434,7 +435,10 @@ def retrieve_context(
     use_bm25 = settings.USE_BM25 if CONFIG_AVAILABLE else True
     use_rerank = settings.USE_RERANK if CONFIG_AVAILABLE else True
     rrf_k = settings.RRF_K if CONFIG_AVAILABLE else 60
-    threshold = settings.SIMILARITY_THRESHOLD if CONFIG_AVAILABLE else 0.3
+    # min_score 显式传入时覆盖配置阈值（供"教师侧生成"在检索为空时放宽阈值重试，
+    # 见 services.ai_service.retrieve_for_teaching；学生问答仍用配置阈值，行为不变）
+    threshold = (float(min_score) if min_score is not None
+                 else (settings.SIMILARITY_THRESHOLD if CONFIG_AVAILABLE else 0.3))
     
     try:
         # 使用混合检索（如果可用）

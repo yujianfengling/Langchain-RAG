@@ -704,7 +704,13 @@ export const explainClassAnalytics = async (
 
 /** 学生画像摘要 */
 export interface StudentSummary {
+  /** 内部用户 id（user_xxxxxxxxxxxx）：仅用于 rowKey 与详情请求，不要直接展示 */
   user_id: string;
+  /** 展示名（后端按 display_name → username → user_id 回退给出） */
+  display_name?: string;
+  username?: string;
+  class_name?: string;
+  course_title?: string;
   learning_style: string;
   interaction_count: number;
   knowledge_point_count: number;

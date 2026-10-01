@@ -181,6 +181,6 @@ python tests/export_trial_data.py --username <老师账号> --class-id <班级ID
 
 1. 后端启动时确认打印的数据目录**不是**项目正式 `data/`（导出脚本也会再确认一次）；
 2. `node tests/e2e_first_use_walkthrough.js` 跑一遍（56 项应全绿），确认演示环境没坏；
-3. `node tests/e2e_responsive_walkthrough.js` 跑一遍（120 项应全绿），确认三个屏宽都没坏；
+3. `node tests/e2e_responsive_walkthrough.js` 跑一遍（134 项应全绿），确认三个屏宽都没坏；
 4. 确认老师用电脑（≥1280px）；学生可以用电脑，也可以用手机；
 5. 确认 DeepSeek 可用（`/api/health` 里 `capabilities.text.available = true`）；不可用时**不要开始试用**，前端会明确报错而不是静默降级。

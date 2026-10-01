@@ -505,18 +505,26 @@ async function bootstrapData(page) {
       record(`${w}px：教师端「刷新」按钮在可视区内`, rOk.ok, rOk.why || '');
 
       // 逐个面板检查（电脑端为主，800px 不能挡住操作按钮）。
-      // 注意：教师端的 6 个面板在**页面内部**的菜单里（不是全局抽屉）。
+      // 注意：教师端的面板在**页面内部**的菜单里（不是全局抽屉）。
+      // 7 个面板都要覆盖：「学生画像」是 2026-10-01 合并组员实现时新增的，不能漏测。
       const PANELS = [
+        ['工作台', '新建课程', null],
         ['班级管理', '新建班级', '重置邀请码'],
         ['课程资料', '重建知识库', '删除'],
         ['教案', '生成教案', null],
         ['作业与练习', '新建作业', '预览题目'],
         ['学情分析', '刷新', null],
+        ['学生画像', '刷新', '查看画像'],
       ];
       let panelIdx = 0;
       for (const [panel, keyBtn, rowBtn] of PANELS) {
         panelIdx += 1;
-        const item = page.locator(`.ant-menu-item:has-text("${panel}")`).last();
+        // 用**精确文本**匹配页面内部菜单项：`has-text` 是子串匹配，窄屏时全局抽屉里的
+        // 「教师工作台」也会命中「工作台」，而抽屉在 DOM 里更靠后（portal），
+        // 取 .last() 会拿到抽屉里那个不可见的项 → 假失败（实测 800px 触发）
+        const item = page.locator('.ant-menu-item')
+          .filter({ hasText: new RegExp(`^\s*${panel}\s*$`) })
+          .last();
         const itemOk = await clickable(page, item);
         record(`${w}px：教师端「${panel}」入口在可视区内`, itemOk.ok, itemOk.why || '');
         if (!itemOk.ok) continue;

@@ -132,7 +132,8 @@ def generate_questions(user_id: str, course_id: str, *, assignment_id: Optional[
     from services import ai_service
     query = " ".join(kps) or course["title"]
     try:
-        rag = ai_service.retrieve_and_build_context(query, course["subject_id"], top_k=5)
+        # 教师侧检索：严格阈值为空时放宽一次，避免"分块清洗后课程标题查不到"导致误报资料为空
+        rag = ai_service.retrieve_for_teaching(query, course["subject_id"], top_k=5)
     except Exception as e:
         raise TeachingError(f"课程资料检索失败：{e}", "retrieval_failed")
 

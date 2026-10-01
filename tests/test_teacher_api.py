@@ -525,5 +525,85 @@ class TestAssignmentApi(TeacherApiBase):
         self.assertEqual(resp.status_code, 403, resp.text)
 
 
+class TestTeacherStudentProfile(TeacherApiBase):
+    """
+    学生画像接口（2026-10-01 合并组员实现时并入）
+
+    组员原实现是**零鉴权 + 返回全体用户画像**的：在 runbook 的 `0.0.0.0` 绑定方式下，
+    任何登录用户都能读到所有学生的画像。并入时按"教师身份 + 只看自己班学生"收口，
+    这里的用例就是把这个收口固定下来，防止以后被改回去。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.course = self.create_course(self.t_teacher)
+        self.klass = self.create_class(self.t_teacher, self.course["id"])
+        self.join(self.t_student, self.klass["join_code"])
+
+    def test_requires_login_and_teacher_role(self):
+        """未登录 401；学生/校外用户 403（不能靠"登录了"就拿到学生画像）"""
+        self.assertEqual(self.client.get("/api/teacher/students").status_code, 401)
+        self.assertEqual(self.client.get("/api/teacher/class/overview").status_code, 401)
+        for token in (self.t_student, self.t_outsider):
+            self.assertEqual(
+                self.client.get("/api/teacher/students",
+                                headers=self.h(token)).status_code, 403)
+            self.assertEqual(
+                self.client.get("/api/teacher/class/overview",
+                                headers=self.h(token)).status_code, 403)
+
+    def test_scope_is_limited_to_my_own_classes(self):
+        """另一位教师看不到我班上的学生，我也不该看到他班上的学生"""
+        mine = self.client.get("/api/teacher/students",
+                               headers=self.h(self.t_teacher)).json()["data"]
+        rows = {s["username"]: s for s in mine["students"]}
+        self.assertIn("api_student", rows, "在班学生必须出现在列表里")
+        # user_id 是内部 id（user_xxxxxxxxxxxx），教师认人要用 display_name/username，
+        # 前端不能把内部 id 直接摆在"学生"这一列（见 StudentsPanel 的显示名回退）
+        self.assertTrue(rows["api_student"]["user_id"].startswith("user_"))
+        self.assertEqual(rows["api_student"]["display_name"], "api_student")
+
+        # 另一位教师没有班级 → 列表为空（而不是"全体用户"）
+        other = self.client.get("/api/teacher/students",
+                                headers=self.h(self.t_other)).json()["data"]
+        self.assertEqual(other["students"], [])
+
+        # 他的班级汇总只统计他自己的学生
+        agg = self.client.get("/api/teacher/class/overview",
+                              headers=self.h(self.t_other)).json()["data"]
+        self.assertEqual(agg["total_students"], 0)
+
+    def test_overview_forbidden_for_student_outside_my_classes(self):
+        """越权看不在我班上的学生 → 403（不能靠改 URL 读到别人班的学生）"""
+        rows = self.client.get("/api/teacher/students",
+                               headers=self.h(self.t_teacher)).json()["data"]["students"]
+        mine_id = next(r["user_id"] for r in rows if r["username"] == "api_student")
+
+        # 不在我班上的学生（另一个账号）→ 403
+        others = self.client.get("/api/teacher/students",
+                                 headers=self.h(self.t_other)).json()["data"]["students"]
+        self.assertEqual(others, [])
+        # 用另一个教师自己的身份去看我班学生 → 也必须 403
+        resp = self.client.get(f"/api/teacher/students/{mine_id}/overview",
+                               headers=self.h(self.t_other))
+        self.assertEqual(resp.status_code, 403, resp.text)
+        # 用编造的 id 也是 403（不泄露"这个用户是否存在"）
+        fake = self.client.get("/api/teacher/students/user_000000000000/overview",
+                               headers=self.h(self.t_teacher))
+        self.assertEqual(fake.status_code, 403, fake.text)
+        # 在自己班上的学生可以看
+        ok = self.client.get(f"/api/teacher/students/{mine_id}/overview",
+                             headers=self.h(self.t_teacher))
+        self.assertEqual(ok.status_code, 200, ok.text)
+
+    def test_student_without_profile_is_counted_not_dropped(self):
+        """在班但还没有画像记录的学生也必须出现在列表里（统计为 0，而不是漏人）"""
+        rows = self.client.get("/api/teacher/students",
+                               headers=self.h(self.t_teacher)).json()["data"]["students"]
+        row = next(r for r in rows if r["username"] == "api_student")
+        self.assertEqual(row["interaction_count"], 0)
+        self.assertEqual(row["average_mastery"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

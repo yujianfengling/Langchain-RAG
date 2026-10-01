@@ -183,7 +183,8 @@ def generate_draft(user_id: str, course_id: str, *, topic: str, hours: float = 1
     from services import ai_service
     query = f"{topic} {objectives}".strip()
     try:
-        rag = ai_service.retrieve_and_build_context(query, course["subject_id"], top_k=5)
+        # 同上：教师侧生成允许在严格检索为空时放宽一次
+        rag = ai_service.retrieve_for_teaching(query, course["subject_id"], top_k=5)
     except Exception as e:
         raise TeachingError(f"课程资料检索失败：{e}", "retrieval_failed")
 

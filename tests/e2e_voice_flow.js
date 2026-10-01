@@ -304,15 +304,20 @@ async function requireBackendIsolated(base, purpose) {
     }
     record('新提问时旧音频停止（不叠音）', switched,
       `原消息=${oldMsgId}`);
-    // 等新回答真的开始合成/朗读（长回答首句约 5~15 秒）
+    // 等新回答真的开始合成/朗读。长回答首句通常 5~15 秒，但**首句成形时间取决于模型出字速度**，
+    // 叠加本地 CosyVoice 单实例排队（见 doc/TRIAL_FIX_LOG.md OBS-001）时可能明显变长：
+    // 实测有一次 60 秒窗口内没等到（脚本报 FAIL，重跑 24/24 通过）——这是**等待预算不够**，
+    // 不是功能缺陷。这里把预算放宽到 180 秒，并把实际等待时长写进结果，便于人工判断快慢。
     let ttsCallsAfter = ttsCallsBefore;
-    for (let i = 0; i < 120; i += 1) {
+    let waitedMs = 0;
+    for (let i = 0; i < 360; i += 1) {
       ttsCallsAfter = voiceCalls.filter((c) => c.includes('audio/tts')).length;
       if (ttsCallsAfter > ttsCallsBefore) break;
       await page.waitForTimeout(500);
+      waitedMs += 500;
     }
     record('新回答重新开始朗读', ttsCallsAfter > ttsCallsBefore,
-      `合成请求 ${ttsCallsBefore} → ${ttsCallsAfter}`);
+      `合成请求 ${ttsCallsBefore} → ${ttsCallsAfter}（等待 ${(waitedMs / 1000).toFixed(1)}s）`);
 
     // 7) 切换会话：播放停止
     // 宽屏是「新建对话」，窄屏聊天区顶部是紧凑的「新建」（两者都是"新建会话"）
