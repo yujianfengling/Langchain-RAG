@@ -412,9 +412,69 @@ def analyze_user_performance(user_id, subject_id):
     }
 
 
+def list_students() -> List[Dict[str, Any]]:
+    """
+    列出所有学生及其学习统计摘要（教师端）
+
+    Returns:
+        学生列表，每个元素包含 user_id、学习风格、交互次数、知识点数、平均掌握度、最后活跃时间
+    """
+    conn = _get_db()
+    try:
+        rows = conn.execute("SELECT user_id, learning_style, updated_at, created_at FROM user_profiles ORDER BY updated_at DESC").fetchall()
+        students = []
+        for row in rows:
+            r = dict(row)
+            user_id = r["user_id"]
+            # 统计交互次数
+            ic = conn.execute("SELECT COUNT(*) as c FROM user_interactions WHERE user_id = ?", (user_id,)).fetchone()
+            # 统计知识点掌握
+            mc = conn.execute(
+                "SELECT COUNT(*) as total, AVG(mastery_level) as avg_mastery, "
+                "SUM(CASE WHEN mastery_level >= 0.7 THEN 1 ELSE 0 END) as strong, "
+                "SUM(CASE WHEN mastery_level < 0.4 THEN 1 ELSE 0 END) as weak "
+                "FROM knowledge_mastery WHERE user_id = ?", (user_id,)).fetchone()
+            mc = dict(mc)
+            students.append({
+                "user_id": user_id,
+                "learning_style": r.get("learning_style", "balanced"),
+                "interaction_count": ic["c"] if ic else 0,
+                "knowledge_point_count": mc.get("total") or 0,
+                "average_mastery": round(mc.get("avg_mastery") or 0, 3),
+                "strong_count": mc.get("strong") or 0,
+                "weak_count": mc.get("weak") or 0,
+                "last_active": r.get("updated_at", ""),
+                "created_at": r.get("created_at", ""),
+            })
+        return students
+    except Exception as e:
+        logger.error(f"列出学生失败: {e}", exc_info=True)
+        raise UserProfileError(f"列出学生失败: {str(e)}")
+    finally:
+        conn.close()
+
+
+def get_student_subjects(user_id: str) -> List[str]:
+    """
+    获取学生学过/涉及的所有学科ID（教师端）
+    """
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT subject_id FROM knowledge_mastery WHERE user_id = ? AND subject_id IS NOT NULL AND subject_id != ''",
+            (user_id,)).fetchall()
+        return [r["subject_id"] for r in rows]
+    except Exception as e:
+        logger.error(f"获取学生学科失败: {e}", exc_info=True)
+        return []
+    finally:
+        conn.close()
+
+
 __all__ = [
     "UserProfileError", "get_or_create_profile", "update_knowledge_level", "update_learning_style",
     "record_interaction", "get_user_interactions", "submit_feedback", "get_user_feedback_stats",
     "update_knowledge_mastery", "get_weak_points", "get_strong_points",
     "set_learning_preference", "get_learning_preferences", "analyze_user_performance",
+    "list_students", "get_student_subjects",
 ]

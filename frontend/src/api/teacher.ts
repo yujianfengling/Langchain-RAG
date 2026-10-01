@@ -695,3 +695,63 @@ export const explainClassAnalytics = async (
   apiClient.post(`/teacher/classes/${classId}/analytics/explain`, null, {
     params: model ? { days, model } : { days },
   });
+
+/** ==================== 学生画像（并入组员实现，2026-09-27 合并）==================== */
+/*
+ * 来源：组员提交的教师端接口。合并时后端已补上鉴权与数据范围（只返回自己名下班级的在班学生），
+ * 前端沿用其字段与函数名，便于他原有界面复用。
+ */
+
+/** 学生画像摘要 */
+export interface StudentSummary {
+  user_id: string;
+  learning_style: string;
+  interaction_count: number;
+  knowledge_point_count: number;
+  average_mastery: number;
+  strong_count: number;
+  weak_count: number;
+  last_active: string;
+  created_at?: string;
+}
+
+/** 单个学生学情总览 */
+export interface StudentOverview {
+  user_id: string;
+  subjects: string[];
+  current_subject?: string | null;
+  weak_points: Record<string, unknown>[];
+  strong_points: Record<string, unknown>[];
+  learning_stats: Record<string, unknown>;
+  knowledge_gaps: Record<string, unknown>[];
+  feedback: Record<string, unknown>;
+}
+
+/** 名下学生的整体汇总 */
+export interface ClassOverview {
+  total_students: number;
+  total_interactions: number;
+  total_knowledge_points: number;
+  total_weak_points: number;
+  total_strong_points: number;
+  average_mastery: number;
+  /** 数据范围说明（后端固定为"自己名下班级的在班学生"） */
+  scope?: string;
+}
+
+/** 我名下班级的学生画像列表 */
+export const getStudents = async (): Promise<ApiResponse<{
+  students: StudentSummary[]; scope?: string; total?: number;
+}>> => apiClient.get('/teacher/students');
+
+/** 单个学生的画像总览 */
+export const getStudentOverview = async (
+  userId: string, subjectId?: string,
+): Promise<ApiResponse<StudentOverview>> =>
+  apiClient.get(`/teacher/students/${encodeURIComponent(userId)}/overview`, {
+    params: subjectId ? { subject_id: subjectId } : {},
+  });
+
+/** 我名下学生的整体汇总 */
+export const getClassOverview = async (): Promise<ApiResponse<ClassOverview>> =>
+  apiClient.get('/teacher/class/overview');

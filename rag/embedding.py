@@ -181,18 +181,50 @@ class BatchedHuggingFaceEmbeddings(Embeddings):
                     logger.debug(f"[Embedding] 进度: {end}/{total}")
 
             except Exception as e:
-                logger.error(f"[Embedding] 批量处理失败 [{start}:{end}]: {e}")
-                # 尝试逐个处理
-                for text in batch:
-                    try:
-                        single_embedding = self._model.embed_query(text)
-                        all_embeddings.append(single_embedding)
-                    except Exception as e2:
-                        logger.error(f"[Embedding] 单文档处理失败: {e2}")
-                        # 使用零向量作为fallback
-                        all_embeddings.append([0.0] * 512)
+                logger.warning(
+                    f"[Embedding] 批量处理失败 [{start}:{end}] ({type(e).__name__})，"
+                    f"改用二分定位坏样本")
+                all_embeddings.extend(self._embed_batch_resilient(batch))
 
         return all_embeddings
+
+    def _embed_batch_resilient(self, batch: List[str]) -> List[List[float]]:
+        """
+        批量编码失败后的降级处理（v2.6）。
+
+        此前实现是"整批失败 → 逐条 embed_query"，64 条批失败会产生 64 次前向
+        （实测约 0.54s）。现在改为二分定位：只有真正无法编码的样本才会
+        退到零向量，其余仍走批量。
+        """
+        import numpy as np
+
+        try:
+            return self._model.embed_documents(batch)
+        except Exception:
+            pass
+
+        if len(batch) == 1:
+            text = batch[0]
+            try:
+                return [self._model.embed_query(text)]
+            except Exception as e2:
+                logger.error(f"[Embedding] 单条编码失败，使用零向量: {type(e2).__name__}")
+                return [self._zero_vector()]
+
+        mid = len(batch) // 2
+        return (self._embed_batch_resilient(batch[:mid])
+                + self._embed_batch_resilient(batch[mid:]))
+
+    def _zero_vector(self) -> List[float]:
+        """零向量占位：使用模型真实维度，避免换模型后维度不一致导致静默错排"""
+        dim = getattr(self, "_dimension", None)
+        if not dim:
+            try:
+                dim = len(self._model.embed_query("测试"))
+            except Exception:
+                dim = 512
+            self._dimension = dim
+        return [0.0] * int(dim)
 
     def embed_query(self, text: str) -> List[float]:
         """
@@ -303,15 +335,79 @@ def _determine_source(load_mode: str) -> str:
     return "unavailable"
 
 
+def _detect_device() -> str:
+    """
+    解析 embedding 运行设备（v2.6 新增）。
+
+    此前 _build_embeddings 硬编码 device="cpu"，导致：
+    - config 里的 EMBEDDING_DEVICE（含 validate 校验 cuda/mps）完全无效
+    - 上了 GPU 也拿不到任何收益
+    - 并发时 torch 默认线程数超订，实测 8 workers 吞吐反降到 7.7 req/s
+
+    Returns:
+        "cuda" | "mps" | "cpu"
+    """
+    want = os.getenv("EMBEDDING_DEVICE", "auto").strip().lower()
+    if want in ("cpu", "cuda", "mps"):
+        if want == "cuda":
+            try:
+                import torch
+                if not torch.cuda.is_available():
+                    logger.warning("EMBEDDING_DEVICE=cuda 但当前环境无可用 CUDA，回退 CPU")
+                    return "cpu"
+            except ImportError:
+                logger.warning("EMBEDDING_DEVICE=cuda 但未安装 torch，回退 CPU")
+                return "cpu"
+        return want
+
+    # auto：按可用性探测
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return "mps"
+    except ImportError:
+        pass
+    return "cpu"
+
+
+def _configure_torch_threads() -> None:
+    """
+    限制 torch 线程数，避免并发下线程超订（v2.6）。
+
+    实测：8 并发时吞吐从 10.2 req/s 降到 7.7 req/s、单请求延迟从 97ms 涨到 1025ms，
+    主因是每个请求都让 torch 开满线程互相争抢。CPU 上限制到物理核数的一半更稳。
+    """
+    if os.getenv("TORCH_NUM_THREADS_CONFIGURED") == "1":
+        return
+    try:
+        import torch
+        env = os.getenv("TORCH_NUM_THREADS")
+        if env:
+            n = max(1, int(env))
+        else:
+            n = max(1, (os.cpu_count() or 4) // 2)
+        torch.set_num_threads(n)
+        os.environ.setdefault("OMP_NUM_THREADS", str(n))
+        os.environ["TORCH_NUM_THREADS_CONFIGURED"] = "1"
+        logger.info(f"[Embedding] torch 线程数限制为 {n}")
+    except Exception:
+        pass
+
+
 def _build_embeddings(model_name: str, local_files_only: bool) -> BatchedHuggingFaceEmbeddings:
-    """构造Embedding实例"""
-    model_kwargs = {"device": "cpu"}
+    """构造Embedding实例（v2.6：设备由配置/探测决定，不再硬编码 cpu）"""
+    _configure_torch_threads()
+    device = _detect_device()
+    model_kwargs = {"device": device}
     encode_kwargs = {"normalize_embeddings": True}
+    logger.info(f"[Embedding] 使用设备: {device}")
     return BatchedHuggingFaceEmbeddings(
         model_name=model_name,
         model_kwargs=model_kwargs,
         encode_kwargs=encode_kwargs,
-        batch_size=64,
+        batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", "64")),
         local_files_only=local_files_only,
     )
 

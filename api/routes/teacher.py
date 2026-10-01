@@ -765,3 +765,145 @@ async def explain_analytics(class_id: str, days: int = Query(default=30),
             message="已生成解读")
     except TeachingError as e:
         return _err(e)
+
+
+# ==================== 学生画像（并入组员实现，2026-09-27 合并）====================
+#
+# 来源：组员提交 e503490「教师端（破烂版」提供 3 个接口（学生画像列表 / 单个学生总览 / 班级汇总）。
+# 合并时的**必要改动**：原实现没有任何身份校验、且返回**全体用户**的画像；
+# 这里统一改为 require_teacher + 只能看**自己名下班级**的学生，避免局域网内匿名读取全体学生数据。
+# 计算逻辑沿用组员的 user_profiler / proactive_learner 调用，响应字段名保持不变（前端可直接复用）。
+
+def _my_students(teacher_user_id: str) -> dict:
+    """
+    我名下各班级的**在班学生**：{user_id: {class/course 信息}}
+
+    以**班级成员**为准，而不是以"有没有画像记录"为准——
+    否则学生还没用过 AI 时，班里明明有人，列表却是空的（实测踩到）。
+    """
+    from services import teaching_service as ts
+    from services import teaching_data as td
+
+    out: dict = {}
+    for course in ts.list_teacher_courses(teacher_user_id):
+        for klass in td.list_classes(course["id"]):
+            for m in td.list_members(klass["id"], status="active"):
+                out.setdefault(m["user_id"], {
+                    "class_id": klass["id"], "class_name": klass["name"],
+                    "course_id": course["id"], "course_title": course["title"],
+                })
+    return out
+
+
+def _my_student_ids(teacher_user_id: str) -> set:
+    """在班学生 user_id 集合（用于把学生画像限制在自己的班里）"""
+    return set(_my_students(teacher_user_id).keys())
+
+
+def _student_row(user_id: str, profile: dict, ctx: dict) -> dict:
+    """班级成员 + 画像统计合并成一行（没有画像记录时统计为 0，而不是把人漏掉）"""
+    from services import auth_service
+    u = auth_service.get_user(user_id) or {}
+    return {
+        "user_id": user_id,
+        "display_name": u.get("display_name") or u.get("username") or user_id,
+        "username": u.get("username"),
+        "class_name": ctx.get("class_name"),
+        "course_title": ctx.get("course_title"),
+        "learning_style": (profile or {}).get("learning_style") or "",
+        "interaction_count": int((profile or {}).get("interaction_count") or 0),
+        "knowledge_point_count": int((profile or {}).get("knowledge_point_count") or 0),
+        "average_mastery": float((profile or {}).get("average_mastery") or 0),
+        "strong_count": int((profile or {}).get("strong_count") or 0),
+        "weak_count": int((profile or {}).get("weak_count") or 0),
+        "last_active": (profile or {}).get("last_active") or "",
+        "has_profile": bool(profile),
+    }
+
+
+@router.get("/teacher/students")
+async def teacher_list_students(user_id: str = Depends(require_teacher)):
+    """
+    学生画像列表（**仅我名下班级的在班学生**）
+
+    与 `/teacher/classes/{id}/analytics` 的区别：这里看的是"每个学生个人"的画像
+    （学习风格、交互次数、掌握度分布、强项/弱项），用于个别辅导；班级层面的统计看学情分析。
+    """
+    from services.user_profiler import UserProfileError, list_students
+    try:
+        mine = _my_students(user_id)
+        profiles = {s.get("user_id"): s for s in list_students()}
+        students = [_student_row(uid, profiles.get(uid), ctx) for uid, ctx in mine.items()]
+        # 有画像记录的排前面，其次按薄弱点多的优先（个别辅导更有针对性）
+        students.sort(key=lambda s: (not s["has_profile"], -s["weak_count"]))
+        return SuccessResponse(
+            data={"students": students, "scope": "自己名下班级的在班学生",
+                  "total": len(students),
+                  "note": "统计为 0 表示该生还没有 AI 作答/交互记录，不代表没有学习行为"},
+            message="ok")
+    except UserProfileError as e:
+        return JSONResponse(status_code=400, content={
+            "success": False, "data": None, "message": str(e),
+            "error_type": "invalid_request"})
+
+
+@router.get("/teacher/students/{target_user_id}/overview")
+async def teacher_student_overview(target_user_id: str,
+                                   subject_id: Optional[str] = Query(default=None),
+                                   user_id: str = Depends(require_teacher)):
+    """单个学生的画像总览（弱项 / 强项 / 学习统计 / 知识点缺口 / 反馈统计）"""
+    from services.user_profiler import (
+        UserProfileError, get_student_subjects, get_weak_points, get_strong_points,
+        get_user_feedback_stats,
+    )
+    from services.proactive_learner import get_learning_stats, get_knowledge_gaps
+
+    if target_user_id not in _my_student_ids(user_id):
+        return JSONResponse(status_code=403, content={
+            "success": False, "data": None,
+            "message": "该学生不在你名下的班级中，无法查看其学情。",
+            "error_type": "forbidden"})
+    try:
+        subjects = get_student_subjects(target_user_id)
+        sid = subject_id or (subjects[0] if subjects else None)
+        return SuccessResponse(data={
+            "user_id": target_user_id,
+            "subjects": subjects,
+            "current_subject": sid,
+            "weak_points": get_weak_points(target_user_id, sid) if sid else [],
+            "strong_points": get_strong_points(target_user_id, sid) if sid else [],
+            "learning_stats": get_learning_stats(target_user_id, sid) if sid else {},
+            "knowledge_gaps": get_knowledge_gaps(target_user_id, sid) if sid else [],
+            "feedback": get_user_feedback_stats(target_user_id),
+        }, message="ok")
+    except UserProfileError as e:
+        return JSONResponse(status_code=400, content={
+            "success": False, "data": None, "message": str(e),
+            "error_type": "invalid_request"})
+
+
+@router.get("/teacher/class/overview")
+async def teacher_class_overview(user_id: str = Depends(require_teacher)):
+    """我名下学生的整体汇总（学生数 / 交互 / 知识点 / 强项弱项 / 平均掌握度）"""
+    from services.user_profiler import UserProfileError, list_students
+    try:
+        mine = _my_students(user_id)
+        profiles = {s.get("user_id"): s for s in list_students()}
+        students = [_student_row(uid, profiles.get(uid), ctx) for uid, ctx in mine.items()]
+        total = len(students)
+        total_strong = sum(s.get("strong_count", 0) for s in students)
+        total_weak = sum(s.get("weak_count", 0) for s in students)
+        return SuccessResponse(data={
+            "total_students": total,
+            "total_interactions": sum(s.get("interaction_count", 0) for s in students),
+            "total_knowledge_points": sum(s.get("knowledge_point_count", 0) for s in students),
+            "total_weak_points": total_weak,
+            "total_strong_points": total_strong,
+            "average_mastery": round(
+                sum(s.get("average_mastery", 0) for s in students) / total, 3) if total else 0,
+            "scope": "我名下班级的在班学生",
+        }, message="ok")
+    except UserProfileError as e:
+        return JSONResponse(status_code=400, content={
+            "success": False, "data": None, "message": str(e),
+            "error_type": "invalid_request"})

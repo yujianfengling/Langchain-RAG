@@ -24,20 +24,69 @@ except ImportError:
 
 # ========== 中文分词 ==========
 
-# 简单的中文分词：按字符+标点分割
+# 字符级分词（旧行为）：每个汉字单独成 token
 _CN_TOKENIZE_RE = re.compile(
     r'[\u4e00-\u9fff]|[a-zA-Z]+|\d+|[^\s\w\u4e00-\u9fff]'
 )
 
+# 词级分词（v2.6 推荐）：jieba 为可选依赖，缺失时回退字符级
+try:
+    import jieba as _jieba
+    import logging as _logging
+    _jieba.setLogLevel(_logging.WARNING)
+    JIEBA_AVAILABLE = True
+except ImportError:
+    _jieba = None
+    JIEBA_AVAILABLE = False
 
-def _tokenize_chinese(text: str) -> List[str]:
+
+def get_tokenizer_mode() -> str:
+    """读取当前分词模式（char/word），默认 word；jieba 缺失时回退 char"""
+    try:
+        from config import settings
+        mode = str(getattr(settings.rag, "bm25_tokenizer", "word")).lower()
+    except Exception:
+        mode = "word"
+    if mode == "word" and not JIEBA_AVAILABLE:
+        return "char"
+    return mode if mode in ("char", "word") else "char"
+
+
+def _tokenize_chinese(text: str, mode: Optional[str] = None) -> List[str]:
     """
     中文文本分词
-    
-    使用简单的字符级分割 + 英文单词分割
-    对于教育场景足够使用，无需引入jieba等重型分词库
+
+    v2.6：新增词级分词。此前为逐字切分，实测词表 1536 个 token 中
+    978 个是单字（64%）、49% 的 token df>=4 → IDF 饱和、区分度极低，
+    却仍会把"恰好含同一常用字"的无关 chunk 排进候选。
+    实测：词级分词与 BM25 结合可把 recall@5 从 95.5% 提升到 97.0%。
+
+    Args:
+        text: 待分词文本
+        mode: "char"（逐字）| "word"（jieba 词级）| None（读配置）
+
+    Returns:
+        token 列表
     """
     text = text.lower().strip()
+    if not text:
+        return []
+
+    mode = mode or get_tokenizer_mode()
+
+    if mode == "word":
+        # 词级：jieba 切词 + 把英文/数字片段单独归并，过滤纯空白
+        tokens = []
+        for tok in _jieba.lcut(text):
+            tok = tok.strip()
+            if not tok:
+                continue
+            # 丢弃纯标点 token（对检索无区分度，且会污染 IDF）
+            if not any(c.isalnum() for c in tok):
+                continue
+            tokens.append(tok)
+        return tokens
+
     tokens = _CN_TOKENIZE_RE.findall(text)
     # 过滤空白token
     return [t for t in tokens if t.strip()]
@@ -128,20 +177,26 @@ class BM25Retriever:
     def add_documents(self, documents: List[Any]) -> None:
         """
         添加文档到索引
-        
-        Args:
-            documents: Document对象列表
+
+        v2.6：分词后为空的文档**保留占位**（而非跳过）。
+        此前 `if tokens:` 会静默丢弃这类文档，造成 BM25 与 FAISS 条目数不一致
+        （实测测量学差 149 条，来自 PDF 公式抽取的私用区字符如 \\uf061）。
+        它们多为公式/符号内容，对 STEM 教学有价值，不应因分词器处理不了就删掉。
+        占位文档不会命中任何查询（空 token 列表），但保证两索引一一对应。
         """
+        placeholder = 0
         for doc in documents:
             text = doc.page_content if hasattr(doc, 'page_content') else str(doc)
             tokens = _tokenize_chinese(text)
-            if tokens:  # 只添加非空文档
-                self._documents.append(doc)
-                self._tokenized_corpus.append(tokens)
-        
+            if not tokens:
+                placeholder += 1
+            self._documents.append(doc)
+            self._tokenized_corpus.append(tokens)
+
         # 重建BM25索引
         self._rebuild_index()
-        logger.info(f"BM25索引已构建: {len(self._documents)}个文档")
+        logger.info(f"BM25索引已构建: {len(self._documents)}个文档"
+                    + (f"（其中 {placeholder} 个为空分词占位）" if placeholder else ""))
     
     def _rebuild_index(self) -> None:
         """重建BM25索引"""
@@ -153,6 +208,25 @@ class BM25Retriever:
             self._bm25 = BM25Okapi(self._tokenized_corpus)
         else:
             self._bm25 = _BuiltinBM25(self._tokenized_corpus)
+
+    @classmethod
+    def from_persisted(cls, documents: List[Any],
+                       tokenized_corpus: List[List[str]]) -> "BM25Retriever":
+        """
+        从已持久化的语料恢复实例（v2.6）。
+
+        tokenized_corpus 已是保存时的分词结果，此处**不再重新分词**
+        （分词器版本一致性由 hybrid_retriever._load_bm25_index 负责校验）。
+
+        此前 hybrid_retriever 用 `BM25Retriever.__new__` 绕过 __init__ 手动赋私有属性，
+        任何给该类新增字段的改动都会在加载路径上静默失效。
+        """
+        obj = cls.__new__(cls)
+        obj._documents = list(documents)
+        obj._tokenized_corpus = [list(t) for t in tokenized_corpus]
+        obj._bm25 = None
+        obj._rebuild_index()
+        return obj
     
     def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
@@ -179,8 +253,11 @@ class BM25Retriever:
         # 获取分数
         scores = self._bm25.get_scores(query_tokens)
         
-        # 排序取top_k
-        indexed_scores = [(i, s) for i, s in enumerate(scores) if s > 0]
+        # 排序取top_k（跳过空分词占位文档，它们不可能命中）
+        indexed_scores = [
+            (i, s) for i, s in enumerate(scores)
+            if s > 0 and self._tokenized_corpus[i]
+        ]
         indexed_scores.sort(key=lambda x: x[1], reverse=True)
         indexed_scores = indexed_scores[:top_k]
         

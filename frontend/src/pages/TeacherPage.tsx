@@ -4,7 +4,7 @@ import {
 } from 'antd';
 import {
   BarChartOutlined, BookOutlined, DashboardOutlined, FileTextOutlined,
-  FolderOpenOutlined, PlusOutlined, ReloadOutlined, TeamOutlined,
+  FolderOpenOutlined, PlusOutlined, ReloadOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import {
   TeacherCourse, createCourse, describeTeacherError, isForbiddenError, listTeacherCourses,
@@ -18,11 +18,12 @@ import MaterialsPanel from '../components/Teacher/MaterialsPanel';
 import LessonPlansPanel from '../components/Teacher/LessonPlansPanel';
 import AssignmentsPanel from '../components/Teacher/AssignmentsPanel';
 import AnalyticsPanel from '../components/Teacher/AnalyticsPanel';
+import StudentsPanel from '../components/Teacher/StudentsPanel';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
-type PanelKey = 'dashboard' | 'classes' | 'materials' | 'plans' | 'assignments' | 'analytics';
+type PanelKey = 'dashboard' | 'classes' | 'materials' | 'plans' | 'assignments' | 'analytics' | 'students';
 
 export interface TeacherPageProps {
   /** 可选：外部路由跳转钩子（不传则仅在本页内切换） */
@@ -36,6 +37,8 @@ const MENU_ITEMS = [
   { key: 'plans', icon: <FileTextOutlined />, label: '教案' },
   { key: 'assignments', icon: <BookOutlined />, label: '作业与练习' },
   { key: 'analytics', icon: <BarChartOutlined />, label: '学情分析' },
+  // 学生画像：逐个学生看（与「学情分析」的班级聚合互补）；不依赖具体课程，故不需要先选课
+  { key: 'students', icon: <UserOutlined />, label: '学生画像' },
 ];
 
 /**
@@ -136,7 +139,8 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
     [courses, courseId],
   );
 
-  const courseRequired = activeKey !== 'dashboard';
+  // 工作台与学生画像都是跨课程的，不强制先选课程
+  const courseRequired = activeKey !== 'dashboard' && activeKey !== 'students';
   const needCourse = courseRequired && !courseId;
 
   const renderPanel = () => {
@@ -203,6 +207,8 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
             onBack={() => setActiveKey('dashboard')}
           />
         );
+      case 'students':
+        return <StudentsPanel onBack={() => setActiveKey('dashboard')} />;
       case 'dashboard':
       default:
         return <DashboardPanel onOpen={handleDashboardNav} />;
