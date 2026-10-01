@@ -3,8 +3,8 @@
 > 详细方案见 `docs/TRIAL_PACKAGE.md`；结果模板见 `docs/TRIAL_RESULTS_TEMPLATE.md`。
 > **本页只讲"今天要做什么、敲哪条命令"。**
 >
-> 三项**尚未完成**、任何人不得写成"已通过"的事：
-> ① 历史密钥轮换（需供应商后台操作）② 人工语音试听 ③ 在另一台电脑上的部署验证。
+> 两项**尚未完成**、任何人不得写成"已通过"的事：
+> ① 历史密钥轮换（需供应商后台操作）② 在另一台电脑上的部署验证。
 
 ---
 
@@ -48,7 +48,7 @@ E:\WORKBUDDY\Game\speech_stack\venv\Scripts\python.exe -m speech_service.server
 ```powershell
 curl http://127.0.0.1:8000/api/health      # 看 data_scope.dir_name 是不是 git_text_trial_data
                                            # 看 capabilities.text.available 是不是 true
-curl http://127.0.0.1:8100/health          # 用语音才需要：engines.asr/tts 都是 ready
+curl http://127.0.0.1:8100/health          # 用语音才需要：engines.asr 是 ready
 node tests/e2e_first_use_walkthrough.js    # 电脑端闭环，应 56/56
 node tests/e2e_responsive_walkthrough.js   # 三档屏宽，应 120/120
 ```
@@ -82,7 +82,7 @@ node tests/e2e_responsive_walkthrough.js   # 三档屏宽，应 120/120
 4. 完成老师布置的作业（答错没关系，错题才有用）。
 5. 「错题本」看错题 → 对 1 个错题点「去复习」走一次。
 6. 「AI学习助手」至少问 3 个本章问题。
-7. （可选）点录音提问、听朗读——**手机语音目前只有浏览器宽度实测，真机请先由一名成员试一次**。
+7. （可选）点录音提问——**手机语音目前只有浏览器宽度实测，真机请先由一名成员试一次**。
 
 ---
 
@@ -125,7 +125,6 @@ python tests\export_trial_data.py --username <老师账号> --class-id <班级ID
 |---|---|---|
 | 页面打不开 / 转圈 | 看后端窗口有没有报错 | 重启后端（**同一个 `EDU_DATA_DIR`**，否则会读写到不同库） |
 | 提问报"模型不可用" | `curl http://127.0.0.1:8000/api/health` 看 `text.available` | 检查密钥配置后重启后端；**不要**改为假装成功 |
-| 朗读报"语音服务正忙" | 稍等再点，别多人同时点 | 重启语音服务；不影响文字问答 |
 | 出题报"课程资料为空" | 看「课程资料」的知识库提示 | 点「重建知识库」；仍失败就读提示里的原因 |
 | 误删了数据 | **先停手** | 用开跑前的备份恢复：`data/trial_export/` 与 `git_text_trial_data/` 的副本 |
 
@@ -137,5 +136,5 @@ python tests\export_trial_data.py --username <老师账号> --class-id <班级ID
 ## 6. 一句话记住的三条红线
 
 1. **不要动正式 `data/`**：真实试用也必须用 `EDU_DATA_DIR` 指向试用目录。
-2. **不要替项目组宣布"已完成"**：密钥轮换、人工语音试听、另一台电脑部署，**三项都还没做**。
+2. **不要替项目组宣布"已完成"**：密钥轮换、另一台电脑部署，**两项都还没做**。
 3. **不要把演示数据、自动评测通过率写进教学效果**。

@@ -74,7 +74,7 @@ E:\WORKBUDDY\Game\speech_stack\venv\Scripts\python.exe -m speech_service.server
 | 缺失 | 表现 |
 |---|---|
 | 文本模型密钥 | `/api/health` 的 `capabilities.text.available=false` 并给出原因；问答接口返回可读错误 |
-| 本地语音模型/服务未启动 | `local_asr/local_tts.available=false`；**文字问答、学习闭环完全不受影响** |
+| 本地语音模型/服务未启动 | `local_asr.available=false`；**文字问答、学习闭环完全不受影响** |
 | 知识库未构建 | 教师端课程详情显示 `knowledge_base.available=false` 与原因；资料页有「重建知识库」按钮与失败原因 |
 | 教师未开通 | 建课返回 403 与提示"需要教师邀请码"，设置页有开通入口 |
 
@@ -120,7 +120,7 @@ E:\WORKBUDDY\Game\speech_stack\venv\Scripts\python.exe -m speech_service.server
     任务同时出现在「今日任务」。
 13. 去「AI学习助手」问 1–2 个课程问题，展示**参考来源**（引用可定位到资料）。
 14. 打开「错题本」看错题，用「学习助手」生成复习安排（演示改计划会**要求确认**）。
-15. （可选）点录音提问 → 转写文本进入输入框（**由学生确认后发送**）→ 回答自动朗读。
+15. （可选）点录音提问 → 转写文本进入输入框（**由学生确认后发送**）。
 
 ### 第 7 步 教师查看学情
 
@@ -144,7 +144,7 @@ E:\WORKBUDDY\Game\speech_stack\venv\Scripts\python.exe -m speech_service.server
 | 权限收紧 | 配置 `KNOWLEDGE_ADMIN_USERS`（历史全局学科写权限）、`ADMIN_USERS`、`TEACHER_USERS` |
 | 学生数据隔离 | 每个学生只看到自己的作答/错题/计划/会话；教师端只用汇总数据（有自动化用例覆盖） |
 | 数据备份 | 迁移前复制 `data/*.db` 到 `data/backups/<时间戳>-.../`（迁移脚本可重复执行） |
-| 不进仓库的内容 | `.env`、`config/local_secrets.json`、`data/`、`speech_stack/`（模型权重）、录音与合成缓存、`tests/_screenshots/`、`tests/eval/output/` 均在 `.gitignore` |
+| 不进仓库的内容 | `.env`、`config/local_secrets.json`、`data/`、`speech_stack/`（模型权重）、录音缓存、`tests/_screenshots/`、`tests/eval/output/` 均在 `.gitignore` |
 
 ---
 

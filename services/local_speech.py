@@ -90,7 +90,7 @@ def health(force: bool = False) -> Dict[str, Any]:
     查询本地语音服务状态（带缓存）
 
     Returns:
-        {"running": bool, "asr": {...}, "tts": {...}, "vram": {...}, "reason": str}
+        {"running": bool, "asr": {...}, "vram": {...}, "reason": str}
     """
     now = time.time()
     if not force and _HEALTH_CACHE["data"] is not None:
@@ -102,16 +102,20 @@ def health(force: bool = False) -> Dict[str, Any]:
             return _HEALTH_CACHE["data"]
 
     result: Dict[str, Any] = {
-        "running": False, "asr": {"ready": False}, "tts": {"ready": False},
+        "running": False, "asr": {"ready": False},
         "vram": {"available": False}, "reason": "",
     }
     try:
         data = _http("GET", "/health", timeout=HEALTH_TIMEOUT)
         result["running"] = True
         result["asr"] = (data.get("engines") or {}).get("asr") or {"ready": False}
-        result["tts"] = (data.get("engines") or {}).get("tts") or {"ready": False}
         result["vram"] = data.get("vram") or {"available": False}
         result["config"] = data.get("config") or {}
+        # 轻量模型清单（体积/是否已下载/下载进度）——供前端在"首次使用前"
+        # 明确告诉用户需要下载多少 MB，而不是只报"不可用"
+        result["models"] = data.get("models") or {}
+        result["models_path_warning"] = data.get("models_path_warning")
+        result["download"] = data.get("download") or {}
     except LocalSpeechError as e:
         result["reason"] = e.message
     except Exception as e:  # 任何异常都不应影响文字问答
@@ -140,24 +144,10 @@ def asr_available() -> bool:
     return bool(h.get("running") and (h.get("asr") or {}).get("ready"))
 
 
-def tts_available() -> bool:
-    h = health()
-    return bool(h.get("running") and (h.get("tts") or {}).get("ready"))
-
-
 def warmup() -> Dict[str, Any]:
     """手动预热（模型加载可能较慢）"""
     reset_health_cache()
     return _http("POST", "/warmup", timeout=max(REQUEST_TIMEOUT, 600))
-
-
-def list_voices() -> List[str]:
-    try:
-        data = _http("GET", "/voices", timeout=30)
-        return list(data.get("voices") or [])
-    except LocalSpeechError as e:
-        logger.debug(f"获取本地音色失败：{e.message}")
-        return []
 
 
 def transcribe(audio_bytes: bytes, filename: str = "audio.wav") -> Dict[str, Any]:
@@ -201,30 +191,12 @@ def transcribe(audio_bytes: bytes, filename: str = "audio.wav") -> Dict[str, Any
     return data
 
 
-def synthesize_segments(segments: List[str], voice: Optional[str] = None,
-                        speed: float = 1.0) -> Dict[str, Any]:
-    """
-    本地 TTS：逐段合成（顺序由服务端保证）
-
-    Returns:
-        {"items": [{"seq", "text", "audio_b64", "duration_s", "latency_ms"}], ...}
-    """
-    if not segments:
-        raise LocalSpeechError("待合成文本为空", "empty_text")
-    data = _http("POST", "/tts/segments",
-                 {"segments": segments, "voice": voice, "speed": speed})
-    if not data.get("success"):
-        raise LocalSpeechError(data.get("message") or "本地合成失败",
-                               data.get("error_type") or "tts_failed")
-    return data
-
-
 def ensure_available(what: str = "speech") -> None:
     """给调用方用：不可用时抛带原因的异常"""
     h = health()
     if not h.get("running"):
         raise LocalSpeechError(
-            h.get("reason") or "本地语音服务未启动（请运行 speech_service/run_speech_service.py）",
+            h.get("reason") or "本地语音服务未启动（请运行 python -m speech_service.server）",
             "speech_unavailable")
     engine = h.get(what) or {}
     if not engine.get("ready"):
@@ -240,10 +212,7 @@ __all__ = [
     "reset_health_cache",
     "is_enabled",
     "asr_available",
-    "tts_available",
     "warmup",
-    "list_voices",
     "transcribe",
-    "synthesize_segments",
     "ensure_available",
 ]

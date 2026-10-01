@@ -103,7 +103,10 @@ const PlanBudgetPanel: React.FC<{ subjectId?: string }> = ({ subjectId }) => {
     } catch (e: any) {
       const body = e?.response?.data;
       if (body?.error_type === 'confirmation_required') {
-        message.warning('这是较大范围的调整，请点击「确认应用」');
+        // 兜底提示：正常情况下「确认应用」会带 confirm=true 并在确认框中征得同意，
+        // 走到这里说明服务端在提议之后仍判定为较大调整（例如任务集发生变化）。
+        message.warning('该调整被服务端判定为较大范围，需要确认后才能应用：'
+          + '请重新点击「确认应用」，并在确认框中选择「确认应用」。');
       } else {
         message.error(body?.message || '应用失败');
       }
@@ -234,17 +237,53 @@ const PlanBudgetPanel: React.FC<{ subjectId?: string }> = ({ subjectId }) => {
               const meta = ADJ_STATUS_META[adj.status] || ADJ_STATUS_META.PROPOSED;
               const reschedules = adj.changes.filter((c: any) => c.change_type === 'reschedule');
               const reduces = adj.changes.filter((c: any) => c.change_type === 'reduce_scope');
+              // 较大调整的确认框内容：先把"改什么、影响什么"摆出来，用户确认后才发送 confirm:true。
+              // 取消 / 只是查看都不会应用（cancel 不触发 onConfirm）。
+              const confirmDetail = (
+                <div style={{ fontSize: 12, maxWidth: 300 }}>
+                  <div>
+                    将调整 {reschedules.length} 项任务的日期
+                    {reduces.length > 0 ? '，并缩小学习范围' : ''}：
+                  </div>
+                  {reschedules.slice(0, 5).map((c: any, i: number) => (
+                    <div key={i} style={{ color: '#475569' }}>
+                      · {c.title}：{c.from_date || '未排期'} → <b>{c.to_date}</b>
+                    </div>
+                  ))}
+                  {reschedules.length > 5 && <div>…还有 {reschedules.length - 5} 项</div>}
+                  {reduces.length > 0 && (
+                    <div style={{ color: '#b45309', marginTop: 4 }}>{reduces[0].note}</div>
+                  )}
+                  <div style={{ color: '#b45309', marginTop: 4 }}>
+                    确认后任务日期会立即改变；已被手动改期或已完成的任务会被跳过，可在「调整记录」里撤销。
+                  </div>
+                </div>
+              );
               return (
                 <List.Item
                   actions={[
                     adj.status === 'PROPOSED' && (
                       <Space key="p" size={4}>
-                        <Tooltip title={adj.requires_confirmation ? '这是较大范围的调整，需确认' : '应用调整'}>
-                          <Button size="small" type="primary" ghost icon={<CheckOutlined />}
-                                  onClick={() => handleApply(adj, false)}>
-                            {adj.requires_confirmation ? '确认应用' : '应用'}
-                          </Button>
-                        </Tooltip>
+                        {adj.requires_confirmation ? (
+                          <Popconfirm
+                            title="确认应用这次较大范围的调整？"
+                            description={confirmDetail}
+                            okText="确认应用"
+                            cancelText="取消"
+                            onConfirm={() => handleApply(adj, true)}
+                          >
+                            <Button size="small" type="primary" icon={<CheckOutlined />}>
+                              确认应用
+                            </Button>
+                          </Popconfirm>
+                        ) : (
+                          <Tooltip title="应用调整">
+                            <Button size="small" type="primary" ghost icon={<CheckOutlined />}
+                                    onClick={() => handleApply(adj, false)}>
+                              应用
+                            </Button>
+                          </Tooltip>
+                        )}
                         <Button size="small" icon={<CloseOutlined />}
                                 onClick={() => handleReject(adj)}>拒绝</Button>
                       </Space>

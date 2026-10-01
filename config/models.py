@@ -9,7 +9,7 @@ from typing import Dict, Optional
 # 默认**文本**模型
 # 2026-09-25 变更：MiMo 会员到期（凭证被供应商拒绝），默认文本模型统一为 DeepSeek。
 # 可用 LLM_MODEL 覆盖，但只接受下方 TEXT_MODELS 中的文本模型；
-# 未知取值（含已不可用的 mimo-asr/tts/vision 等）一律回落到 DEFAULT_MODEL，
+# 未知取值（含已不可用的 mimo-asr/vision 等）一律回落到 DEFAULT_MODEL，
 # 且**不会**自动回退到 MiMo。
 DEFAULT_MODEL = "deepseek"
 
@@ -43,14 +43,6 @@ MODEL_CONFIG = {
         "api_key": "",
         "model_name": os.getenv("MIMO_ASR_MODEL", "mimo-v2.5-asr"),
     },
-    "mimo-tts": {
-        "name": "小米MiMo语音合成",
-        "base_url": os.getenv("MIMO_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1"),
-        "api_key": "",
-        "model_name": os.getenv("MIMO_TTS_MODEL", "mimo-v2.5-tts"),
-        # 预置音色（第一版不支持 voiceclone/voicedesign，但结构可扩展）
-        "voices": os.getenv("MIMO_TTS_VOICES", "").split(",") if os.getenv("MIMO_TTS_VOICES") else [],
-    },
     "qwen-vision": {
         "name": "通义千问视觉",
         "base_url": os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
@@ -68,7 +60,6 @@ ENV_VAR_MAPPING = {
     "qwen-vision": "DASHSCOPE_API_KEY",
     "mimo-vision": "MIMO_API_KEY",  # 已弃用
     "mimo-asr": "MIMO_API_KEY",     # ASR 复用 MiMo API Key
-    "mimo-tts": "MIMO_API_KEY",     # TTS 复用 MiMo API Key
 }
 
 # 本地密钥来源（**不再内置任何真实密钥**）

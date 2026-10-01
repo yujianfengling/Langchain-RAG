@@ -41,19 +41,24 @@ def get_rag_context(
     question: str,
     subject_id: Optional[str] = None,
     top_k: int = 5,
-    min_score: Optional[float] = None
+    min_score: Optional[float] = None,
+    viewer_user_id: Optional[str] = None
 ) -> List:
     """
     获取RAG上下文文档
-    
+
     Args:
         question: 用户问题
         subject_id: 学科ID（可选）
         top_k: 返回文档数量
-        
+        min_score: 相似度阈值覆盖（None = 用配置阈值）
+        viewer_user_id: 查看者身份（用于课程资料可见性过滤）。
+            None = 身份未知，按**学生视角**处理（fail-closed），
+            避免漏传身份时把教师草稿资料带进上下文。
+
     Returns:
-        相关文档列表
-        
+        相关文档列表（已按查看者可见范围过滤）
+
     Raises:
         AIServiceError: RAG检索失败时抛出（不再静默返回空列表）
     """
@@ -61,7 +66,7 @@ def get_rag_context(
         error_msg = f"RAG模块不可用: {RAG_IMPORT_ERROR if not RAG_AVAILABLE else ''}"
         logger.error(error_msg)
         raise AIServiceError(error_msg)
-    
+
     try:
         context_docs = retrieve_context(
             question=question,
@@ -69,6 +74,11 @@ def get_rag_context(
             top_k=top_k,
             min_score=min_score
         )
+        # 课程资料可见性过滤：必须在进入模型上下文 / "参考来源"之前，
+        # 否则 teacher_only（教师草稿）资料会通过问答内容与引用泄露。
+        from services import teaching_access
+        context_docs = teaching_access.filter_visible_documents(
+            viewer_user_id, subject_id, context_docs)
         return context_docs
     except Exception as e:
         error_msg = f"RAG检索失败: {str(e)}"
@@ -234,7 +244,8 @@ def retrieve_and_build_context(
     question: str,
     subject_id: Optional[str] = None,
     top_k: int = 5,
-    min_score: Optional[float] = None
+    min_score: Optional[float] = None,
+    viewer_user_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     一站式RAG检索 + 上下文构建
@@ -243,6 +254,8 @@ def retrieve_and_build_context(
         question: 用户问题
         subject_id: 学科ID
         top_k: 返回文档数量
+        min_score: 相似度阈值覆盖（None = 用配置阈值）
+        viewer_user_id: 查看者身份（课程资料可见性过滤；None 按学生视角 fail-closed）
         
     Returns:
         {
@@ -252,8 +265,9 @@ def retrieve_and_build_context(
             "documents": List,       # 原始文档列表
         }
     """
-    # 1. 获取RAG上下文（min_score 为 None 时用配置阈值）
-    context_docs = get_rag_context(question, subject_id, top_k, min_score=min_score)
+    # 1. 获取RAG上下文（min_score 为 None 时用配置阈值；内部已按可见范围过滤）
+    context_docs = get_rag_context(question, subject_id, top_k, min_score=min_score,
+                                   viewer_user_id=viewer_user_id)
     context_used = len(context_docs) > 0
     
     # 2. 构建上下文字符串
@@ -273,7 +287,8 @@ def retrieve_and_build_context(
 def retrieve_for_teaching(
     question: str,
     subject_id: Optional[str] = None,
-    top_k: int = 5
+    top_k: int = 5,
+    viewer_user_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     教师侧生成用的检索：先按配置阈值检索，为空时**放宽到不过滤**再检索一次。
@@ -291,12 +306,14 @@ def retrieve_for_teaching(
     Returns:
         与 retrieve_and_build_context 同构，另加 "relaxed": bool
     """
-    result = retrieve_and_build_context(question, subject_id, top_k)
+    result = retrieve_and_build_context(question, subject_id, top_k,
+                                        viewer_user_id=viewer_user_id)
     if (result.get("context") or "").strip():
         result["relaxed"] = False
         return result
 
-    relaxed = retrieve_and_build_context(question, subject_id, top_k, min_score=0.0)
+    relaxed = retrieve_and_build_context(question, subject_id, top_k, min_score=0.0,
+                                         viewer_user_id=viewer_user_id)
     if (relaxed.get("context") or "").strip():
         logger.info(
             "教师侧检索在配置阈值下为空，已放宽阈值命中 %d 条（subject_id=%s）",

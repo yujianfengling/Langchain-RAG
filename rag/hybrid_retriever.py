@@ -30,8 +30,14 @@ logger = logging.getLogger(__name__)
 # 全局BM25检索器（按subject_id分组）
 _bm25_retrievers: Dict[str, BM25Retriever] = {}
 
-# BM25索引持久化根目录（使用绝对路径）
-_BM25_INDEX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "bm25_index")
+# BM25索引持久化根目录（**运行时解析**，与向量库同源）
+#
+# 修复（2026-10-01）：此处原先硬编码 `<项目根>/data/bm25_index`，绕过了 `EDU_DATA_DIR`。
+# 后果：隔离数据目录下"写入隔离目录、检索读正式目录"，隔离环境验证不出真实检索行为，
+# 且会把索引落到正式 data/。与 rag/vector_store.py 采用同一套运行时解析方式。
+def _bm25_index_dir() -> str:
+    from config.path_config import get_data_dir
+    return str(get_data_dir() / "bm25_index")
 
 # BM25 索引 schema 版本（v2.6）：分词方式或结构变更时递增，强制重建
 BM25_INDEX_VERSION = 2
@@ -97,8 +103,8 @@ def _finalize_retrieval_mode() -> None:
 
 
 def _get_bm25_index_path(subject_id: str) -> Path:
-    """获取指定学科的BM25索引文件路径"""
-    return Path(_BM25_INDEX_DIR) / subject_id / "bm25.pkl"
+    """获取指定学科的BM25索引文件路径（按当前数据根目录运行时解析）"""
+    return Path(_bm25_index_dir()) / subject_id / "bm25.pkl"
 
 
 def _save_bm25_index(subject_id: str) -> None:

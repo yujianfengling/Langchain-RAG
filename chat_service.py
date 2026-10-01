@@ -195,7 +195,8 @@ def chat_with_ai(
     # 结构化模式（V2.5.1）：调用对应 Service，持久化结构化消息
     if mode and mode in STRUCTURED_MODES:
         try:
-            result = _dispatch_structured(mode, question, subject_id, model)
+            result = _dispatch_structured(mode, question, subject_id, model,
+                                          user_id=user_id)
             message_type = result["message_type"]
             payload = result["payload"]
             content = result["content"]
@@ -293,7 +294,8 @@ def chat_with_ai(
 
         # 1. RAG检索（通过ai_service公共接口）
         try:
-            context_docs = get_rag_context(question, subject_id, _DEFAULT_TOP_K)
+            context_docs = get_rag_context(question, subject_id, _DEFAULT_TOP_K,
+                                           viewer_user_id=user_id)
             context_used = len(context_docs) > 0
         except AIServiceError as e:
             response["error"] = str(e)
@@ -527,7 +529,8 @@ def chat_stream(
         # 3. RAG检索（V2.5.4：记录 rag_start/rag_end）
         rag_start = time.time()
         try:
-            context_docs = get_rag_context(question, subject_id, _DEFAULT_TOP_K)
+            context_docs = get_rag_context(question, subject_id, _DEFAULT_TOP_K,
+                                           viewer_user_id=user_id)
             context_used = len(context_docs) > 0
         except AIServiceError as e:
             yield {"type": "error", "message": str(e)}
@@ -706,7 +709,8 @@ def _handle_structured_mode(
             logger.error(f"写入结构化用户消息失败: {e}", exc_info=True)
 
     try:
-        result = _dispatch_structured(mode, question, subject_id, model)
+        result = _dispatch_structured(mode, question, subject_id, model,
+                                      user_id=user_id)
         message_type = result.get("message_type", mode)
         payload = result.get("payload") or {}
         content = result.get("content") or ""
@@ -774,6 +778,7 @@ def _dispatch_structured(
     question: str,
     subject_id: Optional[str],
     model: Optional[str],
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     分发结构化模式到对应 Service
@@ -785,7 +790,8 @@ def _dispatch_structured(
     from services.education_service import generate_summary, generate_explanation, generate_advice
 
     if mode == "smart_note":
-        note = generate_smart_note(subject_id=subject_id, topic=question, model=model)
+        note = generate_smart_note(subject_id=subject_id, topic=question, model=model,
+                                   user_id=user_id)
         return {
             "message_type": "smart_note",
             "payload": note,
@@ -794,7 +800,8 @@ def _dispatch_structured(
         }
 
     if mode == "quiz":
-        quiz = generate_quiz(subject_id=subject_id, topic=question, model=model)
+        quiz = generate_quiz(subject_id=subject_id, topic=question, model=model,
+                             user_id=user_id)
         return {
             "message_type": "quiz",
             "payload": quiz,

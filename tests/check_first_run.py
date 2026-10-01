@@ -233,7 +233,7 @@ def main() -> int:
                   f"{caps.get('text', {}).get('provider')}/{caps.get('text', {}).get('model')}",
                   "检查模型密钥与网络")
             for key, label in (("vision", "视觉"), ("local_asr", "本地语音识别"),
-                               ("local_tts", "本地语音合成")):
+             ):
                 cap = caps.get(key) or {}
                 check(f"{label}状态", bool(cap.get("available")),
                       cap.get("reason") or "可用", required=False)

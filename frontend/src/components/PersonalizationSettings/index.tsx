@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Form, Radio, Slider, Switch, Button, message, Space, Typography, Divider } from 'antd';
+import { Card, Form, Radio, Slider, Button, message, Space, Typography, Divider } from 'antd';
 import {
   SettingOutlined,
   SaveOutlined,
@@ -35,7 +35,6 @@ const PersonalizationSettings: React.FC<PersonalizationSettingsProps> = ({
         form.setFieldsValue({
           learningStyle: profile.learning_style || 'balanced',
           detailLevel: profile.preferences?.detail_level || 50,
-          autoVoice: profile.preferences?.auto_voice === 'true',
         });
       }
     } catch (error) {
@@ -59,7 +58,6 @@ const PersonalizationSettings: React.FC<PersonalizationSettingsProps> = ({
 
       // 更新其他偏好
       await setLearningPreference('detail_level', values.detailLevel.toString());
-      await setLearningPreference('auto_voice', values.autoVoice.toString());
 
       message.success('设置已保存');
       onSettingsChange?.();
@@ -139,7 +137,6 @@ const PersonalizationSettings: React.FC<PersonalizationSettingsProps> = ({
         initialValues={{
           learningStyle: 'balanced',
           detailLevel: 50,
-          autoVoice: false,
         }}
       >
         {/* 学习风格 */}
@@ -182,17 +179,6 @@ const PersonalizationSettings: React.FC<PersonalizationSettingsProps> = ({
           />
         </Form.Item>
 
-        <Divider />
-
-        {/* 自动语音回复 */}
-        <Form.Item
-          label={<Text strong>自动语音回复</Text>}
-          name="autoVoice"
-          valuePropName="checked"
-          extra="开启后，AI回答将自动朗读"
-        >
-          <Switch checkedChildren="开" unCheckedChildren="关" />
-        </Form.Item>
 
         <Divider />
 

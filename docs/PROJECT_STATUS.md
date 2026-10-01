@@ -5,7 +5,7 @@
 > 本文件只记录经真实验证的状态，不包含任何真实 API Key。
 >
 > 阶段一《学生学习闭环》的详细交付说明见 [`docs/PHASE1_LEARNING_LOOP.md`](./PHASE1_LEARNING_LOOP.md)。
-> 本地语音（ASR/TTS）选型、安装与实测数据见 [`docs/LOCAL_SPEECH.md`](./LOCAL_SPEECH.md)。
+> 本地语音（ASR）选型、安装与实测数据见 [`docs/LOCAL_SPEECH.md`](./LOCAL_SPEECH.md)。
 > 凭据暴露范围与轮换步骤见 [`docs/CREDENTIALS.md`](./CREDENTIALS.md)。
 > 教师端（课程/班级/教案/作业/学情）见 [`docs/TEACHER_MODULE.md`](./TEACHER_MODULE.md)。
 > 教学效果评测（评测集/结果/试用方案）见 [`docs/TEACHING_EVAL.md`](./TEACHING_EVAL.md)。
@@ -35,8 +35,7 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
 | Vision | 通义千问 qwen-vl-plus |
 | PDF 解析 | PyMuPDF + pdfplumber + Pillow + pytesseract |
 | **语音识别（ASR，默认）** | **本地 FunASR** `paraformer-zh` + `fsmn-vad` + `ct-punc`（独立进程 :8100） |
-| **语音合成（TTS，默认）** | **本地 CosyVoice-300M-SFT**（7 个预置音色，无需参考音频） |
-| 语音（可选提供方） | MiMo ASR/TTS（会员到期中，代码保留、不再作为默认路径） |
+| 语音（可选提供方） | MiMo ASR（会员到期中，代码保留、不再作为默认路径） |
 | 教师端数据 | 独立库 `data/teaching.db`（课程/班级/成员/资料/教案版本/作业/审计/学科归属） |
 | 角色 | `users.role`：student（默认）/ teacher（**受控开通**：环境白名单 · 管理员 · 教师邀请码）/ admin（环境变量白名单） |
 
@@ -69,7 +68,7 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
                                                               └─ class_analytics.py (学情统计+AI解读)
 
               services/local_speech.py ──HTTP──> 本地语音服务 (8100端口, 独立进程/独立 venv)
-                                                  FunASR paraformer-zh + CosyVoice-300M-SFT
+                                                  FunASR paraformer-zh
                                                   （模型只加载一次，常驻显存；缺模型/失败不影响文字问答）
 ```
 
@@ -89,12 +88,11 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
 | 文本（可选） | qwen | `qwen-plus` | 配置存在，未做本轮验收 |
 | Vision | qwen-vision | `qwen-vl-plus` | ✅ 真实调用已验证可用（与 MiMo 无关） |
 | 语音识别（默认） | **本地 local** | `funasr:paraformer-zh` | ✅ 已实测可用（冷启动 48.9s，短音频 0.2–1.2s） |
-| 语音合成（默认） | **本地 local** | `cosyvoice:CosyVoice-300M-SFT` | ✅ 已实测可用（RTF 0.83–1.03，7 个预置音色） |
-| 语音（可选） | mimo-asr / mimo-tts | `mimo-v2.5-asr/tts` | ❌ MiMo 会员到期 → 不可用（接口如实报错，非默认路径） |
+| 语音（可选） | mimo-asr | `mimo-v2.5-asr` | ❌ MiMo 会员到期 → 不可用（接口如实报错，非默认路径） |
 
 - **单一解析入口**：`config/models.get_default_model()`（`LLM_MODEL` 环境变量 > `DEFAULT_MODEL="deepseek"`）。
   未知取值、语音/视觉专用模型名一律回落到默认文本模型；**不做任何"自动回退到 MiMo"的处理**。
-- 文本/视觉/语音三条链路配置独立：切换默认文本模型**不会**把 DeepSeek 塞进 Vision / ASR / TTS。
+- 文本/视觉/语音三条链路配置独立：切换默认文本模型**不会**把 DeepSeek 塞进 Vision / ASR。
 - 未指定 `model` 的入口（问答、流式、Agent、笔记、自测、学习计划、知识图谱、知识提取）统一走该默认值；
   显式传入其它模型时按实际选择执行（失败也如实报错，不静默替换）。
 - 相关变量：`LLM_MODEL`、`DEEPSEEK_MODEL`、`MIMO_MODEL`、`DASHSCOPE_MODEL`、`DASHSCOPE_VISION_MODEL`、
@@ -228,7 +226,7 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
 - 结果：**RAG 8/8、RAG(加无关资料) 9/9、教学闭环 13/13、Agent 8/8、语音 9/9，合计 47/47**。
 - 覆盖了要求的四类：检索命中与引用定位、材料无答案时说明不知道、加无关资料后仍正确；
   判分/错题/掌握度/复习/学情一致与重复提交；
-  Agent 依真实记录给建议且改计划走提议确认；语音全链路耗时与试听样本。
+  Agent 依真实记录给建议且改计划走提议确认；语音识别流程与耗时。
 - **真实教学效果仍为「待真实试用验证」**：试用任务、反馈表、前后测方案已备好（见该文档第五节），
   但没有真实学生参与，不得宣称教学成效。
 
@@ -262,28 +260,17 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
   课程资料、教案编辑与版本、作业与发布、学情与下钻；学生端「我的学习」新增「我的课程」页签
   （邀请码加入、看课程、做老师布置的作业、看已发布教案）。
 
-## 本地语音问答（已完成并验收，2026-09-26）
+## 本地语音输入（已完成并验收，2026-09-26）
 
 详见 [`docs/LOCAL_SPEECH.md`](./LOCAL_SPEECH.md)。要点：
 
-- **默认语音路径完全本地**：录音 → 本地 ASR（FunASR paraformer-zh，带标点）→ 文本进入输入框由学生确认后发送
-  → DeepSeek 回答（流式）→ 本地 TTS（CosyVoice）逐句合成朗读。**不会**用 DeepSeek 文本接口冒充语音。
+- **默认语音输入路径完全本地**：录音 → 本地 ASR（FunASR paraformer-zh，带标点）→ 文本进入输入框由学生确认后发送
+  → DeepSeek 回答（流式）。**不会**用 DeepSeek 文本接口冒充语音。
 - **独立进程 + 清晰接口**：模型推理全部在 `speech_service/`（:8100，独立 venv），主后端只通过
   `services/local_speech.py` 调用；主进程不加载任何语音依赖。模型只加载一次，支持预热与健康查询；
   缺模型/加载失败时如实报原因，**文字问答不受影响**。
-- **不丢句**：`services/tts_text.split_sentences()` 保证拼接等于原文（修掉了旧实现 `seg[:max]`
-  直接截断剩余文字的问题）；只有调用方显式给 `max_chars` 才截断，且返回 `truncated/omitted_chars`。
-- **朗读文本规范化**：Markdown/链接/代码块/表格/公式分别处理（代码与公式改为"请看屏幕"提示），
-  数字、单位、型号、年份、英文缩写按朗读习惯转换（本机 CosyVoice 的 wetext 前端会静默失效，
-  故在业务侧做这层归一化，ASR 回读 CER 由 0.32/0.425 降到 0.074/0.10）。
-- **播放控制**：流式文本形成完整句子即开始合成（不必等全文），逐句顺序播放不漏不重；
-  支持暂停 / 继续 / 停止 / 关闭自动朗读；新提问、切换会话、离开页面立即停止旧音频；
-  代次令牌保证**迟到的合成结果一律丢弃**，不会串入新回答。
-- **界面**：对话区显示"朗读中（已暂停/正在合成）/待播 N 句"+ 停止按钮；设置页新增语音输入、自动朗读、
-  音色选择与本地语音状态（显存、预热按钮、不可用原因）。健康检查分别报告 text / vision / local ASR / local TTS。
-- **选型实测**（同机同文本）：选 CosyVoice（中英混读 CER 0.10、数字单位 0.074、长回答 0.053，RTF 0.83–1.03）；
-  淘汰 GPT-SoVITS（同批文本 CER 0.50 / 0.40 / 0.16，需 12+ 额外依赖、4.5GB 模型、且必须有参考音频）。
-  显存占用约 3.7GB / 8GB（ASR 2.0 + TTS 1.7）。
+- **界面**：设置页新增语音输入与本地语音状态（显存、预热按钮、不可用原因）。
+  健康检查报告 text / vision / local ASR。
 
 ## 小班试用准备（2026-09-27 第三轮）
 
@@ -292,7 +279,7 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
 - 新增 `tests/_isolation_guard.py`：所有会写数据的脚本共用一道闸门——
   未设置 `EDU_DATA_DIR` 或指向项目正式 `data/` 时**直接拒绝运行（退出码 2）**并打印设置方法；
   只读脚本降级为警告但仍打印实际目录。HTTP 类脚本（E2E）改为判定后端 `/api/health` 的 `data_scope.isolated`。
-- 已接入：`tests/eval/run_eval.py`（闸门置于任何 HTTP 调用之前）、`tests/speech_bakeoff.py`、
+- 已接入：`tests/eval/run_eval.py`（闸门置于任何 HTTP 调用之前）、
   `tests/inventory_production_data.py`（只读）、`tests/export_trial_data.py`、`tests/seed_demo_data.py`、
   6 个 `tests/e2e_*.js`。
 - `tests/check_first_run.py` 改为**非写入式**：不再在目标目录建表，数据库初始化改在临时目录试跑。
@@ -376,7 +363,7 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
 ### 5. 仍未解决
 
 - 教师工作台在 390px 手机宽度下横向溢出（本轮按"电脑为主"处理，未重排）。
-- 手机端的语音（录音提问 / 朗读）未做专项验证。
+- 手机端的语音输入（录音提问）未做专项验证。
 - 学生端标签在窄屏会收进「更多」下拉，需要多点一下（antd 默认行为，未改）。
 
 ## 试用准备期（2026-09-27 第五轮，**新功能已冻结**）
@@ -393,13 +380,11 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
 
 ### 2. 手机端语音实测（此前未专项验证）
 
-- 方式：`tests/e2e_voice_flow.js` 支持传视口，在 **390×844** 下用**假麦克风音频 + 真实本地 ASR(FunASR) + 真实本地 TTS(CosyVoice) + 真实 DeepSeek** 跑完整语音链路。
-- 结果：**手机宽度 24/24 通过**（录音按钮与朗读开关在可视区、录音→转写→确认后发送、逐句朗读、停止/暂停/继续、新提问不叠音、切会话停止、TTS 不可用降级、切分质量）；
-  **桌面 1440×1000 对照 22/22 通过**。
-- **明确未验证**：真实手机硬件（麦克风/扬声器）、iOS Safari / Android Chrome、权限弹窗、移动端自动播放策略、弱网、音质人耳试听。
-  详见 `docs/LOCAL_SPEECH.md` 第九节。
-- 实测遇到的运维问题：连续多次合成会让本地语音服务排队（`/api/audio/tts` 502「语音服务正忙」），
-  服务空闲后重跑即全绿 → 属并发排队，不是手机端缺陷；该 502 文案里的 MiMo 回退链路当前不可用，不应依赖。
+- 方式：`tests/e2e_voice_flow.js` 支持传视口，在 **390×844** 下用**假麦克风音频 + 真实本地 ASR(FunASR) + 真实 DeepSeek** 跑语音输入链路。
+- 结果：**旧文档所述手机宽度 24/24 通过、桌面 1440×1000 对照 22/22 通过**（该轮脚本含朗读相关检查，已随功能移除）；
+  保留的检查为「录音按钮在可视区内」「录音→转写→确认后发送」。
+- **明确未验证**：真实手机硬件（麦克风）、iOS Safari / Android Chrome、权限弹窗、弱网。
+  详见 `docs/LOCAL_SPEECH.md` 第六节。
 
 ### 3. 修复的可复现阻塞问题
 
@@ -464,12 +449,8 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
 | 后端全量测试 | `pytest tests/ -q --ignore=tests/eval` | **621 passed / 0 failed** |
 | 电脑端完整闭环（含 AI 出题默认路径） | `node tests/e2e_first_use_walkthrough.js` | **56/56**，AI 出题实测 200 / 生成 3 道 |
 | 三档屏宽（390/800/1366） | `node tests/e2e_responsive_walkthrough.js` | **134/134**（补上「工作台」「学生画像」两个面板的检查） |
-| 手机宽度语音（390×844） | `node tests/e2e_voice_flow.js <base> <wav> 390 844` | **24/24**（见下方说明） |
+| 手机宽度语音（390×844） | `node tests/e2e_voice_flow.js <base> <wav> 390 844` | **24/24**（旧文档所述项数；该轮含朗读相关检查，已随功能移除） |
 
-- 语音脚本的「新回答重新开始朗读」一条检查**依赖等待窗口**：首句成形时间取决于模型出字速度叠加
-  本地 CosyVoice 单实例排队。本轮第一次跑该条在 60 秒窗口内没等到（报 FAIL），重跑即通过；
-  已把等待预算放宽到 180 秒并把实际等待时长写进结果。这属于**脚本等待预算不足**，不是功能缺陷——
-  但如实记录：该条检查在慢机器上仍有偶发失败的可能。
 - 数据隔离：全部验证均在后端 `EDU_DATA_DIR=git_text_e2e_data`（`isolated: true`）下进行，正式库未被写入。
 
 ### 4. 推送结果（已完成）
@@ -489,12 +470,11 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
 |---|---|---|---|
 | 1 | **轮换 DeepSeek / MiMo 历史密钥** | 真实密钥仍随历史提交（`85ee0a7`/`a650db2`/`f00c2fa`）分发，删代码不够 | 密钥持有人登录供应商后台更换；步骤见 `docs/CREDENTIALS.md` |
 | 2 | **真实小班试用** | 目前只有"自动评测 + 浏览器走查"两类证据，**没有真实学生数据**；任何提升率/满意度都还不成立 | 按 `docs/TRIAL_PACKAGE.md` 组织，结果填 `docs/TRIAL_RESULTS_TEMPLATE.md` |
-| 3 | **人工试听语音** | 程序只验证了流程与可懂度（ASR 回读），**音质未由人耳验收** | 按 `docs/TEACHING_EVAL.md` 第 5.4 节逐条听并打分 |
-| 4 | **在另一台电脑上的部署验证** | 现有启动/部署验证全部在开发机上完成；"换台机器照着文档能不能跑起来"没有第二台机器的记录 | 找一名未参与开发的成员，按 `docs/TRIAL_RUNBOOK.md` 第 1 节从零跑一次并记录 |
-| 5 | 手机端语音**真机**验证（非阻塞，但影响"手机能否用语音"的结论） | 目前只有 390×844 浏览器宽度 + 假麦克风的实测；真实手机麦克风/扬声器、iOS Safari/Android Chrome 未验证 | 让一名成员用自己的手机按 `docs/LOCAL_SPEECH.md` 第九节试一次并记录 |
-| 6 | 教师端移动适配（非阻塞） | 学生端手机已可用（390px 实测走通）；**教师工作台在手机上仍横向溢出**，按"电脑为主"设计 | 后续再做教师端窄屏重排 |
+| 3 | **在另一台电脑上的部署验证** | 现有启动/部署验证全部在开发机上完成；"换台机器照着文档能不能跑起来"没有第二台机器的记录 | 找一名未参与开发的成员，按 `docs/TRIAL_RUNBOOK.md` 第 1 节从零跑一次并记录 |
+| 4 | 手机端语音输入**真机**验证（非阻塞，但影响"手机能否用语音"的结论） | 目前只有 390×844 浏览器宽度 + 假麦克风的实测；真实手机麦克风、iOS Safari/Android Chrome 未验证 | 让一名成员用自己的手机按 `docs/LOCAL_SPEECH.md` 第六节试一次并记录 |
+| 5 | 教师端移动适配（非阻塞） | 学生端手机已可用（390px 实测走通）；**教师工作台在手机上仍横向溢出**，按"电脑为主"设计 | 后续再做教师端窄屏重排 |
 
-> 口径约束：**"自动评测通过"、"人工试听通过"、"真实学生试用通过"是三种不同证据，任何材料里都不许混写。**
+> 口径约束：**"自动评测通过"、"真实学生试用通过"是两种不同证据，任何材料里都不许混写。**
 
 ## 测试状态
 
@@ -511,11 +491,9 @@ HEAD 为 `7bd14fc`）。阶段一、阶段二、默认模型切换与本轮本�
   （目标输入 → 查看学习记录 → 检查时间预算 → 生成资料 → 生成计划 → 解释依据 → 自测判分 → 记忆页）
 - 默认模型切换验收：`python tests/verify_default_model.py` → **19/19 通过**（不选模型即可用、响应与实际调用一致、旧会话兼容、显式选择不替换、视觉语音分别标记）
 - 前端默认模型验收（真实 Chrome）：`node tests/e2e_model_default.js http://localhost:3000` → **9/9 通过**（默认选中 DeepSeek、一次性提示、不重复覆盖）
-- **语音全链路验收（真实 Chrome + 假麦克风 + 真实本地 ASR/TTS + 真实 DeepSeek）**：
+- **语音输入全链路验收（真实 Chrome + 假麦克风 + 真实本地 ASR + 真实 DeepSeek）**：
   `node tests/e2e_voice_flow.js http://localhost:3000` → **22/22 通过**
-  （录音转写进输入框不自动发送、逐句朗读、暂停/继续/停止、新提问不叠音、切换会话停止、迟到音频不串入、
-  TTS 不可用时文字仍正常、列表序号没有被单独朗读、没有空段被送去合成）
-- 语音选型实测：`python tests/speech_bakeoff.py --gptsovits` → 数据见 `docs/LOCAL_SPEECH.md` 第三节
+  （旧文档所述项数；该轮含朗读相关检查，已随功能移除；保留的是"录音转写进输入框不自动发送"）
 - 凭据卫生：`pytest tests/test_credentials_hygiene.py -q` → **7 passed**（代码中无内置密钥、示例文件只含占位符、
   本地配置未被跟踪；发现密钥形态只报 file:line 不打印值）
 - **教师端全流程（真实 Chrome + 真实 DeepSeek）**：`node tests/e2e_teacher_flow.js http://localhost:3000`
@@ -552,18 +530,18 @@ npm run dev
 **可选：本地语音服务（要用语音问答才需要启动；不启动则文字功能完全不受影响）**
 
 ```powershell
-# 终端三（独立 venv，模型只加载一次，常驻显存约 3.7GB）
+# 终端三（独立 venv，模型只加载一次，常驻显存）
 cd E:\WORKBUDDY\Game\git_text
 $env:SPEECH_STACK_DIR="E:\WORKBUDDY\Game\speech_stack"
 $env:SPEECH_WARMUP_ON_START="1"
 E:\WORKBUDDY\Game\speech_stack\venv\Scripts\python.exe -m speech_service.server
-# 就绪判断：curl http://127.0.0.1:8100/health → engines.asr.state / engines.tts.state 均为 "ready"
-# 安装、模型下载与依赖版本见 docs/LOCAL_SPEECH.md 第四节（可重复执行）
+# 就绪判断：curl http://127.0.0.1:8100/health → engines.asr.state 为 "ready"
+# 安装、模型下载与依赖版本见 docs/LOCAL_SPEECH.md 第三节（可重复执行）
 ```
 
 - 首次启动 `data/` 为空属正常状态（前端显示"未构建"/"知识库检索服务不可用"）。
 - Embedding 首次检索时自动加载（本地缓存命中，无需联网）。
-- 语音服务未启动时：`/api/health` 的 `capabilities.local_asr/local_tts.available=false` 并给出原因，
+- 语音服务未启动时：`/api/health` 的 `capabilities.local_asr.available=false` 并给出原因，
   语音按钮会提示不可用，**文字问答、学习助手、自测等全部照常**。
 
 **隔离验收用后端**（自动测试 / 真实模型验收，不影响正式数据）：
@@ -590,8 +568,8 @@ cp config/env.example .env
 | `SPEECH_BACKEND` | 语音后端：`local`（只用本地）/ `mimo` / `auto`（本地优先） | auto |
 | `LOCAL_SPEECH_URL` / `LOCAL_SPEECH_TIMEOUT` | 本地语音服务地址 / 超时（秒） | http://127.0.0.1:8100 / 120 |
 | `SPEECH_STACK_DIR` | 本地语音模型根目录（仓库之外） | 同级 `speech_stack` |
-| `SPEECH_DEVICE` / `SPEECH_TTS_VOICE` | 本地推理设备 / 默认音色 | auto / 中文女 |
-| `SPEECH_QUEUE_WAIT_SECONDS` / `SPEECH_TTS_QUEUE_WAIT_SECONDS` | 本地语音排队等待上限（秒） | 20 / 90 |
+| `SPEECH_DEVICE` | 本地推理设备 | auto |
+| `SPEECH_QUEUE_WAIT_SECONDS` | 本地语音排队等待上限（秒） | 20 |
 | `SPEECH_HOST` / `SPEECH_PORT` | 本地语音服务监听 | 127.0.0.1 / 8100 |
 | `MIMO_API_KEY` / `MIMO_MODEL` / `MIMO_BASE_URL` | 小米 MiMo | — |
 | `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` / `DEEPSEEK_BASE_URL` | DeepSeek | — |
@@ -626,8 +604,7 @@ cp config/env.example .env
 7. **知识图谱端到端人工验收**：后台生成链路已实现并通过 Mock 验证，在正式知识库上点"生成知识图谱"确认。
 8. **一键启动脚本**：`start.bat` / `stop.bat`（支持中文路径，建议一并拉起语音服务）。
 9. **Reranker 独立化**：评估引入真实 Rerank 模型，或明确当前轻量实现的边界。
-10. **本地语音体验打磨**：音色/语速人工试听调优（样本在 `speech_stack/samples/`）、
-    按句合成的首段延迟进一步压缩（当前 3.1–4.7s）、语音服务随主后端一键拉起与崩溃自恢复。
+10. **本地语音输入体验打磨**：语音服务随主后端一键拉起与崩溃自恢复。
 11. **工程治理**：requirements.txt 锁定版本、清理 `data_manager.py`/`mindmap_service.py` 等遗留死代码、
     继续收敛硬编码的 `data/` 路径（本轮已修 `rag/vector_store.py` 与 `api/app.py` 两处）。
 12. **阶段三候补**：V2.6 主动学习 Agent 接线、前端代码分割（当前单包 3.8MB）、历史数据认领 UI 引导。
@@ -656,8 +633,8 @@ cp config/env.example .env
   已改为由 `config.path_config.get_data_dir()` 运行时推导（`api/app.py` 里同样的硬编码一并改掉），读写同源。
   注意：**历史全局学科**的索引本来就只在正式目录里，所以此前的隔离验收从未暴露该问题。
 
-- 语音相关产物**不进仓库**：`speech_stack/`（venv、CosyVoice 仓库与模型、FunASR 缓存、参考/样本音频）、
-  `data/recordings/`（学生录音）、`data/tts_cache/`、`data/audio_cache/`，以及 `*.pth/*.onnx/*.ckpt/*.safetensors`
+- 语音相关产物**不进仓库**：`speech_stack/`（venv、FunASR 缓存、样本音频）、
+  `data/recordings/`（学生录音）、`data/audio_cache/`，以及 `*.pth/*.onnx/*.ckpt/*.safetensors`
   均已在 `.gitignore` 中；`.env` 与 `config/local_secrets.json` 同样不被跟踪。
 - **测试隔离（阶段一补验5）**：自动测试用临时目录；真实模型验收用 `EDU_DATA_DIR` 独立目录，
   并由 `/health.data_scope` 门禁拦截；跑完全量测试后正式库全表哈希不变（零写入）。

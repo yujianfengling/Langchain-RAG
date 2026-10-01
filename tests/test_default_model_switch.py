@@ -323,7 +323,8 @@ class TestVisionAndSpeechAreSeparate(unittest.TestCase):
         self.assertNotIn("mimo-tts", TEXT_MODELS)
         # 语音/视觉提供方仍是 MiMo（未到期前可用），不会被 DeepSeek 取代
         self.assertEqual(MODEL_CONFIG["mimo-asr"]["model_name"], "mimo-v2.5-asr")
-        self.assertEqual(MODEL_CONFIG["mimo-tts"]["model_name"], "mimo-v2.5-tts")
+        # 回答朗读（TTS）提供方配置已随功能整体移除
+        self.assertNotIn("mimo-tts", MODEL_CONFIG, "TTS 提供方配置应已移除")
 
     def test_mimo_optional_provider_reports_real_reason(self):
         """
@@ -348,8 +349,9 @@ class TestVisionAndSpeechAreSeparate(unittest.TestCase):
 
     def test_speech_capability_prefers_local_and_reports_reason(self):
         """
-        默认（auto）时语音链路选本地，并把本地 ASR/TTS 状态**分开**报告；
+        默认（auto）时语音链路选本地，并报告本地 ASR 状态；
         本地不可用时要给出可理解原因（而不是笼统报"失败"）。
+        （回答朗读 TTS 已整体移除，这里不再有 tts 字段。）
         """
         from services import audio_service
         from services import local_speech
@@ -357,7 +359,7 @@ class TestVisionAndSpeechAreSeparate(unittest.TestCase):
         # 本地服务不可达 → available=False + 原因里说明是本地服务的问题
         with mock.patch.object(local_speech, "health", return_value={
                 "running": False, "reason": "本地语音服务未启动（Connection refused）",
-                "asr": {}, "tts": {}, "vram": {}}):
+                "asr": {}, "vram": {}}):
             cap = audio_service.speech_capability(force=True)
         self.assertEqual(cap["backend"], "local")
         self.assertFalse(cap["available"])
@@ -366,19 +368,17 @@ class TestVisionAndSpeechAreSeparate(unittest.TestCase):
         self.assertIn("local", cap)
         self.assertIn("mimo", cap)
         self.assertFalse(cap["asr"]["available"])
-        self.assertFalse(cap["tts"]["available"])
+        self.assertNotIn("tts", cap, "语音能力里不应再有 TTS 字段")
 
         # 本地就绪 → available=True，且带上引擎名
         with mock.patch.object(local_speech, "health", return_value={
                 "running": True, "reason": "",
                 "asr": {"ready": True, "engine": "funasr-paraformer-zh", "state": "ready"},
-                "tts": {"ready": True, "engine": "cosyvoice-300m-sft", "state": "ready",
-                        "voices": ["中文女"]},
                 "vram": {"available": True, "allocated_mb": 1234}}):
             cap2 = audio_service.speech_capability(force=True)
         self.assertTrue(cap2["available"])
         self.assertEqual(cap2["asr"]["engine"], "funasr-paraformer-zh")
-        self.assertEqual(cap2["tts"]["engine"], "cosyvoice-300m-sft")
+        self.assertNotIn("tts", cap2, "语音能力里不应再有 TTS 字段")
 
     def test_speech_error_message_names_the_real_cause(self):
         from services.audio_service import _raise_status_error, AudioServiceError
@@ -400,13 +400,22 @@ class TestVisionAndSpeechAreSeparate(unittest.TestCase):
             token = register_and_login("audio_contract_user")
             headers = {"X-User-Token": token}
 
-            # 未登录 → 拒绝
-            anon = client.post("/api/audio/speech", json={"text": "你好"})
+            # 朗读相关端点已整体移除 → 404（前端也不再有调用）
+            for path, body in (("/api/audio/tts", {"text": "你好"}),
+                               ("/api/audio/speech", {"text": "你好"})):
+                r = client.post(path, json=body, headers=headers)
+                self.assertEqual(r.status_code, 404, f"{path} 应已移除：{r.text}")
+            self.assertEqual(client.get("/api/audio/voices", headers=headers).status_code, 404)
+
+            # 未登录 → 语音识别接口仍要求身份
+            anon = client.post("/api/audio/transcribe", files={"file": ("a.wav", b"RIFF", "audio/wav")})
             self.assertIn(anon.status_code, (401, 403), anon.text)
 
-            with mock.patch("api.routes.audio.synthesize_speech",
+            # ASR 错误契约保持不变（502 + error_type）
+            with mock.patch("api.routes.audio.transcribe_audio_detailed",
                             side_effect=AudioServiceError("凭证被拒", "invalid_api_key")):
-                resp = client.post("/api/audio/speech", json={"text": "你好"},
+                resp = client.post("/api/audio/transcribe",
+                                   files={"file": ("a.wav", b"RIFF", "audio/wav")},
                                    headers=headers)
             self.assertEqual(resp.status_code, 502)
             self.assertEqual(resp.json()["error_type"], "invalid_api_key")

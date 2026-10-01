@@ -16,8 +16,11 @@ from fastapi.testclient import TestClient
 
 from services import learning_service
 
-TEST_DB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "data", "test_learning_api.db")
+# 隔离要求（2026-10-01）：测试自己的库也必须落在**本会话的数据目录**里
+# （conftest 会把 EDU_DATA_DIR 指向隔离目录），不得直接写项目正式 data/。
+from config.path_config import get_data_dir
+
+TEST_DB = str(get_data_dir() / "test_learning_api.db")
 
 
 def _make_client():

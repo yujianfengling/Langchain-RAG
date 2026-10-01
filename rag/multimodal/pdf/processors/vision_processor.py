@@ -25,8 +25,20 @@ class VisionProcessor:
     """
     
     # 缓存配置
-    CACHE_DIR = Path("data/cache/vision_descriptions")
+    #
+    # 修复（2026-10-01）：原先写成相对路径 `Path("data/cache/vision_descriptions")`，
+    # 依赖进程工作目录——在仓库根运行时会把缓存写进**正式 data/**。现按
+    # `EDU_DATA_DIR` 运行时推导；该名字保留为显式覆盖（非 None 时优先）。
+    CACHE_DIR = None
     CACHE_EXPIRY_DAYS = 30
+
+    @classmethod
+    def cache_dir(cls) -> Path:
+        """视觉描述缓存目录（覆盖值优先，否则按数据根目录运行时推导）"""
+        if cls.CACHE_DIR:
+            return Path(cls.CACHE_DIR)
+        from config.path_config import get_data_dir
+        return get_data_dir() / "cache" / "vision_descriptions"
     
     def __init__(self, vision_provider=None):
         """
@@ -39,7 +51,7 @@ class VisionProcessor:
         self._cache = {}
         
         # 确保缓存目录存在
-        self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        self.cache_dir().mkdir(parents=True, exist_ok=True)
         
         logger.info("VisionProcessor 初始化完成")
     
@@ -219,7 +231,7 @@ class VisionProcessor:
         """从缓存获取"""
         try:
             cache_key = self._get_cache_key(image_path)
-            cache_file = self.CACHE_DIR / f"{cache_key}.json"
+            cache_file = self.cache_dir() / f"{cache_key}.json"
             
             if cache_file.exists():
                 with open(cache_file, 'r', encoding='utf-8') as f:
@@ -243,7 +255,7 @@ class VisionProcessor:
         """保存到缓存"""
         try:
             cache_key = self._get_cache_key(image_path)
-            cache_file = self.CACHE_DIR / f"{cache_key}.json"
+            cache_file = self.cache_dir() / f"{cache_key}.json"
             
             with open(cache_file, 'w', encoding='utf-8') as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)

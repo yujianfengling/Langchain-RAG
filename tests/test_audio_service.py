@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""MiMo 语音服务测试（V2.5.1 Audio Runtime Fix / V2.5.3 TTS 优化）
+"""MiMo 语音识别（ASR）服务测试（V2.5.1 Audio Runtime Fix）
 
 全部 Mock API 调用（禁止真实调用 MiMo）。
 覆盖：URL / payload / response parse / Base64 decode / 404 401 timeout 映射 /
-     TTS 文本清洗 / 后端缓存。
+     ASR 请求/错误契约。
 """
 
 import base64
@@ -21,8 +21,6 @@ from tests.fixtures_isolated import IsolatedDataTestCase, register_and_login
 from services import audio_service
 from services.audio_service import (
     transcribe_audio,
-    synthesize_speech,
-    prepare_tts_text,
     AudioServiceError,
     validate_wav_header,
     normalize_chat_completions_url,
@@ -54,9 +52,6 @@ def _config(base_url="https://token-plan-cn.xiaomimimo.com/v1"):
     """Mock _get_audio_config 返回的配置"""
     return {"base_url": base_url, "api_key": "test-key", "model_name": "mimo-v2.5-asr"}
 
-
-def _tts_config(base_url="https://token-plan-cn.xiaomimimo.com/v1"):
-    return {"base_url": base_url, "api_key": "test-key", "model_name": "mimo-v2.5-tts"}
 
 
 class FakeResponse:
@@ -115,25 +110,14 @@ class AudioServiceTest(unittest.TestCase):
     """Service 层单元测试（Mock requests）"""
 
     def setUp(self):
-        # 隔离 TTS 缓存目录，避免前序测试写缓存导致后续上游请求被跳过
-        self._orig_cache_dir = audio_service.TTS_CACHE_DIR
-        audio_service.TTS_CACHE_DIR = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data", "test_tts_cache_unit")
-        # 本类用例验证的是 **MiMo 可选提供方** 的请求/错误契约：
-        # 固定 SPEECH_BACKEND=mimo，避免本机开着本地语音服务时走本地分支
+        # 本类用例验证的是 **MiMo 可选提供方（ASR）** 的请求/错误契约：
+        # 固定 SPEECH_BACKEND=mimo，避免本机开着本地语音服务时走本地分支。
+        # （TTS 缓存夹具已随回答朗读功能一并移除。）
         self._env_patch = mock.patch.dict(os.environ, {"SPEECH_BACKEND": "mimo"})
         self._env_patch.start()
 
     def tearDown(self):
         self._env_patch.stop()
-        audio_service.TTS_CACHE_DIR = self._orig_cache_dir
-        import shutil
-        d = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data", "test_tts_cache_unit")
-        if os.path.exists(d):
-            shutil.rmtree(d, ignore_errors=True)
 
     def _patch_asr(self):
         return mock.patch("services.audio_service._get_audio_config",
@@ -275,80 +259,6 @@ class AudioServiceTest(unittest.TestCase):
 
     # ===== TTS：URL 正确 =====
 
-    def test_tts_url_is_chat_completions(self):
-        """TTS 必须走 {base}/chat/completions，而非 /audio/speech"""
-        with mock.patch("services.audio_service.requests.post",
-                        return_value=FakeResponse(200, _tts_success_json())) as mock_post, \
-             self._patch_tts():
-            audio = synthesize_speech("你好")
-        self.assertTrue(validate_wav_header(audio))
-        called_url = mock_post.call_args[0][0]
-        self.assertTrue(called_url.endswith("/v1/chat/completions"), called_url)
-        self.assertNotIn("/audio/speech", called_url)
-
-    def test_tts_payload_structure(self):
-        """TTS payload：model + messages(assistant) + audio.format/voice"""
-        with mock.patch("services.audio_service.requests.post",
-                        return_value=FakeResponse(200, _tts_success_json())) as mock_post, \
-             self._patch_tts():
-            synthesize_speech("你好")
-
-        body = json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))
-        self.assertEqual(body["model"], "mimo-v2.5-tts")
-        self.assertEqual(body["messages"][0]["role"], "assistant")
-        self.assertEqual(body["messages"][0]["content"], "你好")
-        self.assertEqual(body["audio"]["format"], "wav")
-        self.assertEqual(body["audio"]["voice"], "mimo_default")
-
-    def test_tts_base64_decode(self):
-        """TTS：choices[0].message.audio.data base64 → WAV bytes"""
-        with mock.patch("services.audio_service.requests.post",
-                        return_value=FakeResponse(200, _tts_success_json())), \
-             self._patch_tts():
-            audio = synthesize_speech("你好")
-        self.assertTrue(validate_wav_header(audio))
-
-    def test_tts_empty_text_rejected(self):
-        with self.assertRaises(AudioServiceError) as ctx:
-            synthesize_speech("   ")
-        self.assertEqual(ctx.exception.error_type, "empty_text")
-
-    def test_tts_404_mapping(self):
-        with mock.patch("services.audio_service.requests.post",
-                        return_value=FakeResponse(404)), \
-             self._patch_tts():
-            with self.assertRaises(AudioServiceError) as ctx:
-                synthesize_speech("你好")
-        self.assertEqual(ctx.exception.error_type, "audio_endpoint_not_found")
-
-    def test_tts_401_mapping(self):
-        with mock.patch("services.audio_service.requests.post",
-                        return_value=FakeResponse(401)), \
-             self._patch_tts():
-            with self.assertRaises(AudioServiceError) as ctx:
-                synthesize_speech("你好")
-        self.assertEqual(ctx.exception.error_type, "invalid_api_key")
-
-    def test_tts_no_audio_data(self):
-        """响应中无 audio.data → response_parse_error"""
-        with mock.patch("services.audio_service.requests.post",
-                        return_value=FakeResponse(200, {"choices": [{"message": {}}]})), \
-             self._patch_tts():
-            with self.assertRaises(AudioServiceError) as ctx:
-                synthesize_speech("你好")
-        self.assertEqual(ctx.exception.error_type, "response_parse_error")
-
-    def test_tts_bad_base64(self):
-        """Base64 解码失败 → response_parse_error"""
-        json_data = {"choices": [{"message": {"audio": {"data": "!!!not-base64!!!"}}}]}
-        with mock.patch("services.audio_service.requests.post",
-                        return_value=FakeResponse(200, json_data)), \
-             self._patch_tts():
-            with self.assertRaises(AudioServiceError) as ctx:
-                synthesize_speech("你好")
-        self.assertEqual(ctx.exception.error_type, "response_parse_error")
-
-
 def _make_client():
     from api.app import app
     return TestClient(app)
@@ -416,58 +326,3 @@ class AudioAPITest(IsolatedDataTestCase):
         self.assertEqual(resp.status_code, 503)
         self.assertEqual(resp.json()["error_type"], "speech_unavailable")
         self.assertIn("未启动", resp.json()["message"])
-
-    def test_speech_endpoint_returns_wav(self):
-        with mock.patch("api.routes.audio.synthesize_speech", return_value=make_wav_bytes()):
-            resp = self._post("/api/audio/speech", json={"text": "你好"})
-        self.assertEqual(resp.status_code, 200, resp.text)
-        self.assertEqual(resp.headers["content-type"], "audio/wav")
-        self.assertTrue(resp.content.startswith(b"RIFF"))
-
-    def test_speech_empty_text_400(self):
-        with mock.patch("api.routes.audio.synthesize_speech",
-                        side_effect=AudioServiceError("文本为空", "empty_text")):
-            resp = self._post("/api/audio/speech", json={"text": " "})
-        self.assertEqual(resp.status_code, 400)
-        self.assertEqual(resp.json()["error_type"], "empty_text")
-
-    def test_tts_segments_endpoint_returns_ordered_items(self):
-        """逐句合成接口：按 seq 顺序返回，且带 service/engine（与实际调用一致）"""
-        items = [{"seq": i, "text": f"第{i}句。", "audio_b64": "UklGRg==",
-                  "duration_s": 1.0, "latency_ms": 100.0} for i in range(3)]
-        with mock.patch("api.routes.audio.synthesize_segments",
-                        return_value={"items": items, "service": "local",
-                                      "engine": "cosyvoice-300m-sft", "voice": "中文女",
-                                      "sample_rate": 22050, "segments_total": 3,
-                                      "truncated": False, "omitted_chars": 0, "hints": []}):
-            resp = self._post("/api/audio/tts", json={"text": "第0句。第1句。第2句。"})
-        self.assertEqual(resp.status_code, 200, resp.text)
-        data = resp.json()["data"]
-        self.assertEqual([it["seq"] for it in data["items"]], [0, 1, 2])
-        self.assertEqual(data["service"], "local")
-        self.assertEqual(data["engine"], "cosyvoice-300m-sft")
-
-    def test_tts_endpoint_reports_truncation_explicitly(self):
-        """超长文本：必须显式告知被省略的字数，不能静默丢弃"""
-        with mock.patch("api.routes.audio.synthesize_segments",
-                        return_value={"items": [{"seq": 0, "text": "第一句。",
-                                                 "audio_b64": "UklGRg==",
-                                                 "duration_s": 1.0, "latency_ms": 90.0}],
-                                      "service": "local", "engine": "cosyvoice-300m-sft",
-                                      "voice": "中文女", "sample_rate": 22050,
-                                      "segments_total": 1, "truncated": True,
-                                      "omitted_chars": 512, "hints": []}):
-            resp = self._post("/api/audio/tts", json={"text": "很长的内容" * 100,
-                                                      "max_chars": 100})
-        data = resp.json()["data"]
-        self.assertTrue(data["truncated"])
-        self.assertEqual(data["omitted_chars"], 512)
-
-    def test_speech_endpoints_require_login(self):
-        """语音接口需要身份（与学习数据接口一致）"""
-        resp = self.client.post("/api/audio/speech", json={"text": "你好"})
-        self.assertIn(resp.status_code, (401, 403), resp.text)
-
-
-if __name__ == "__main__":
-    unittest.main()

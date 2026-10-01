@@ -13,7 +13,17 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # 图片描述缓存目录
-IMAGE_DESCRIPTION_CACHE_DIR = Path("data/cache/image_descriptions")
+# 修复（2026-10-01）：原先为相对路径，依赖工作目录，会把缓存写进正式 data/。
+# 现按 EDU_DATA_DIR 运行时推导；该名字保留为显式覆盖。
+IMAGE_DESCRIPTION_CACHE_DIR = None
+
+
+def image_description_cache_dir() -> Path:
+    """图片描述缓存目录（覆盖值优先，否则按数据根目录运行时推导）"""
+    if IMAGE_DESCRIPTION_CACHE_DIR:
+        return Path(IMAGE_DESCRIPTION_CACHE_DIR)
+    from config.path_config import get_data_dir
+    return get_data_dir() / "cache" / "image_descriptions"
 
 # Vision缓存版本标识
 # 当Prompt、模型或处理逻辑变更时，更新此版本号以使旧缓存失效
@@ -124,7 +134,7 @@ class MultimodalDocumentConverter:
             缓存的Document对象，或None（缓存未命中）
         """
         try:
-            cache_file = IMAGE_DESCRIPTION_CACHE_DIR / f"{cache_key}.json"
+            cache_file = image_description_cache_dir() / f"{cache_key}.json"
             if not cache_file.exists():
                 return None
             
@@ -195,13 +205,13 @@ class MultimodalDocumentConverter:
                 return
             
             # 确保缓存目录存在
-            IMAGE_DESCRIPTION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            image_description_cache_dir().mkdir(parents=True, exist_ok=True)
             
             # 在metadata中添加缓存版本标识
             metadata_copy = dict(doc.metadata)
             metadata_copy['cache_prompt_version'] = VISION_PROMPT_VERSION
             
-            cache_file = IMAGE_DESCRIPTION_CACHE_DIR / f"{cache_key}.json"
+            cache_file = image_description_cache_dir() / f"{cache_key}.json"
             cache_data = {
                 'cache_key': cache_key,
                 'filename': file_path.name,

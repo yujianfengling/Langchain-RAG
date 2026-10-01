@@ -1,9 +1,10 @@
 # api/routes/education.py
 # 教育功能接口路由
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from starlette.concurrency import run_in_threadpool
 
+from api.deps import require_current_user
 from api.schemas.knowledge_schema import (
     EducationSummaryRequest,
     EducationExplainRequest,
@@ -22,11 +23,15 @@ router = APIRouter()
 
 
 @router.post("/education/summary", response_model=SuccessResponse)
-async def get_summary(request: EducationSummaryRequest):
+async def get_summary(request: EducationSummaryRequest,
+                      user_id: str = Depends(require_current_user)):
     """
     生成知识点总结
     
     - **text**: 输入文本内容
+
+    权限（2026-10-01）：本接口会调用付费大模型，必须登录后使用（此前无任何鉴权，
+    匿名即可消耗模型额度）。
     """
     try:
         if not request.text or not request.text.strip():
@@ -48,11 +53,14 @@ async def get_summary(request: EducationSummaryRequest):
 
 
 @router.post("/education/explain", response_model=SuccessResponse)
-async def get_explanation(request: EducationExplainRequest):
+async def get_explanation(request: EducationExplainRequest,
+                          user_id: str = Depends(require_current_user)):
     """
     生成题目解析
     
     - **question**: 题目内容
+
+    权限：调用付费大模型，必须登录（同 summary）。
     """
     try:
         if not request.question or not request.question.strip():
@@ -74,11 +82,14 @@ async def get_explanation(request: EducationExplainRequest):
 
 
 @router.post("/education/advice", response_model=SuccessResponse)
-async def get_advice(request: EducationAdviceRequest):
+async def get_advice(request: EducationAdviceRequest,
+                     user_id: str = Depends(require_current_user)):
     """
     生成学习建议
     
     - **history**: 问题历史列表（可选）
+
+    权限：调用付费大模型，必须登录（同 summary）。
     """
     try:
         # V2.5.2：同步 LLM 调用移出事件循环

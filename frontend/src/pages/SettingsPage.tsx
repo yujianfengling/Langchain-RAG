@@ -50,7 +50,7 @@ const SettingsPage: React.FC = () => {
             <PersonalizationSettings userId="default_user" subjectId={selectedSubject} />
           </div>
 
-          {/* 语音设置（本地 ASR / TTS，2026-09-26） */}
+          {/* 语音设置（语音输入/本地 ASR；回答朗读已移除，2026-10-01） */}
           <div style={{ marginBottom: 24 }}>
             <TeacherActivation />
 

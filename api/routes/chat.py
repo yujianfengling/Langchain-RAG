@@ -11,7 +11,7 @@ from typing import List, Optional
 
 from api.schemas.chat_schema import ChatRequest, ChatResponse
 from api.schemas.response_schema import SuccessResponse, ErrorResponse
-from api.deps import get_current_user
+from api.deps import get_current_user, require_subject_read
 from chat_service import chat_with_ai, chat_stream
 from api.exceptions import LLMServiceError, RAGServiceError
 from utils.logger import logger
@@ -37,6 +37,11 @@ async def chat(request: ChatRequest, user_id: str = Depends(get_current_user)):
     - **conversation_id**: 会话ID（V2.5.1）
     - **mode**: 学习模式（V2.5.1）
     """
+    # 学科归属校验（2026-10-01）：问答会读取该学科的知识库，必须与知识库接口同一套规则。
+    # 课程学科 → 仅授课教师 / 在班学生 / 管理员；历史（公共）学科 → 沿用"登录即可读"。
+    # 这样匿名请求（会被回退成 default_user）无法借该身份读取课程资料。
+    if request.subject_id:
+        await require_subject_read(request.subject_id, user_id)
     try:
         result = await run_in_threadpool(
             chat_with_ai,
@@ -179,6 +184,9 @@ async def chat_stream_endpoint(request: ChatRequest, user_id: str = Depends(get_
     - **conversation_id**: 会话ID（V2.5.1，服务端持久化上下文）
     - **mode**: 学习模式（chat|smart_note|summary|explanation|advice|quiz）
     """
+    # 学科归属校验：与非流式入口同一规则（课程学科仅教师/在班学生/管理员可读）
+    if request.subject_id:
+        await require_subject_read(request.subject_id, user_id)
     try:
         return StreamingResponse(
             _chat_stream_async(request, user_id),

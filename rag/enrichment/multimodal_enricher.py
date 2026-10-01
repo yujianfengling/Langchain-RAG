@@ -18,7 +18,20 @@ logger = logging.getLogger(__name__)
 VISION_PROMPT_VERSION = "v1.0"
 
 # 图片描述缓存目录（与DocumentConverter共享）
-IMAGE_DESCRIPTION_CACHE_DIR = Path("data/cache/image_descriptions")
+#
+# 修复（2026-10-01）：原先写成相对路径 `Path("data/cache/image_descriptions")`，
+# 依赖进程工作目录——在仓库根运行测试/服务时会把缓存写进**正式 data/**（验收时
+# 观察到 data/cache/vision_descriptions 被创建）。现改为按 `EDU_DATA_DIR` 运行时推导；
+# 该名字保留为**显式覆盖**（既有测试通过 patch 它指向临时目录）。
+IMAGE_DESCRIPTION_CACHE_DIR = None
+
+
+def image_description_cache_dir() -> Path:
+    """图片描述缓存目录（覆盖值优先，否则按数据根目录运行时推导）"""
+    if IMAGE_DESCRIPTION_CACHE_DIR:
+        return Path(IMAGE_DESCRIPTION_CACHE_DIR)
+    from config.path_config import get_data_dir
+    return get_data_dir() / "cache" / "image_descriptions"
 
 
 class VisionProvider(ABC):
@@ -180,7 +193,7 @@ class MultimodalEnricher:
             缓存的Vision结果字典，或None（缓存未命中）
         """
         try:
-            cache_file = IMAGE_DESCRIPTION_CACHE_DIR / f"{cache_key}.json"
+            cache_file = image_description_cache_dir() / f"{cache_key}.json"
             if not cache_file.exists():
                 return None
             
@@ -232,14 +245,14 @@ class MultimodalEnricher:
                 logger.info(f"[Multimodal] 跳过缓存: description为空, image={image_path.name}")
                 return
             
-            IMAGE_DESCRIPTION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            logger.info(f"[Multimodal] 创建缓存目录: {IMAGE_DESCRIPTION_CACHE_DIR}")
+            image_description_cache_dir().mkdir(parents=True, exist_ok=True)
+            logger.info(f"[Multimodal] 创建缓存目录: {image_description_cache_dir()}")
             
             # 添加缓存版本
             metadata_copy = dict(metadata)
             metadata_copy['cache_prompt_version'] = VISION_PROMPT_VERSION
             
-            cache_file = IMAGE_DESCRIPTION_CACHE_DIR / f"{cache_key}.json"
+            cache_file = image_description_cache_dir() / f"{cache_key}.json"
             cache_data = {
                 'cache_key': cache_key,
                 'filename': image_path.name,

@@ -4,7 +4,6 @@ import { Layout, Button, Drawer, Empty, Space, Typography, message, Popconfirm, 
 import { MessageOutlined, PlusOutlined, DeleteOutlined, RocketOutlined, AimOutlined, ExperimentOutlined, SettingOutlined } from '@ant-design/icons';
 import ChatBox, { ChatPreset } from '../components/ChatBox';
 import SubjectSelector from '../components/SubjectSelector';
-import { ttsPlayer } from '../utils/ttsPlayer';
 import { getSubjects } from '../api/subjects';
 import { getConversations, createConversation, deleteConversation } from '../api/conversations';
 import { Subject, Conversation } from '../types';
@@ -90,8 +89,6 @@ const ChatPage: React.FC = () => {
       message.warning('请先选择学科');
       return;
     }
-    // 用户主动切换会话：立即停止正在朗读的旧回答（不等接口返回）
-    ttsPlayer.stop();
     setCreating(true);
     try {
       const res: any = await createConversation(selectedSubject);
@@ -244,7 +241,7 @@ const ChatPage: React.FC = () => {
                   {convs.map(c => (
                     <div
                       key={c.id}
-                      onClick={() => { ttsPlayer.stop(); setActiveConvId(c.id); }}
+                      onClick={() => { setActiveConvId(c.id); }}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -325,7 +322,7 @@ const ChatPage: React.FC = () => {
                 {convs.map((c) => (
                   <div
                     key={c.id}
-                    onClick={() => { ttsPlayer.stop(); setActiveConvId(c.id); setHistoryOpen(false); }}
+                    onClick={() => { setActiveConvId(c.id); setHistoryOpen(false); }}
                     style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       padding: '8px 10px', borderRadius: 8, cursor: 'pointer',

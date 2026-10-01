@@ -42,8 +42,9 @@ class TestVectorStore(unittest.TestCase):
         """
         # 清理全局状态
         GlobalFAISS._instances.clear()
-        # 清理可能的持久化目录
-        test_dir = Path("data/vector_store") / self.test_collection_name
+        # 清理可能的持久化目录（隔离要求 2026-10-01：按本会话数据目录，不写项目正式 data/）
+        from config.path_config import get_data_dir
+        test_dir = Path(get_data_dir()) / "vector_store" / self.test_collection_name
         if test_dir.exists():
             shutil.rmtree(test_dir)
     

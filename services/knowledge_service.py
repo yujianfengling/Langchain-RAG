@@ -633,6 +633,59 @@ def _invalidate_subject_index(subject_id: str) -> bool:
     return existed
 
 
+def _attach_material_ids(subject_id: str, documents: List[Any]) -> int:
+    """
+    给课程学科的分块写入 `material_id`（**稳定的资料标识**）
+
+    目的：检索期据此执行"资料可见范围"过滤（见 services.teaching_access
+    .filter_visible_documents），从而
+    - 不必只靠文件名判断来源（文件名可能被重命名或重名）；
+    - 改可见范围 / 删除资料时无需重建索引即可生效（检索期实时读库）。
+
+    约束：
+    - 只对**已被课程认领**的学科生效；历史/公共学科没有资料与可见范围的概念。
+    - 任何异常都不阻断建库：拿不到标识时分块不带 `material_id`，
+      检索期退化为按文件名认领的兼容路径。
+
+    Returns:
+        被标注的分块数量（供日志与验收观察）
+    """
+    if not documents:
+        return 0
+    try:
+        from services import teaching_data as td
+        owner = td.subject_owner(subject_id)
+        if not owner:
+            return 0
+        by_name = {
+            str(m.get("filename")): m.get("id")
+            for m in td.list_materials(owner["course_id"], include_teacher_only=True)
+            if m.get("filename")
+        }
+        if not by_name:
+            return 0
+        tagged = 0
+        for doc in documents:
+            metadata = getattr(doc, "metadata", None)
+            if not isinstance(metadata, dict):
+                continue
+            name = metadata.get("file_name")
+            if not name:
+                src = metadata.get("source") or ""
+                name = str(src).split("\\")[-1].split("/")[-1] if src else ""
+            material_id = by_name.get(str(name))
+            if material_id:
+                metadata["material_id"] = material_id
+                tagged += 1
+        if tagged:
+            logger.info("课程分块已标注资料标识: subject=%s tagged=%d/%d",
+                        subject_id, tagged, len(documents))
+        return tagged
+    except Exception as e:
+        logger.warning(f"资料标识标注失败（不影响建库，检索期退化为按文件名认领）: {e}")
+        return 0
+
+
 def rebuild_subject_knowledge(subject_id: str) -> Dict[str, Any]:
     """
     重新构建学科知识库
@@ -664,6 +717,11 @@ def rebuild_subject_knowledge(subject_id: str) -> Dict[str, Any]:
         
         # 加载文档
         documents = load_documents(file_paths)
+
+        # 给课程学科的分块打上**稳定的资料标识**（material_id），供检索期做
+        # "资料可见范围"过滤：改可见范围/删资料无需重建即可生效，
+        # 且不必依赖文件名匹配（文件名可能被重命名或重名）。
+        _attach_material_ids(subject_id, documents)
 
         # v2.6 关键修复：此前是「先删除旧知识库 → 再重建」，
         # 一旦重建失败（抽取异常、维度不符、磁盘问题…）旧索引已不可恢复，

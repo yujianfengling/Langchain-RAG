@@ -37,7 +37,6 @@ const sidebarItems = [
   { key: '/chat',       icon: <MessageOutlined />,  label: 'AI学习助手' },
   { key: '/knowledge',  icon: <DatabaseOutlined />, label: '知识库' },
   { key: '/learning',   icon: <CalendarOutlined />, label: '学习计划' },
-  { key: '/teacher',    icon: <TeamOutlined />,     label: '教师端' },
   { key: '/settings',   icon: <SettingOutlined />,  label: '设置' },
 ];
 
@@ -89,7 +88,6 @@ const App: React.FC = () => {
     if (path.startsWith('/chat')) return '/chat';
     if (path.startsWith('/knowledge')) return '/knowledge';
     if (path.startsWith('/learning')) return '/learning';
-    if (path.startsWith('/teacher')) return '/teacher';
     if (path.startsWith('/settings')) return '/settings';
     return '/student';
   };

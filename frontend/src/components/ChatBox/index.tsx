@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Input, Button, Typography, Space, Spin, Select, Tag, message, Switch, Tooltip, List } from 'antd';
+import { Input, Button, Typography, Space, Spin, Select, Tag, message, Tooltip, List } from 'antd';
 import {
   SendOutlined, RobotOutlined, StopOutlined, AudioOutlined,
 } from '@ant-design/icons';
@@ -12,7 +12,6 @@ import { playSendSound, playReceiveSound } from '../../utils/sound';
 import { getConversationMessages, createConversation, ConversationMessage } from '../../api/conversations';
 import { transcribeAudio } from '../../api/audio';
 import { createRecorder } from '../../utils/recorder';
-import { ttsPlayer, PlaybackState } from '../../utils/ttsPlayer';
 import ChatMessageItem from './ChatMessageItem';
 import './ChatBox.css';
 
@@ -125,30 +124,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [transcribing, setTranscribing] = useState(false);
   const recorderRef = useRef<ReturnType<typeof createRecorder> | null>(null);
-  // 统一 Audio Controller 状态（单一 active Audio，禁止叠音）
-  const [playbackState, setPlaybackState] = useState<PlaybackState>('idle');
-  const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
-  const [playbackQueued, setPlaybackQueued] = useState(0);
-  const [autoVoice, setAutoVoice] = useState<boolean>(() => {
-    // localStorage 保存 UI 偏好（不是聊天数据库）
-    return localStorage.getItem('auto_voice_reply') === '1';
-  });
-
-  // 订阅统一播放器状态（PlaybackInfo：状态 + 正在播的消息 + 队列进度）
-  useEffect(() => {
-    return ttsPlayer.subscribe((info) => {
-      setPlaybackState(info.state);
-      setPlayingMsgId(info.msgId);
-      setPlaybackQueued(info.queued);
-    });
-  }, []);
-
-  // 音色：优先使用学生在设置页选定的音色；未选则用后端默认（CosyVoice 预置音色）
-  useEffect(() => {
-    const saved = localStorage.getItem('tts_voice') || '';
-    ttsPlayer.setVoice(saved || undefined);
-  }, []);
-
   // 带上下文跳转预设（阶段一：从学习计划"去自测/看笔记"进入）
   // 应用后立即通知父组件清理，避免切换学科/重渲染时重复应用
   useEffect(() => {
@@ -160,19 +135,8 @@ const ChatBox: React.FC<ChatBoxProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset]);
 
-  // 自动语音回复开关持久化
-  useEffect(() => {
-    localStorage.setItem('auto_voice_reply', autoVoice ? '1' : '0');
-  }, [autoVoice]);
-
   // 上一个会话 id：用于区分"自己新建会话（空→新 id）"与"用户切换会话"
   const lastConvRef = useRef<string | undefined>(conversationId);
-
-  // autoVoice 的 ref：流式回调里需要读到最新值（闭包会拿到旧状态）
-  const autoVoiceRef = useRef(autoVoice);
-  useEffect(() => {
-    autoVoiceRef.current = autoVoice;
-  }, [autoVoice]);
 
   // 模型选择持久化（只在有具体选择时写入；空值表示"跟随后端默认模型"）
   useEffect(() => {
@@ -236,21 +200,12 @@ const ChatBox: React.FC<ChatBoxProps> = ({
       abortRef.current?.abort();
       agentAbortRef.current?.abort();
       recorderRef.current?.cancel();
-      ttsPlayer.stop();
     };
   }, []);
 
-  // 切换学科/会话时停止当前播放，避免上一个会话的回答继续朗读。
-  //
-  // 关键区别（否则自动朗读会"时好时坏"）：
-  // - 发送第一条消息会**新建会话**：conversationId 由空变成新 id → 不算切换，不能停
-  // - 用户从一个已有会话切到另一个（或新建对话把会话清空）→ 必须立即停止
+  // 会话切换时记录上一个会话 id（用于区分"自己新建会话"与"用户切换会话"）
   useEffect(() => {
-    const prev = lastConvRef.current;
     lastConvRef.current = conversationId;
-    if (prev && prev !== conversationId) {
-      ttsPlayer.stop();
-    }
   }, [conversationId, subjectId]);
 
   // ===== 录音逻辑 =====
@@ -334,16 +289,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({
     setRecording(false);
     setRecordingSeconds(0);
   };
-
-  // ===== TTS 播放（V2.5.3 统一控制器）=====
-  // useCallback 稳定引用：避免传入 ChatMessageItem 时破坏 React.memo
-  const playTTS = useCallback(async (msg: ChatMessage) => {
-    const text = msg.content;
-    if (!text || !text.trim()) return;
-    // 手动🔊朗读（后端按句切分，顺序播放），同一消息再次点击 → 暂停/恢复
-    const voice = localStorage.getItem('tts_voice') || undefined;
-    await ttsPlayer.toggle(msg.id, text, voice);
-  }, []);
 
   // ===== 流式 delta 批处理（V2.5.4）=====
   // 将缓冲中的字符一次性写入 assistant 消息；返回是否真实写入了内容
@@ -636,14 +581,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({
 
     const startedAt = Date.now();
 
-    // 新提问：立刻停掉上一轮的朗读，避免旧音频与新回答叠音
-    ttsPlayer.stop();
-    // 自动朗读：为新回答开启一个流式朗读会话（形成完整句即开始合成）
-    if (autoVoiceRef.current && mode === 'chat') {
-      ttsPlayer.beginStream(aiMessage.id, {
-        voice: localStorage.getItem('tts_voice') || undefined,
-      });
-    }
 
     const controller = sendMessageStream(
       {
@@ -661,10 +598,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({
         onDelta: (content) => {
           // V2.5.4：delta 先进缓冲，按 ~40ms 合并一次渲染（不丢字符）
           enqueueDelta(content);
-          // 自动朗读：形成完整句子就立刻合成播放，不必等全文结束
-          if (autoVoiceRef.current && mode === 'chat') {
-            ttsPlayer.pushStreamText(aiId, content);
-          }
         },
         onDone: (ev) => {
           const elapsed = ev.elapsed != null ? ev.elapsed : (Date.now() - startedAt) / 1000;
@@ -701,11 +634,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({
           streamingRef.current = false;
           aiIdRef.current = '';
           refreshStatus();
-          // 自动语音回复（V2.5.3：按 message_id 去重，仅 streaming→done 触发一次）
-          if (autoVoiceRef.current && mode === 'chat' && finalContent) {
-            // 流式已经把大部分句子读掉；这里补读最后一句/极短回答
-            ttsPlayer.endStream(aiId, finalContent);
-          }
         },
         onError: (errMsg) => {
           // error 也立即 flush，保留已收到的字符
@@ -772,11 +700,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({
     <ChatMessageItem
       msg={msg}
       mode={mode}
-      isPlaying={playingMsgId === msg.id && (playbackState === 'playing' || playbackState === 'requesting' || playbackState === 'paused')}
-      playbackState={playingMsgId === msg.id ? playbackState : 'idle'}
-      playbackQueued={playingMsgId === msg.id ? playbackQueued : 0}
-      onPlay={playTTS}
-      onStopPlay={() => ttsPlayer.stop()}
       subjectId={subjectId}
       conversationId={conversationId}
       sourceTaskId={sourceTaskId}
@@ -958,11 +881,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({
             </Button>
           )}
         </Space.Compact>
-        {/* 自动语音回复开关（默认关闭，localStorage UI 偏好） */}
-        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Switch size="small" checked={autoVoice} onChange={setAutoVoice} />
-          <Text type="secondary" style={{ fontSize: 12 }}>自动语音回复</Text>
-        </div>
       </div>
     </div>
   );

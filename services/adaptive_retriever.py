@@ -83,8 +83,10 @@ def retrieve_with_user_context(
         params = get_adaptive_retrieval_params(user_level)
         top_k = override_top_k or params["top_k"]
 
-        # 3. 执行检索
+        # 3. 执行检索（按查看者可见范围过滤课程资料：教师草稿不得进入学生上下文）
         docs = retrieve_context(question=question, subject_id=subject_id, top_k=top_k)
+        from services import teaching_access
+        docs = teaching_access.filter_visible_documents(user_id, subject_id, docs)
         context_used = len(docs) > 0
         context = build_context(docs) if context_used else ""
 

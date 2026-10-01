@@ -104,7 +104,7 @@ class TestKeyResolutionHasNoBuiltinFallback(unittest.TestCase):
         with mock.patch.dict(os.environ, env), \
              mock.patch.object(model_config, "_load_local_secrets", return_value={}):
             model_config.reload_local_secrets()
-            for name in ("deepseek", "mimo", "qwen", "mimo-asr", "mimo-tts"):
+            for name in ("deepseek", "mimo", "qwen", "mimo-asr"):
                 self.assertEqual(model_config.get_model_api_key(name), "",
                                  f"{name} 在没有配置时不应拿到任何密钥")
 

@@ -3,7 +3,7 @@
 
 选型理由（详见 docs/LOCAL_SPEECH.md 的实测对比）：
 - 中文识别准确率高，且自带标点恢复（学生可直接在输入框里检查修改）
-- 模型小（约 1GB），8GB 显存足够与 TTS 共存
+- 模型约 1GB
 - 纯 Python 依赖，Windows 上不需要编译（对比 whisper 系列需要额外运行时）
 
 只在本进程内加载一次；首次调用会从 ModelScope 下载模型到 MODELSCOPE_CACHE。

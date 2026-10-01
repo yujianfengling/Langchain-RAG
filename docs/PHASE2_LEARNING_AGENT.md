@@ -70,7 +70,7 @@
 
 另外修复（本轮发现）：**前端 fetch/SSE/语音调用未带身份令牌** → 后端退回遗留账号，导致
 "会话不存在，请刷新后重试"与学习记录归属错误。新增 `authHeaders()`（`api/axios.ts`）并在
-`api/chat.ts`、`api/audio.ts`、`utils/ttsPlayer.ts`、`api/agentRun.ts` 统一使用。
+`api/chat.ts`、`api/audio.ts`、`api/agentRun.ts` 统一使用。
 
 ---
 
@@ -228,7 +228,7 @@ node tests/e2e_model_default.js http://localhost:3000   # 9/9 通过（真实 Ch
 | 能力 | 提供方 | 现状 |
 |---|---|---|
 | Vision | qwen-vision（DashScope） | ✅ 真实调用成功（返回图片描述）；与 MiMo 无关 |
-| ASR / TTS | mimo-asr / mimo-tts | ❌ MiMo 会员到期 → 不可用；接口返回 502 + `invalid_api_key` 并说明原因，**不使用 DeepSeek 文本接口冒充** |
+| ASR | mimo-asr | ❌ MiMo 会员到期 → 不可用；接口返回 502 + `invalid_api_key` 并说明原因，**不使用 DeepSeek 文本接口冒充** |
 
 语音不可用时，文字学习功能（问答、计划、任务、错题、本地判分、记忆）实测全部正常。
 
@@ -239,11 +239,10 @@ node tests/e2e_model_default.js http://localhost:3000   # 9/9 通过（真实 Ch
 | 项 | 现状 | 下一轮入口 |
 |---|---|---|
 | MiMo 文本（可选） | 会员到期；默认模型已切 DeepSeek | 续费后把 `LLM_MODEL` 改回 `mimo`，重跑 `tests/verify_default_model.py` |
-| MiMo 语音（ASR/TTS） | 会员到期 → 不可用（已如实上报原因） | 续费即恢复；本轮不部署本地 TTS |
+| MiMo 语音（ASR） | 会员到期 → 不可用（已如实上报原因） | 续费即恢复 |
 | Qwen Vision 图片理解 | ✅ 已真实验证可用 | — |
 | 正式库历史残留清理 | 已出清单，**未删除**（待授权，不按前缀批量删） | 按 `docs/TEST_DATA_INVENTORY.md` 第五节方案执行 |
 | 教师端 | 本轮明确不做 | 记忆/课程知识已有 `curriculum` 类型与待审核状态，可挂教师审核入口 |
-| 本地 TTS 模型 | 本轮明确不做 | 保留 `audio` 服务边界，前端播放接口已统一带身份 |
 | 课程知识自动扩展 | 仅修正"异常时默认通过"，保持待审核 | 接 `knowledge_expander` + 审核队列 |
 | 前端代码分割 | 单包 3.7MB（gzip 1.25MB） | manualChunks / dynamic import |
 | Agent 计划复用 | 每次运行现算 | 可把 `agent_runs.results` 作为缓存键复用 |

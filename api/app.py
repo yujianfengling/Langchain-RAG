@@ -265,7 +265,8 @@ def _capabilities() -> dict:
     能力清单：文本 / 视觉 / 语音，各自"用什么提供方 + 当前是否可用 + 不可用原因"
 
     2026-09-25：默认文本模型切到 DeepSeek（MiMo 会员到期）；
-    视觉（qwen-vision）与语音（MiMo ASR/TTS）单独判定，不共用文本模型配置。
+    视觉（qwen-vision）与语音识别（ASR）单独判定，不共用文本模型配置。
+    （2026-10-01：回答朗读 TTS 已整体移除，这里不再上报 local_tts / mimo_tts。）
     """
     caps: dict = {}
     # 文本
@@ -290,7 +291,7 @@ def _capabilities() -> dict:
         }
     except Exception as e:
         caps["vision"] = {"provider": None, "available": False, "reason": str(e)}
-    # 语音：本地 ASR / 本地 TTS 分开报告（2026-09-26 起默认走本地独立进程）
+    # 语音识别（ASR）：只有"语音输入"一条链路
     try:
         from services.audio_service import (local_speech_status, mimo_speech_status,
                                             speech_capability)
@@ -298,18 +299,16 @@ def _capabilities() -> dict:
         local = status.get("local") or {}
         caps["speech"] = status                      # 汇总（含 backend 选择）
         caps["local_asr"] = local.get("asr") or {"available": False}
-        caps["local_tts"] = local.get("tts") or {"available": False}
         caps["speech_service"] = {
             "running": bool(local.get("running")),
             "url": local.get("url"),
             "reason": local.get("reason") or "",
             "vram": local.get("vram") or {},
         }
-        caps["mimo_speech"] = mimo_speech_status()
+        caps["mimo_asr"] = mimo_speech_status()
     except Exception as e:
         caps["speech"] = {"available": False, "reason": str(e)}
         caps["local_asr"] = {"available": False, "reason": str(e)}
-        caps["local_tts"] = {"available": False, "reason": str(e)}
     return caps
 
 

@@ -210,6 +210,7 @@ def generate_quiz(
     model: Optional[str] = None,
     top_k: int = 6,
     count: int = 5,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     生成自测题（V2.5.1 Chat 自测模式）
@@ -234,8 +235,9 @@ def generate_quiz(
         # 知识库就绪守卫
         require_kb_ready(subject_id)
 
-        # RAG 检索证据
-        ctx = retrieve_and_build_context(topic, subject_id, top_k=top_k)
+        # RAG 检索证据（按查看者可见范围过滤课程资料）
+        ctx = retrieve_and_build_context(topic, subject_id, top_k=top_k,
+                                         viewer_user_id=user_id)
         context = ctx.get("context", "")
         sources = ctx.get("sources", [])
         context_used = ctx.get("context_used", False)
@@ -306,6 +308,7 @@ def generate_smart_note(
     user_instruction: Optional[str] = None,
     model: Optional[str] = None,
     top_k: int = 8,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     生成五段式智能笔记
@@ -316,6 +319,7 @@ def generate_smart_note(
         user_instruction: 用户附加要求（可选）
         model: 模型名（可选，默认使用全局默认模型）
         top_k: RAG 检索数量
+        user_id: 查看者身份（课程资料可见性过滤；None 按学生视角 fail-closed）
 
     Returns:
         {
@@ -338,8 +342,9 @@ def generate_smart_note(
         # 0. 知识库就绪守卫（快速失败，不调 RAG/LLM）
         require_kb_ready(subject_id)
 
-        # 1. RAG 检索证据
-        ctx = retrieve_and_build_context(topic, subject_id, top_k=top_k)
+        # 1. RAG 检索证据（按查看者可见范围过滤课程资料）
+        ctx = retrieve_and_build_context(topic, subject_id, top_k=top_k,
+                                         viewer_user_id=user_id)
         context = ctx.get("context", "")
         sources = ctx.get("sources", [])
         context_used = ctx.get("context_used", False)

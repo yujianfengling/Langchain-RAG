@@ -1,8 +1,10 @@
 """
-本地语音服务配置（2026-09-26）
+本地语音服务配置（2026-10-01：只保留语音识别 ASR）
 
 全部通过环境变量配置，便于在不同机器上重复部署。
-模型目录默认放在仓库外（E:/WORKBUDDY/Game/speech_stack），避免被提交。
+模型目录默认放在仓库外，避免被提交。
+
+注意：回答朗读（TTS）已整体移除——本服务不再有 TTS 引擎、音色与合成相关配置。
 """
 
 import os
@@ -41,38 +43,31 @@ DEFAULT_STACK_DIR = os.path.abspath(
 STACK_DIR = _env("SPEECH_STACK_DIR", DEFAULT_STACK_DIR)
 
 # ---------- ASR ----------
-# funasr | mock | none
+# funasr（重量级，需 PyTorch）| sensevoice（轻量，sherpa-onnx，按需下载）| mock | none
 ASR_ENGINE = _env("SPEECH_ASR_ENGINE", "funasr").lower()
 ASR_MODEL = _env("SPEECH_ASR_MODEL", "paraformer-zh")
 ASR_VAD_MODEL = _env("SPEECH_ASR_VAD_MODEL", "fsmn-vad")
 ASR_PUNC_MODEL = _env("SPEECH_ASR_PUNC_MODEL", "ct-punc")
 ASR_MODEL_DIR = _env("SPEECH_ASR_MODEL_DIR",
                      os.path.join(STACK_DIR, "models", "asr"))
-ASR_TIMEOUT_S = _env_int("SPEECH_ASR_TIMEOUT_S", 60)
 
-# ---------- TTS ----------
-# cosyvoice | mock | none
-TTS_ENGINE = _env("SPEECH_TTS_ENGINE", "cosyvoice").lower()
-TTS_MODEL_DIR = _env("SPEECH_TTS_MODEL_DIR",
-                     os.path.join(STACK_DIR, "CosyVoice", "pretrained_models",
-                                  "CosyVoice-300M-SFT"))
-COSYVOICE_REPO = _env("SPEECH_COSYVOICE_REPO",
-                      os.path.join(STACK_DIR, "CosyVoice"))
-# 首版使用模型自带的预置音色（可安全分发，不涉及真实人声授权）
-DEFAULT_VOICE = _env("SPEECH_TTS_VOICE", "中文女")
-# fp16 在部分 Windows + cu121 组合下不稳定，默认关闭
-TTS_FP16 = _env_bool("SPEECH_TTS_FP16", False)
-TTS_LOAD_JIT = _env_bool("SPEECH_TTS_LOAD_JIT", False)
-TTS_LOAD_TRT = _env_bool("SPEECH_TTS_LOAD_TRT", False)
+# ---------- 轻量 ASR（sherpa-onnx，按需下载，2026-10-01） ----------
+# 模型清单/下载/校验见 speech_service/model_store.py；这里只放"选择与参数"。
+ASR_MODEL_KEY = _env("SPEECH_ASR_MODEL_KEY", "")
+# 模型缓存根目录（**默认用户主目录，避免仓库路径含非 ASCII 字符**）
+MODEL_CACHE_DIR = _env("SPEECH_MODEL_CACHE_DIR", "")
+# 离线模式：为 1 时即使首次使用也不联网下载，只报"尚未下载"
+MODEL_OFFLINE = _env_bool("SPEECH_MODEL_OFFLINE", False)
+# ONNX 推理线程数（0 = 由 sherpa 自行决定）
+NUM_THREADS = _env_int("SPEECH_NUM_THREADS", 0)
+# ASR 语言（auto/zh/en/ja/ko/yue）与 ITN（数字/单位归一化 + 标点）
+ASR_LANGUAGE = _env("SPEECH_ASR_LANGUAGE", "auto")
+ASR_USE_ITN = _env_bool("SPEECH_ASR_USE_ITN", True)
 
 # ---------- 启动行为 ----------
-# 启动时是否预热（加载模型）；关闭则首次请求时懒加载
+# 启动时是否预热（加载模型）；关闭则首次请求时懒加载。
+# 注意：预热**只加载本地已有模型，从不联网下载**。
 WARMUP_ON_START = _env_bool("SPEECH_WARMUP_ON_START", True)
-
-# 单次请求最长文本（防御性上限；正常由主后端按句切分）
-MAX_TEXT_CHARS = _env_int("SPEECH_MAX_TEXT_CHARS", 4000)
-# 单个请求最多合成多少段
-MAX_SEGMENTS = _env_int("SPEECH_MAX_SEGMENTS", 40)
 
 
 def device() -> str:
@@ -95,12 +90,6 @@ def describe() -> dict:
             "engine": ASR_ENGINE,
             "model": ASR_MODEL,
             "model_dir": ASR_MODEL_DIR,
-        },
-        "tts": {
-            "engine": TTS_ENGINE,
-            "model_dir": TTS_MODEL_DIR,
-            "default_voice": DEFAULT_VOICE,
-            "fp16": TTS_FP16,
         },
         "warmup_on_start": WARMUP_ON_START,
     }

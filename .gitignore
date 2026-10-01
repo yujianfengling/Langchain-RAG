@@ -119,3 +119,6 @@ data/recordings/
 
 # 迁移备份（本地产物，含业务库副本，不提交）
 data/backups/
+
+# 计划调整确认流程验收的种子文件（本地生成，不提交）
+tests/_plan_confirm_seed.json

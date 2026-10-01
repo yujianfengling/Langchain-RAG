@@ -145,7 +145,6 @@ class TestRealScriptsRefuse(unittest.TestCase):
 
     WRITING_SCRIPTS = [
         ("tests/eval/run_eval.py", ["--base", "http://127.0.0.1:59999"]),
-        ("tests/speech_bakeoff.py", []),
     ]
 
     def test_writing_scripts_refuse_and_leave_production_untouched(self):

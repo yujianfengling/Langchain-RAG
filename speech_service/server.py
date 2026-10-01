@@ -1,36 +1,33 @@
 """
-本地语音服务（独立进程）
+本地语音服务（独立进程）—— 2026-10-01：只保留**语音识别（ASR）**
 
-为什么单独起进程（本轮要求"不要把模型推理和全部依赖直接堆进 FastAPI 主进程"）：
-- 模型依赖（torch 2.3.1 + funasr + cosyvoice）与主项目的 Python 环境互不干扰
-- 模型只加载一次，常驻显存；主后端重启不需要重新加载模型
-- 模型崩溃/显存不足不会拖垮文字问答（主后端按 HTTP 健康状态自动降级）
+为什么单独起进程：模型依赖（funasr 需要 PyTorch；轻量栈只需 sherpa-onnx）与主项目环境互不干扰；
+模型只加载一次；模型崩溃不会拖垮文字问答（主后端按 HTTP 健康状态降级）。
 
 接口：
-    GET  /health          引擎状态、设备、显存
-    POST /warmup          手动预热（幂等）
-    GET  /voices          可用音色
-    POST /asr             multipart 音频 → 文本
-    POST /tts             文本 → 单段 WAV(base64)
-    POST /tts/segments    多段文本 → 逐段 WAV(base64)，**保证顺序**
+    GET  /health          引擎状态、模型体积/下载状态、设备
+    POST /warmup          手动预热（幂等；**只加载本地已有模型，从不下载**）
+    POST /asr             multipart 音频 → 文本（语音输入用）
+    GET  /models/status   轻量模型体积与下载状态（只读）
+    POST /models/download 显式下载轻量模型（带进度）
+
+回答朗读（TTS）已整体移除：不再有 /tts、/tts/segments、/voices，也没有 TTS 引擎与音色配置。
 """
 
-import base64
 import logging
 import os
 import tempfile
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from . import config
-from .engines import (CosyVoiceEngine, FunASREngine, SpeechEngineError,
-                      build_asr_engine, build_tts_engine)
+from . import model_store
+from .engines import LIGHT_ENGINES, SpeechEngineError, build_asr_engine
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,19 +35,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("speech_service")
 
-app = FastAPI(title="本地语音服务", version="1.0.0")
+app = FastAPI(title="本地语音服务（ASR）", version="2.0.0")
 
-# 推理串行化：同类请求排队（顺序播放本身要求有序），但 **ASR 与 TTS 分开**——
-# 否则一段长回答的逐句合成会把语音识别堵在后面，用户体验为"录音后半天没反应"。
-# 两类模型各自常驻显存（合计约 3.7GB），互不抢占，可以安全并发。
+# 推理串行化：语音识别请求排队（避免并发压满 CPU/显存）
 _ASR_LOCK = threading.Lock()
-_TTS_LOCK = threading.Lock()
 
 # 排队等待上限：超过则认为服务忙，返回明确错误（而不是让请求无限等待）
-# —— 同步推理必须放到线程池执行，否则会阻塞事件循环、连 /health 都无响应
 QUEUE_WAIT_SECONDS = float(os.environ.get("SPEECH_QUEUE_WAIT_SECONDS", "20"))
-# TTS 逐句合成会排队（长回答有多句），给它更宽的等待窗口
-TTS_QUEUE_WAIT_SECONDS = float(os.environ.get("SPEECH_TTS_QUEUE_WAIT_SECONDS", "90"))
 
 
 class BusyError(SpeechEngineError):
@@ -61,55 +52,82 @@ class BusyError(SpeechEngineError):
 
 
 def _run_locked(fn, *args, wait: float = None, **kwargs):
-    """在线程池中执行推理；按引擎类型排队，并限制等待时间"""
-    lock = _ASR_LOCK if fn.__name__ == "transcribe" else _TTS_LOCK
-    timeout = TTS_QUEUE_WAIT_SECONDS if lock is _TTS_LOCK else QUEUE_WAIT_SECONDS
-    if wait is not None:
-        timeout = wait
-    acquired = lock.acquire(timeout=timeout)
-    if not acquired:
+    """在线程池中执行推理；串行化并限制等待时间"""
+    timeout = QUEUE_WAIT_SECONDS if wait is None else wait
+    if not _ASR_LOCK.acquire(timeout=timeout):
         raise BusyError()
     try:
         return fn(*args, **kwargs)
     finally:
-        lock.release()
+        _ASR_LOCK.release()
 
-STATE: Dict[str, Any] = {"asr": None, "tts": None, "started_at": time.time()}
+
+STATE: Dict[str, Any] = {"asr": None, "started_at": time.time(),
+                         "download": {}}
+
+
+def _is_light(kind: str) -> bool:
+    """当前配置的该类型引擎是否属于"按需下载"的轻量栈"""
+    name = (config.ASR_ENGINE or "").lower() if kind == "asr" else ""
+    return name in LIGHT_ENGINES
+
+
+def _engine_spec(kind: str):
+    """当前该类型引擎对应的模型清单项
+
+    必须先看引擎自己的 `spec`：配置了轻量 ASR 时，kind 的默认模型可能与实际引擎不同，
+    用默认值判断会把"已就绪的模型"误判成"未下载"。
+    """
+    engine = STATE["asr"] if kind == "asr" else None
+    spec = getattr(engine, "spec", None)
+    if spec is not None:
+        return spec
+    return model_store.pick(kind)
 
 
 def _init_engines():
-    """构造（且只构造一次）ASR / TTS 引擎"""
+    """构造（且只构造一次）ASR 引擎
+
+    注意：**只构造不加载**。轻量引擎以 `allow_download=False` 构造，
+    因此 /health、/warmup 都不会触发下载。
+    """
     if STATE["asr"] is None:
         STATE["asr"] = build_asr_engine(
             config.ASR_ENGINE, model=config.ASR_MODEL, vad_model=config.ASR_VAD_MODEL,
-            punc_model=config.ASR_PUNC_MODEL, model_dir=config.ASR_MODEL_DIR)
-    if STATE["tts"] is None:
-        STATE["tts"] = build_tts_engine(
-            config.TTS_ENGINE, model_dir=config.TTS_MODEL_DIR,
-            repo_dir=config.COSYVOICE_REPO, default_voice=config.DEFAULT_VOICE,
-            fp16=config.TTS_FP16, load_jit=config.TTS_LOAD_JIT,
-            load_trt=config.TTS_LOAD_TRT)
-    return STATE["asr"], STATE["tts"]
+            punc_model=config.ASR_PUNC_MODEL, model_dir=config.ASR_MODEL_DIR,
+            model_key=config.ASR_MODEL_KEY, num_threads=config.NUM_THREADS,
+            allow_download=False)
+    return STATE["asr"]
 
 
 def _warmup(blocking: bool = True) -> Dict[str, Any]:
-    asr, tts = _init_engines()
+    """预热：**只加载本地已有模型，绝不下载**
+
+    轻量栈缺模型时直接给出"尚未下载（需 X MB）"，让前端提示用户去下载，
+    而不是在这里静默联网下载（需求硬约束）。
+    """
+    asr = _init_engines()
     out: Dict[str, Any] = {}
-    for key, engine in (("asr", asr), ("tts", tts)):
-        if engine is None:
-            out[key] = {"state": "disabled", "ready": False}
-            continue
-        try:
-            engine.ensure_loaded()
-        except SpeechEngineError as e:
-            logger.warning(f"[warmup] {key} 加载失败：{e.message}")
-        out[key] = engine.status()
+    if asr is None:
+        return {"asr": {"state": "disabled", "ready": False}}
+    if _is_light("asr"):
+        st = model_store.state(_engine_spec("asr"))
+        if not st["ready"]:
+            out["asr"] = {**asr.status(), "state": "not_downloaded",
+                          "error": f"轻量模型尚未下载（需 {st['download_mb']} MB）",
+                          "error_type": "model_missing", "model_ready": False}
+            return out
+    try:
+        asr.ensure_loaded()
+    except SpeechEngineError as e:
+        logger.warning(f"[warmup] asr 加载失败：{e.message}")
+    out["asr"] = asr.status()
     return out
 
 
 @app.on_event("startup")
 def _on_startup():
-    logger.info("本地语音服务启动：%s", config.describe())
+    logger.info("本地语音服务启动（ASR）：%s", config.describe())
     if config.WARMUP_ON_START:
         threading.Thread(target=lambda: _warmup(blocking=False), daemon=True).start()
 
@@ -136,14 +154,19 @@ def _vram() -> Dict[str, Any]:
 
 @app.get("/health")
 def health():
-    asr, tts = _init_engines()
+    asr = _init_engines()
+    models = model_store.describe_all()
+    warn = model_store.ascii_warning(model_store.cache_root())
     return {
         "status": "ok",
         "config": config.describe(),
         "engines": {
             "asr": asr.status() if asr else {"engine": None, "ready": False},
-            "tts": tts.status() if tts else {"engine": None, "ready": False},
         },
+        # 轻量模型：体积 / 是否已下载 / 磁盘占用（**只读检查，绝不下载**）
+        "models": models,
+        "models_path_warning": warn,
+        "download": STATE["download"],
         "vram": _vram(),
         "uptime_s": round(time.time() - STATE["started_at"], 1),
     }
@@ -154,34 +177,61 @@ async def warmup():
     return {"success": True, "engines": await run_in_threadpool(_warmup)}
 
 
-@app.get("/voices")
-async def voices():
-    _, tts = _init_engines()
-    if tts is None:
-        return {"success": True, "voices": [], "reason": "TTS 未启用"}
-    try:
-        await run_in_threadpool(tts.ensure_loaded)
-    except SpeechEngineError as e:
-        return _error(e)
-    return {"success": True, "voices": tts.list_voices(),
-            "default": config.DEFAULT_VOICE, "engine": tts.name}
+# ============ 轻量模型：状态 / 显式下载（进度可轮询） ============
+
+@app.get("/models/status")
+def models_status():
+    """模型体积与下载状态（**不下载**）；供设置页显示"需要下载多少 MB" """
+    return {"success": True, "data": model_store.describe_all(),
+            "download": STATE["download"]}
 
 
-class TTSRequest(BaseModel):
-    text: str
-    voice: Optional[str] = None
-    speed: float = 1.0
+@app.post("/models/download")
+async def models_download(kind: Optional[str] = None):
+    """显式下载轻量模型（用户点"下载语音模型"时才走这里）
 
+    `kind`: asr | all（默认：若当前是轻量引擎则下载其 ASR 模型）
+    """
+    if kind in (None, "", "all", "asr"):
+        specs = [_engine_spec("asr")] if _is_light("asr") else []
+    else:
+        return _error(SpeechEngineError(f"未知 kind：{kind}", "model_missing"), 400)
+    if not specs:
+        return {"success": True, "message": "当前 ASR 引擎不是轻量栈，无需下载", "items": []}
 
-class SegmentsRequest(BaseModel):
-    segments: List[str]
-    voice: Optional[str] = None
-    speed: float = 1.0
+    def _progress(key):
+        def cb(done, total, phase, speed=None):
+            STATE["download"][key] = {
+                "phase": phase, "done": done, "total": total,
+                "percent": round(done / total * 100, 1) if total else None,
+                "speed_mbps": round(speed / 1024 / 1024, 2) if speed else None,
+                "at": time.strftime("%H:%M:%S"),
+            }
+        return cb
+
+    items = []
+    for spec in specs:
+        try:
+            path = await run_in_threadpool(
+                model_store.ensure, spec, _progress(spec.key), True)
+            STATE["download"][spec.key] = {"phase": "done", "percent": 100.0,
+                                           "disk_mb": model_store.state(spec)["disk_mb"]}
+            items.append({"key": spec.key, "ok": True, "dir": str(path),
+                          "disk_mb": model_store.state(spec)["disk_mb"]})
+        except model_store.ModelStoreError as e:
+            STATE["download"][spec.key] = {"phase": "failed", "error": e.message}
+            items.append({"key": spec.key, "ok": False, "error": e.message,
+                          "error_type": e.error_type})
+    ok = all(i["ok"] for i in items)
+    return JSONResponse(status_code=200 if ok else 503,
+                        content={"success": ok, "items": items,
+                                 "models": model_store.describe_all()})
 
 
 @app.post("/asr")
 async def asr(file: UploadFile = File(...), language: str = Form("auto")):
-    engine, _ = _init_engines()
+    """音频 → 文本（语音输入）。首次使用录音时**允许下载** ASR 模型。"""
+    engine = _init_engines()
     if engine is None:
         return _error(SpeechEngineError("本地 ASR 未启用", "asr_disabled"))
     data = await file.read()
@@ -192,8 +242,15 @@ async def asr(file: UploadFile = File(...), language: str = Form("auto")):
     try:
         tmp.write(data)
         tmp.close()
-        result = await run_in_threadpool(
-            _run_locked, engine.transcribe, tmp.name, language=language)
+        # 首次使用录音时允许下载模型（/health、/warmup 不会走到这里）
+        if _is_light("asr"):
+            engine.allow_download = True
+        try:
+            result = await run_in_threadpool(
+                _run_locked, engine.transcribe, tmp.name, language=language)
+        finally:
+            if _is_light("asr"):
+                engine.allow_download = False
         return {"success": True, **result}
     except SpeechEngineError as e:
         return _error(e)
@@ -202,90 +259,6 @@ async def asr(file: UploadFile = File(...), language: str = Form("auto")):
             os.unlink(tmp.name)
         except OSError:
             pass
-
-
-@app.post("/tts")
-async def tts(req: TTSRequest):
-    _, engine = _init_engines()
-    if engine is None:
-        return _error(SpeechEngineError("本地 TTS 未启用", "tts_disabled"))
-    text = (req.text or "").strip()
-    if not text:
-        return _error(SpeechEngineError("文本为空", "empty_text"), 400)
-    if len(text) > config.MAX_TEXT_CHARS:
-        return _error(SpeechEngineError(
-            f"文本过长（{len(text)} > {config.MAX_TEXT_CHARS}），请按句分段请求",
-            "text_too_long"), 400)
-    try:
-        out = await run_in_threadpool(
-            _run_locked, engine.synthesize, text, voice=req.voice, speed=req.speed)
-        return {
-            "success": True,
-            "audio_b64": base64.b64encode(out["audio"]).decode("ascii"),
-            "format": "wav",
-            "sample_rate": out["sample_rate"],
-            "engine": out["engine"],
-            "voice": out["voice"],
-            "latency_ms": out.get("latency_ms"),
-            "duration_s": out.get("duration_s"),
-            "chars": len(text),
-        }
-    except SpeechEngineError as e:
-        return _error(e)
-
-
-@app.post("/tts/segments")
-async def tts_segments(req: SegmentsRequest, request: Request):
-    """
-    逐段合成（顺序由本服务保证）
-
-    - 逐段返回，主后端可以边收边播
-    - 客户端断开后停止继续合成（避免白算），已完成的段落照常返回
-    """
-    _, engine = _init_engines()
-    if engine is None:
-        return _error(SpeechEngineError("本地 TTS 未启用", "tts_disabled"))
-    segments = [s for s in (req.segments or []) if s and s.strip()]
-    if not segments:
-        return _error(SpeechEngineError("文本为空", "empty_text"), 400)
-    if len(segments) > config.MAX_SEGMENTS:
-        return _error(SpeechEngineError(
-            f"分段过多（{len(segments)} > {config.MAX_SEGMENTS}）", "too_many_segments"), 400)
-
-    items: List[Dict[str, Any]] = []
-    cancelled = False
-    for seq, text in enumerate(segments):
-        if await request.is_disconnected():
-            cancelled = True
-            logger.info(f"客户端断开，停止合成（已完成 {seq} 段）")
-            break
-        try:
-            out = await run_in_threadpool(
-                _run_locked, engine.synthesize, text, voice=req.voice, speed=req.speed)
-        except SpeechEngineError as e:
-            # 某段失败：如实返回错误，并保留已完成段落
-            return JSONResponse(status_code=503, content={
-                "success": False, "message": e.message, "error_type": e.error_type,
-                "failed_seq": seq, "items": items,
-            })
-        items.append({
-            "seq": seq,
-            "text": text,
-            "chars": len(text),
-            "audio_b64": base64.b64encode(out["audio"]).decode("ascii"),
-            "duration_s": out.get("duration_s"),
-            "latency_ms": out.get("latency_ms"),
-        })
-    return {
-        "success": True,
-        "items": items,
-        "cancelled": cancelled,
-        "total_segments": len(segments),
-        "format": "wav",
-        "sample_rate": engine.status().get("sample_rate") or 22050,
-        "engine": engine.name,
-        "voice": req.voice or config.DEFAULT_VOICE,
-    }
 
 
 def main():

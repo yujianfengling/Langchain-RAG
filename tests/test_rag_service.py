@@ -33,7 +33,10 @@ class TestRagService(unittest.TestCase):
         测试前准备
         """
         self.test_subject_id = "test_subject"
-        self.test_data_dir = Path("data/subjects") / self.test_subject_id
+        # 隔离要求（2026-10-01）：测试资料目录必须落在**本会话的数据目录**里
+        # （conftest 会把 EDU_DATA_DIR 指向隔离目录），不得直接写项目正式 data/。
+        from config.path_config import get_data_dir
+        self.test_data_dir = Path(get_data_dir()) / "subjects" / self.test_subject_id
         
         # 创建测试数据目录
         self.test_data_dir.mkdir(parents=True, exist_ok=True)
@@ -156,7 +159,7 @@ class TestTeachingRetrievalFallback(unittest.TestCase):
         """严格阈值已命中时不做第二次检索（避免无谓放宽）"""
         calls = []
 
-        def fake(question, subject_id=None, top_k=5, min_score=None):
+        def fake(question, subject_id=None, top_k=5, min_score=None, viewer_user_id=None):
             calls.append(min_score)
             return {"context": "命中内容", "documents": [1], "sources": [], "context_used": True}
 
@@ -175,7 +178,7 @@ class TestTeachingRetrievalFallback(unittest.TestCase):
         """严格为空 → 放宽重试一次，并标记 relaxed=True"""
         calls = []
 
-        def fake(question, subject_id=None, top_k=5, min_score=None):
+        def fake(question, subject_id=None, top_k=5, min_score=None, viewer_user_id=None):
             calls.append(min_score)
             if min_score is None:
                 return {"context": "", "documents": [], "sources": [], "context_used": False}
@@ -196,7 +199,7 @@ class TestTeachingRetrievalFallback(unittest.TestCase):
     def test_stays_empty_when_kb_really_empty(self):
         """放宽后仍为空：保持为空且不标记降级（调用方据此报"资料为空"）"""
 
-        def fake(question, subject_id=None, top_k=5, min_score=None):
+        def fake(question, subject_id=None, top_k=5, min_score=None, viewer_user_id=None):
             return {"context": "", "documents": [], "sources": [], "context_used": False}
 
         orig = self.ai_service.retrieve_and_build_context
@@ -209,6 +212,27 @@ class TestTeachingRetrievalFallback(unittest.TestCase):
         self.assertEqual(r["context"], "")
         self.assertFalse(r["relaxed"], "没有资料时不能标记为已降级命中")
         self.assertFalse(r["context_used"])
+
+    def test_viewer_is_forwarded_to_both_retrieval_attempts(self):
+        """查看者身份必须透传到两次检索（否则教师侧会按学生视角过滤掉自己的草稿）"""
+        seen = []
+
+        def fake(question, subject_id=None, top_k=5, min_score=None, viewer_user_id=None):
+            seen.append(viewer_user_id)
+            if min_score is None:
+                return {"context": "", "documents": [], "sources": [], "context_used": False}
+            return {"context": "放宽命中", "documents": [1], "sources": [], "context_used": True}
+
+        orig = self.ai_service.retrieve_and_build_context
+        self.ai_service.retrieve_and_build_context = fake
+        try:
+            r = self.ai_service.retrieve_for_teaching("q", "sub", viewer_user_id="teacher_1")
+        finally:
+            self.ai_service.retrieve_and_build_context = orig
+
+        self.assertEqual(seen, ["teacher_1", "teacher_1"],
+                         "严格检索与放宽检索都必须带上同一个查看者身份")
+        self.assertTrue(r["relaxed"])
 
     def test_min_score_overrides_configured_threshold(self):
         """min_score 显式传入时覆盖配置阈值；不传时仍用配置阈值（学生问答行为不变）"""

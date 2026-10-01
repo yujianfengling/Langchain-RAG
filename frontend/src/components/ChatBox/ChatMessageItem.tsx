@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
-import { List, Avatar, Typography, Space, Spin, Button, Tooltip, Tag, Alert } from 'antd';
+import { List, Avatar, Typography, Space, Spin, Button, Tag, Alert } from 'antd';
 import {
-  UserOutlined, RobotOutlined, SoundOutlined, PauseOutlined,
+  UserOutlined, RobotOutlined,
   LoadingOutlined, CheckCircleOutlined, CloseCircleOutlined,
   MinusCircleOutlined, StopOutlined,
 } from '@ant-design/icons';
@@ -34,16 +34,6 @@ const md: MarkdownIt = new MarkdownIt({
 interface ChatMessageItemProps {
   msg: ChatMessage;
   mode: ChatMode;
-  /** 该消息是否正在播放语音（仅当前播放中的消息此值为 true） */
-  isPlaying: boolean;
-  /** 播放状态机（idle/requesting/playing/paused/stopped/error），用于按钮与提示 */
-  playbackState?: string;
-  /** 已排队待播放的句子数（逐句合成时可见进度） */
-  playbackQueued?: number;
-  /** 语音播放/暂停回调（父组件 useCallback 稳定引用，避免破坏 React.memo） */
-  onPlay: (msg: ChatMessage) => void;
-  /** 立即停止朗读（新提问/切换会话也会自动停止） */
-  onStopPlay?: () => void;
   /** 当前学科（用于把结构化卡片内的作答关联到学科） */
   subjectId?: string;
   /** 当前会话（用于把作答关联到来源会话） */
@@ -134,7 +124,7 @@ const AgentProgress: React.FC<{
  * - 正在流式的那条消息 content 变化 → 仅它自己重渲染
  */
 const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo(
-  ({ msg, mode, isPlaying, playbackState, playbackQueued, onPlay, onStopPlay,
+  ({ msg, mode,
      subjectId, conversationId, sourceTaskId,
      agentRunning, onStopAgent }) => {
     const isUser = msg.role === 'user';
@@ -267,42 +257,9 @@ const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo(
               </div>
             ) : null}
 
-            {/* 语音播放按钮 + 模型信息 */}
+            {/* 模型信息（语音朗读已移除） */}
             {!isUser && (
               <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: 8 }}>
-                {msg.content && (
-                  <Tooltip title={isPlaying ? '暂停朗读' : '朗读这条回答'}>
-                    <Button
-                      size="small"
-                      type="text"
-                      icon={isPlaying ? <PauseOutlined /> : <SoundOutlined />}
-                      onClick={() => onPlay(msg)}
-                      style={{ fontSize: 12 }}
-                    />
-                  </Tooltip>
-                )}
-                {/* 朗读失败：如实显示原因（不静默失败） */}
-                {playbackState === 'error' && (
-                  <Text type="danger" style={{ fontSize: '11px' }}>
-                    朗读失败：语音服务不可用或尚未就绪（文字回答不受影响）
-                  </Text>
-                )}
-                {/* 正在朗读：显示进度并允许立即停止（新提问/切换会话也会自动停） */}
-                {isPlaying && (
-                  <>
-                    <Text type="secondary" style={{ fontSize: '11px' }}>
-                      朗读中{playbackState === 'paused' ? '（已暂停）'
-                        : playbackState === 'requesting' ? '（正在合成）' : ''}
-                      {playbackQueued ? ` | 待播 ${playbackQueued} 句` : ''}
-                    </Text>
-                    {onStopPlay && (
-                      <Button size="small" type="text" icon={<StopOutlined />}
-                        onClick={onStopPlay} style={{ fontSize: 12 }}>
-                        停止
-                      </Button>
-                    )}
-                  </>
-                )}
                 {(msg.model || msg.latency != null) && (
                   <Text type="secondary" style={{ fontSize: '11px' }}>
                     {/* 显示后端实际使用的提供方与模型（历史消息保留当时的标记） */}

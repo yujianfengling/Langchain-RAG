@@ -181,7 +181,8 @@ def _tool_generate_note(user_id: str, subject_id: str, topic: str,
                         model: Optional[str] = None, **_) -> Dict[str, Any]:
     """生成学习资料（五段式笔记）。会调用模型。"""
     from services.note_service import generate_smart_note
-    note = generate_smart_note(subject_id=subject_id, topic=topic, model=model)
+    note = generate_smart_note(subject_id=subject_id, topic=topic, model=model,
+                               user_id=user_id)
     return {
         "title": note.get("title"),
         "context_used": note.get("context_used"),
@@ -202,7 +203,8 @@ def _tool_generate_diagnostic(user_id: str, subject_id: str, topic: str,
     """
     from services.note_service import generate_quiz
     count = max(1, min(5, int(count or 3)))
-    quiz = generate_quiz(subject_id=subject_id, topic=topic, count=count, model=model)
+    quiz = generate_quiz(subject_id=subject_id, topic=topic, count=count, model=model,
+                         user_id=user_id)
     items = quiz.get("quiz") or []
     return {
         "question_count": len(items),

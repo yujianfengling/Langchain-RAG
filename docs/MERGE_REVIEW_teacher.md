@@ -115,7 +115,7 @@
 | `pytest tests/ -q --ignore=tests/eval` | **621 passed / 0 failed** |
 | `node tests/e2e_first_use_walkthrough.js` | **56/56**（AI 出题默认路径实测 200 / 3 道题） |
 | `node tests/e2e_responsive_walkthrough.js` | **120/120** |
-| `node tests/e2e_voice_flow.js <base> <wav> 390 844` | **24/24**（该脚本一条等待窗口偏紧，见 OBS-003） |
+| `node tests/e2e_voice_flow.js <base> <wav> 390 844` | **24/24** |
 | 教师端面板 | 7 个面板（工作台/班级/资料/教案/作业/学情/学生画像）均可打开 |
 
 ### 7.4 并入 3 个接口后补的测试与修的缺陷
@@ -136,5 +136,5 @@
 ### 7.6 遗留
 
 - 该面板的窄屏（≤900px）显示未单独做"显示名"检查（三档屏宽的溢出检查已覆盖）。
-- 密钥轮换、真实小班试用、人工语音试听三项仍是**未完成**状态，见 `PROJECT_STATUS.md` 的"阻塞项"。
+- 密钥轮换、真实小班试用两项仍是**未完成**状态，见 `PROJECT_STATUS.md` 的"阻塞项"。
 - 推送是否成功以实际 `git push` 输出为准，网络不可达时不得写成"已推送"。

@@ -36,14 +36,30 @@ except ImportError:
     RAG_AVAILABLE = False
 
 # 知识提取数据库
-_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-EXTRACTED_KB_PATH = os.path.join(_DATA_DIR, "extracted_knowledge.db")
+#
+# 修复（2026-10-01）：原先硬编码 `<项目根>/data/extracted_knowledge.db`，绕过
+# `EDU_DATA_DIR`；这也是历史上"隔离夹具覆盖不到、把测试知识点写进正式库"的根因之一。
+# 现改为按数据根目录**运行时推导**；`_DATA_DIR` / `EXTRACTED_KB_PATH` 保留为显式覆盖
+# （既有隔离夹具与自检脚本通过赋值它们指向临时目录，语义不变）。
+_DATA_DIR = None          # None = 按数据根目录推导；非 None = 覆盖目录
+EXTRACTED_KB_PATH = None  # None = 按数据根目录推导；非 None = 覆盖文件
+
+
+def _extracted_kb_path() -> str:
+    """知识提取库文件路径（覆盖值优先，否则按 EDU_DATA_DIR 运行时推导）"""
+    if EXTRACTED_KB_PATH:
+        return str(EXTRACTED_KB_PATH)
+    if _DATA_DIR:
+        return os.path.join(str(_DATA_DIR), "extracted_knowledge.db")
+    from config.path_config import get_data_dir
+    return os.path.join(str(get_data_dir()), "extracted_knowledge.db")
 
 
 def _get_extracted_db():
     """获取提取知识数据库连接"""
-    os.makedirs(_DATA_DIR, exist_ok=True)
-    conn = __import__('sqlite3').connect(EXTRACTED_KB_PATH)
+    path = _extracted_kb_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = __import__('sqlite3').connect(path)
     conn.row_factory = __import__('sqlite3').Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")

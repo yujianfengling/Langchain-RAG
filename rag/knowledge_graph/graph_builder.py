@@ -28,8 +28,13 @@ logger = logging.getLogger(__name__)
 NODE_TYPES = ["概念", "公式", "定理", "方法", "人物"]
 RELATION_TYPES = ["包含", "推导", "应用", "属于", "定义", "举例", "前置条件", "相关"]
 
-# 存储目录
-_GRAPH_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "knowledge_graph")
+# 存储目录（**运行时解析**）
+#
+# 修复（2026-10-01）：此处原先硬编码 `<项目根>/data/knowledge_graph`，绕过了
+# `EDU_DATA_DIR`，隔离运行时图谱会落到正式 data/。与向量库/BM25 采用同一套解析方式。
+def _graph_dir() -> str:
+    from config.path_config import get_data_dir
+    return str(get_data_dir() / "knowledge_graph")
 
 # ========== 防线2：后处理过滤 ==========
 
@@ -535,7 +540,7 @@ def _save_graph(subject_id: str, graph: Dict[str, Any]) -> Path:
     失败：删除 tmp，保留旧 graph.json（不污染）
     """
     from rag.rag_service import _safe_dir_name
-    graph_dir = Path(_GRAPH_DIR)
+    graph_dir = Path(_graph_dir())
     graph_dir.mkdir(parents=True, exist_ok=True)
 
     path = graph_dir / f"{_safe_dir_name(subject_id)}.json"
@@ -570,7 +575,7 @@ def _save_graph(subject_id: str, graph: Dict[str, Any]) -> Path:
 def load_knowledge_graph(subject_id: str) -> Optional[Dict[str, Any]]:
     """加载学科知识图谱"""
     from rag.rag_service import _safe_dir_name
-    path = Path(_GRAPH_DIR) / f"{_safe_dir_name(subject_id)}.json"
+    path = Path(_graph_dir()) / f"{_safe_dir_name(subject_id)}.json"
     
     if not path.exists():
         return None
@@ -581,7 +586,7 @@ def load_knowledge_graph(subject_id: str) -> Optional[Dict[str, Any]]:
 
 def list_graphs() -> List[Dict[str, Any]]:
     """列出所有已构建的知识图谱"""
-    graph_dir = Path(_GRAPH_DIR)
+    graph_dir = Path(_graph_dir())
     if not graph_dir.exists():
         return []
     

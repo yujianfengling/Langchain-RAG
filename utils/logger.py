@@ -57,6 +57,21 @@ class RequestContextFormatter(logging.Formatter):
         return super().format(record)
 
 
+def _default_log_dir() -> str:
+    """
+    日志目录：设置 `EDU_DATA_DIR` 时随隔离目录走，否则保持 `<项目根>/logs`
+
+    修复（2026-10-01）：原先硬编码 `<项目根>/logs`，隔离运行时日志仍写正式目录。
+    这里用惰性导入 + 兜底，避免与 config 包产生导入环；语义与
+    `config.path_config.get_log_dir()` 保持一致（单一来源）。
+    """
+    try:
+        from config.path_config import get_log_dir
+        return str(get_log_dir())
+    except Exception:
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+
+
 def setup_logger():
     """
     配置全局日志系统
@@ -67,7 +82,7 @@ def setup_logger():
         logging.Logger: 配置好的logger实例
     """
     # 日志目录
-    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+    log_dir = _default_log_dir()
     
     # 自动创建logs目录
     if not os.path.exists(log_dir):

@@ -459,7 +459,8 @@ def generate_plan(subject_id: str, goal: str, model: Optional[str] = None,
         # 1. RAG 检索知识点证据（用于 LLM 生成贴近知识库的计划）
         context = ""
         try:
-            ctx = retrieve_and_build_context(goal, subject_id, top_k=6)
+            ctx = retrieve_and_build_context(goal, subject_id, top_k=6,
+                                             viewer_user_id=user_id)
             context = ctx.get("context", "")[:6000]
         except Exception:
             context = ""  # 检索失败不阻断计划生成

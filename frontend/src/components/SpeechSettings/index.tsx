@@ -1,19 +1,18 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Space, Switch, Select, Tag, Typography, Button, Alert, message } from 'antd';
-import { AudioOutlined, SoundOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { Card, Space, Switch, Tag, Typography, Button, Alert } from 'antd';
+import { AudioOutlined, SoundOutlined } from '@ant-design/icons';
 import { authHeaders } from '../../api/axios';
-import { fetchVoiceInfo, ttsPlayer, VoiceInfo } from '../../utils/ttsPlayer';
 
 const { Text, Paragraph } = Typography;
 
 /**
- * 语音设置（2026-09-26）
+ * 语音设置（2026-10-01：只保留**语音输入**）
  *
  * 提供：
  * - 语音输入开关（录音 → 本地转写 → 填入输入框，由学生确认后发送）
- * - 自动朗读开关（回答流式生成时，形成完整句子即开始朗读）
- * - 音色选择（本地 CosyVoice 预置音色）
- * - 语音服务状态（本地 ASR / 本地 TTS 分别显示，不可用时给出原因）
+ * - 本地语音识别状态（可用性 / 引擎 / 不可用原因）
+ *
+ * 注意：回答朗读（TTS）功能已整体移除——本页不再有自动朗读开关、音色选择与合成状态。
  */
 
 interface SpeechStatus {
@@ -21,8 +20,6 @@ interface SpeechStatus {
     running?: boolean;
     reason?: string;
     asr?: { available?: boolean; engine?: string; model?: string; error?: string };
-    tts?: { available?: boolean; engine?: string; error?: string };
-    vram?: { allocated_mb?: number; reserved_mb?: number };
   };
   capability?: { backend?: string; available?: boolean; reason?: string };
 }
@@ -30,10 +27,6 @@ interface SpeechStatus {
 const SpeechSettings: React.FC = () => {
   const [voiceInput, setVoiceInput] = useState<boolean>(
     () => localStorage.getItem('voice_input_enabled') !== '0');
-  const [autoRead, setAutoRead] = useState<boolean>(
-    () => localStorage.getItem('auto_voice_reply') === '1');
-  const [voice, setVoice] = useState<string>(() => localStorage.getItem('tts_voice') || '');
-  const [voiceInfo, setVoiceInfo] = useState<VoiceInfo | null>(null);
   const [status, setStatus] = useState<SpeechStatus | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
 
@@ -48,13 +41,6 @@ const SpeechSettings: React.FC = () => {
     } finally {
       setLoadingStatus(false);
     }
-    const info = await fetchVoiceInfo();
-    setVoiceInfo(info);
-    if (!voice && info.default) {
-      setVoice(info.default);
-      localStorage.setItem('tts_voice', info.default);
-      ttsPlayer.setVoice(info.default);
-    }
   };
 
   useEffect(() => {
@@ -66,36 +52,11 @@ const SpeechSettings: React.FC = () => {
     localStorage.setItem('voice_input_enabled', voiceInput ? '1' : '0');
   }, [voiceInput]);
 
-  useEffect(() => {
-    localStorage.setItem('auto_voice_reply', autoRead ? '1' : '0');
-  }, [autoRead]);
-
-  const onVoiceChange = (value: string) => {
-    setVoice(value);
-    localStorage.setItem('tts_voice', value);
-    ttsPlayer.setVoice(value);
-    message.success(`已选择音色：${value}`);
-  };
-
-  const warmup = async () => {
-    message.loading({ content: '正在预热本地语音模型…', key: 'warmup', duration: 0 });
-    try {
-      const resp = await fetch('/api/audio/warmup', { method: 'POST', headers: authHeaders() });
-      const body = await resp.json();
-      if (!resp.ok) throw new Error(body?.message || '预热失败');
-      message.success({ content: '本地语音模型已就绪', key: 'warmup' });
-    } catch (e: any) {
-      message.error({ content: e?.message || '预热失败', key: 'warmup' });
-    }
-    loadStatus();
-  };
-
   const local = status?.local;
   const asrOk = !!local?.asr?.available;
-  const ttsOk = !!local?.tts?.available;
 
   return (
-    <Card size="small" title={<span><SoundOutlined /> 语音（本地 ASR / TTS）</span>}>
+    <Card size="small" title={<span><SoundOutlined /> 语音（语音输入）</span>}>
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Space>
@@ -108,62 +69,23 @@ const SpeechSettings: React.FC = () => {
           <Switch checked={voiceInput} onChange={setVoiceInput} />
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Space>
-            <SoundOutlined />
-            <Text>自动朗读回答</Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              （回答边生成边朗读，形成完整句子就开始；可随时暂停/停止）
-            </Text>
-          </Space>
-          <Switch checked={autoRead} onChange={setAutoRead} />
-        </div>
-
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Space>
-            <Text>朗读音色</Text>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              （本地 CosyVoice 预置音色，可安全分发）
-            </Text>
-          </Space>
-          <Select
-            size="small"
-            style={{ width: 160 }}
-            value={voice || voiceInfo?.default || undefined}
-            onChange={onVoiceChange}
-            placeholder={voiceInfo?.available ? '选择音色' : '音色不可用'}
-            disabled={!voiceInfo?.available}
-            options={(voiceInfo?.voices || []).map((v) => ({ value: v, label: v }))}
-          />
-        </div>
-
         <Space wrap>
           <Tag color={asrOk ? 'green' : 'red'}>
             本地语音识别：{asrOk ? `可用（${local?.asr?.engine || 'local'}）` : '不可用'}
           </Tag>
-          <Tag color={ttsOk ? 'green' : 'red'}>
-            本地语音合成：{ttsOk ? `可用（${local?.tts?.engine || 'local'}）` : '不可用'}
-          </Tag>
-          {local?.vram?.allocated_mb != null && (
-            <Tag color="blue">显存占用 {Math.round(local.vram.allocated_mb)} MB</Tag>
-          )}
-          <Button size="small" icon={<ThunderboltOutlined />} loading={loadingStatus}
-            onClick={warmup}>
-            预热语音模型
-          </Button>
           <Button size="small" onClick={loadStatus} loading={loadingStatus}>刷新状态</Button>
         </Space>
 
-        {(!asrOk || !ttsOk) && (
+        {!asrOk && (
           <Alert
             type="warning"
             showIcon
-            message="本地语音服务未就绪"
+            message="本地语音识别未就绪"
             description={
               <span>
-                {local?.reason || local?.asr?.error || local?.tts?.error || '本地语音服务未启动'}
+                {local?.reason || local?.asr?.error || '本地语音服务未启动'}
                 <br />
-                文字问答、学习计划、自测判分等功能不受影响；语音模型缺失时可按
+                文字问答、学习计划、自测判分等功能不受影响；需要语音输入时可按
                 <Text code>docs/LOCAL_SPEECH.md</Text> 的步骤安装并启动本地语音服务。
               </span>
             }
@@ -171,7 +93,7 @@ const SpeechSettings: React.FC = () => {
         )}
 
         <Paragraph type="secondary" style={{ fontSize: 12, margin: 0 }}>
-          文字回答始终正常流式显示；朗读内容会自动去掉 Markdown 与代码，复杂公式提示"请看屏幕"。
+          文字回答始终正常流式显示；语音输入只用于把你说的话转成文本，不会朗读回答。
         </Paragraph>
       </Space>
     </Card>

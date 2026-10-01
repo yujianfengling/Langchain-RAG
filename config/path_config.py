@@ -50,6 +50,22 @@ def get_subjects_file() -> Path:
     return get_data_dir() / "subjects.json"
 
 
+def get_log_dir() -> Path:
+    """
+    日志目录
+
+    修复（2026-10-01）：原先硬编码 `<项目根>/logs`，绕过 `EDU_DATA_DIR`——
+    隔离运行时日志仍写正式目录。
+    语义（保守）：**只有显式设置了 `EDU_DATA_DIR`** 才把日志放进隔离目录
+    （`<数据根>/logs`）；未设置时保持既有的 `<项目根>/logs`，避免改变
+    生产部署里日志采集的既有路径。
+    """
+    override = os.getenv("EDU_DATA_DIR")
+    if override and override.strip():
+        return get_data_dir() / "logs"
+    return get_project_root() / "logs"
+
+
 class PathConfig(BaseConfig):
     """路径配置"""
 
@@ -67,11 +83,11 @@ class PathConfig(BaseConfig):
         """向量存储目录（兼容别名）"""
         return self.vector_store_path
     
-    # 学科资料目录
-    subjects_data_path: Path = Field(default_factory=lambda: get_project_root() / "data" / "subjects")
+    # 学科资料目录（与数据根目录同源；此前硬编码 <项目根>/data/subjects）
+    subjects_data_path: Path = Field(default_factory=get_subjects_dir)
     
-    # 日志目录
-    log_dir: Path = Field(default_factory=lambda: get_project_root() / "logs")
+    # 日志目录（与数据根目录同源；此前硬编码 <项目根>/logs）
+    log_dir: Path = Field(default_factory=get_log_dir)
     
     if PYDANTIC_V2:
         model_config = {
