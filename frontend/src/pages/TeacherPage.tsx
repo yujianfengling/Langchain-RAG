@@ -19,6 +19,7 @@ import LessonPlansPanel from '../components/Teacher/LessonPlansPanel';
 import AssignmentsPanel from '../components/Teacher/AssignmentsPanel';
 import AnalyticsPanel from '../components/Teacher/AnalyticsPanel';
 import StudentsPanel from '../components/Teacher/StudentsPanel';
+import { useIsNarrow } from '../hooks/useIsNarrow';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -48,6 +49,7 @@ const MENU_ITEMS = [
  * 权限：全部由后端判定；这里的展示判断不构成安全边界。
  */
 const TeacherPage: React.FC<TeacherPageProps> = () => {
+  const isNarrow = useIsNarrow();
   const [loggedIn, setLoggedIn] = useState(isLoggedIn());
   const [activeKey, setActiveKey] = useState<PanelKey>('dashboard');
 
@@ -280,7 +282,7 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         {/* 左侧导航 */}
-        <Card size="small" style={{ width: 168, minWidth: 168 }}>
+        <Card size="small" style={{ width: isNarrow ? '100%' : 168, minWidth: isNarrow ? 0 : 168 }}>
           <Menu
             mode="inline"
             selectedKeys={[activeKey]}
@@ -291,7 +293,7 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
         </Card>
 
         {/* 右侧内容 */}
-        <div style={{ flex: 1, minWidth: 480 }}>
+        <div style={{ flex: 1, minWidth: isNarrow ? 0 : 480 }}>
           {coursesLoading && activeKey === 'dashboard' && courses.length === 0
             ? <LoadingBlock tip="正在加载课程…" />
             : renderPanel()}
