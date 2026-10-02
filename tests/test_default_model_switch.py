@@ -252,6 +252,10 @@ class TestOutgoingRequestUsesDefaultModel(IsolatedDataTestCase):
         self.assertEqual(self.sent[0]["model"], "deepseek-chat", self.sent[0])
         self.assertIn("api.deepseek.com", self.sent[0]["url"])
 
+    @unittest.skipUnless(
+        os.getenv("DASHSCOPE_API_KEY"),
+        "需要 DASHSCOPE_API_KEY（qwen）才能验证「显式指定其它提供方」："
+        "没有 key 时 provider 在发请求前就直接拒绝，测不到模型选择逻辑本身")
     def test_explicit_model_overrides_default(self):
         """显式指定其它模型时，请求必须打到对应提供方（不静默替换）"""
         from services import note_service
@@ -328,9 +332,10 @@ class TestVisionAndSpeechAreSeparate(unittest.TestCase):
 
     def test_mimo_optional_provider_reports_real_reason(self):
         """
-        MiMo 作为**可选提供方**被显式选择时：凭证被拒 → available=False 且给出真实原因
+        MiMo 作为**可选提供方**被显式选择时：给出真实、可理解的原因，不伪装成功
 
-        （默认语音链路已改为本地，见 test_speech_capability_prefers_local）
+        （默认语音链路已改为本地；MiMo TTS 已整体移除，因此这里不再触发真实探测，
+         见 test_speech_capability_prefers_local）
         """
         from services import audio_service
 
@@ -344,8 +349,14 @@ class TestVisionAndSpeechAreSeparate(unittest.TestCase):
             cap = audio_service.speech_capability(force=True)
         audio_service.reset_speech_probe()
         self.assertFalse(cap["available"])
+        self.assertTrue(cap["reason"], "不可用时必须给出原因，不能留空")
         self.assertIn("MiMo", cap["reason"])
-        self.assertTrue("会员到期" in cap["reason"] or "凭证" in cap["reason"])
+        # 变更说明（2026-10-02）：语音链路已改为本地、MiMo TTS 整体移除，
+        # mimo_speech_status() 现在**不再做真实探测**（audio_service.py 的 probe 分支）。
+        # 旧断言要求"会员到期/凭证被拒"——那是探测仍在时的文案，已经过时。
+        # 改为断言"不伪装成功 + 原因说明真实情况"，不再对某个提供方的具体文案上锁。
+        self.assertTrue("未探测" in cap["reason"] or "本地" in cap["reason"],
+                        f"原因未说明真实情况: {cap['reason']}")
 
     def test_speech_capability_prefers_local_and_reports_reason(self):
         """

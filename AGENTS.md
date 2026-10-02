@@ -88,6 +88,22 @@ pytest tests/test_<改动模块>.py -k "两三个用例"
 > 注意：`pytest.ini` 里的 `slow/integration/vision` 只是**分类标签**，
 > 不会自动排除测试。要跳过得显式写 `-m "not slow"`。
 
+**并行（`-n auto`）现在是可靠的**（2026-10-02 修复）：`tests/conftest.py` 会为每个
+xdist worker 分配**独立**的数据目录。此前所有 worker 共用同一个 `git_text_test_data`，
+并发读写同一批 SQLite 库，导致"跑真实子进程"和"时序敏感"的用例**随机失败**——
+实测同一批测试并行跑三次，失败的用例互不相同，而串行全绿。修复后并行全量 exit 0。
+
+> 若看到并行下零星失败，先怀疑并发干扰（串行复跑确认），**不要直接当成回归**。
+
+⚠️ **但 `-n auto` 不一定安全**（2026-10-02 实测）：worker 数 = CPU 核数，而每个 worker
+都要加载 torch / transformers，核多时会**把内存吃爆**。日志里出现
+`[gwNN] node down: Not properly terminated` 就是 worker 被杀，此时**结果不可信**
+（会伴随一堆 F，看着像回归其实不是）。稳妥用法是限制 worker 数（如 `-n 4`）或串行；
+只有确认机器空闲时才用 `-n auto`。
+
+**测试一律不打外网**：`conftest.py` 把 `WEB_SEARCH_ENABLED` 置为 `false`。
+要验证联网降级路径的用例，自己 mock `services.web_search_service`。
+
 ---
 
 ## 2. 必须用 pytest，不能用 unittest
@@ -98,8 +114,10 @@ python -m unittest discover   # ❌ 会出问题，见下
 ```
 
 **原因（我亲自踩过）**：`tests/conftest.py` 通过 `pytest_configure` 做数据隔离，
-把 `EDU_DATA_DIR` 指向独立测试目录（默认 `D:\项目\RAG\git_text_test_data`），
-并把 `VISION_MIN_IMAGE_BYTES` 设为 0（否则测试用的合成小图会被"过小图片"过滤跳过）。
+把 `EDU_DATA_DIR` 指向独立测试目录（默认 `D:\项目\RAG\git_text_test_data`；
+并行时再按 worker 细分），并把 `VISION_MIN_IMAGE_BYTES` 设为 0
+（否则测试用的合成小图会被"过小图片"过滤跳过），同时把 `WEB_SEARCH_ENABLED`
+置为 `false`（测试不打外网）。
 
 `unittest discover` **不会加载 `conftest.py`**，后果：
 1. **测试数据写进正式 `data/` 目录**（污染真实库）；
@@ -187,37 +205,131 @@ python -m pip install -r requirements.txt
   该函数已于 2026-10-02 补上，并有回归测试 `tests/test_incremental_ingest.py` 锁定。
   **教训**：调用外部函数前先确认它存在；新增功能必须配测试，否则静默失效无从察觉。
 - 新增"静默降级"分支时**必须打日志**，且降级不应伪装成成功。
+- **前端拆包要实测首屏，别凭直觉加 `manualChunks`**（2026-10-02 实测打脸）：
+  按包名粗粒度把 react / antd / framer-motion / echarts 拆成 vendor chunk 后，
+  首屏从 **874 KB 涨到 1580 KB（+81%）**——单独成 chunk 后 Rollup 保留了
+  antd 大量未被使用的代码，tree-shaking 失效。
+  **真正的优化是路由级懒加载**（`src/App.tsx` 的 `lazy` + `Suspense`，
+  首屏 3.94MB → 874KB）。要动拆包，先量首屏：把 `dist/index.html` 里所有
+  `/assets/*.js` 加起来，**只看最大的那个文件会得出错误结论**。
 
 ---
 
 ## 8. 已知未完成项（不要误以为是 bug）
 
-- `rag/multimodal/pdf/processors/vision_processor.py` 与
-  `rag/enrichment/multimodal_enricher.py` 是**两套并行的视觉实现**，
-  PDF 管线只接了后者。统一它们是待办。
+- **两套并行的视觉实现**（2026-10-02 已核实清楚哪套是活的）：
+  `rag/enrichment/multimodal_enricher.py` 的 `MultimodalEnricher` 是**活的那套**
+  （`rag/loaders/pdf_loader.py` 用它）；`rag/multimodal/pdf/processors/vision_processor.py`
+  的 `VisionProcessor` **没有任何生产代码调用**，只有测试覆盖（`test_processors.py`、
+  `test_trial_permission_guards.py`）。
+  差别：前者面向 documents（图片/表格/文本分派）、走 `services/multimodal_service`
+  （多提供方 + 能力状态上报）、缓存带 `VISION_PROMPT_VERSION`；后者面向图片文件/PDFElement、
+  自带 `cache/vision_descriptions`、模型名写死 qwen-vision。
+  **改视觉行为必须改活的那套**，否则改了没效果。
+  统一方案（待决策）：① 删掉未接线的那套并迁走其测试；② 保留但明确标注未接线
+  （当前已加警示注释）；③ 让 processors 变成 MultimodalEnricher 的薄封装。
 - `材料力学` 课件的 PDF 文本层只有约 3,900 字符（24 页里 131 张图），
   内容量天然极低，检索效果差是**数据源**问题，不是代码问题。
-- 部分测试对"哪个 provider 已配置"有环境耦合（依赖 `DASHSCOPE_API_KEY` 等），
-  在只配 DeepSeek 的环境下会失败。属于已知项。
+- 环境耦合的测试已改为**显式跳过**（2026-10-02）：依赖 `DASHSCOPE_API_KEY` 的
+  `test_explicit_model_overrides_default` 现在是 `skipUnless`，只配 DeepSeek 时会
+  **SKIP 而不是假失败**。看到 SKIP 是正常的，别当成问题。
+- `frontend/src/components/ModelSelector` 是**死组件**（没有任何页面引用），
+  而后端 `/api/models/switch` 也**不改动任何状态**（只校验提供方配置、返回"已选择"）。
+  即"模型切换"这个功能从未真正接通。接线还是删除，待决策。
+- **掌握度对自评采取"单向从严"，已接线**（2026-10-02 晚）：
+  `mastery_service.rebuild_point_from_attempts` 按作答记录重放，
+  `quiz_service.self_evaluate` 在学生改判"答错"后调用它。
+  规则是：
+  - 自评**答错** → 采信。AI 判的"对"被撤回、记为"错"（学生承认不会，是真证据）；
+  - 自评**答对** → 不采信、也不触发重算。**撤不掉** AI 判的那条错误证据。
+
+  **为什么不能"完全生效"**：若自评答对也采信，学生点一下「我答对了」就能把错误证据
+  抹掉——这是刷分，会毁掉整个掌握度。反之若完全不采信，就会出现"AI 判对、学生改判错，
+  掌握度还显示对"的自相矛盾。单向从严同时解决这两点。
+  改动时必须同时跑 `test_phase1_hardening.py`（端到端两个方向）与
+  `test_mastery_rebuild.py`（口径）。
 
 ---
 
 ## 9. 快速自检清单（提交前）
 
 ```bash
-python -m ruff check .                    # 0.1 秒。当前有 ~25 条存量（见下），
-                                          # 你改的文件若引入**新**问题必须修掉
+python -m ruff check .                    # 0.1 秒。**当前 services/ api/ rag/ 已清零**，
+                                          # 请保持 0
 python -m pytest tests/test_<你改的模块>.py   # 相关文件
-python -m pytest tests                    # 全量（发版前）
+python -m pytest tests -n 4               # 全量（worker 隔离已做；别用 -n auto，见第 1 节）
 git status --short                        # 确认没夹带临时脚本/密钥/数据文件
 ```
 
-**关于 ruff 的 ~25 条存量**：主要是 `F821 Undefined name`（前向引用注解）、
-`F841 未使用变量`、`F811 重复定义`。它们**不影响运行**，但其中几条值得顺手清理：
-- `services/auth_service.py:30` 重新定义了已导入的 `_DATA_DIR`
-- `api/routes/models.py:132` 的 `provider` 赋值后从未使用（与"模型切换没生效"相关）
-- `rag/vector_store.py:434` 的 `metadatas` 未使用
+**ruff 现状（2026-10-02）**：`services/`、`api/`、`rag/` 已**清零**（此前约 25 条存量）。
+清理时修掉的真问题包括：`rag/text_splitter.py` 里 `SimpleDocument` 被三个 ImportError
+分支各抄了一份（已提到模块级 + 用 `TYPE_CHECKING` 声明 `Document`）、
+`api/routes/models.py` 的死赋值（顺带查出"模型切换成功"是误导文案，见第 8 节）。
+**保持 0。**
 
-目标是**存量不增加**：在你改动的文件里不引入新的 ruff 报错即可。
+> 逐条核对上下文，别用 `ruff --fix --unsafe-fixes` 一把梭：`last_error = e` 在
+> `model_service.py` 的流式与非流式里文本**完全相同**，但只有非流式那处会被后续
+> `raise` 真正使用——误删会丢错误信息。
 
 提交信息里写清：**改了什么、为什么、怎么验证的**。
+
+---
+
+## 10. 可观测性：外部能力状态与调用账本（2026-10-02 新增）
+
+这个项目反复吃"静默降级"的亏（`knowledge_expander` 坏了一年、
+`VISION_MODE=ocr` 让图片永远进不了知识库、`CHUNK_SIZE` 从未生效）。
+现在有统一出口，**新增外部依赖时请接进来**，不要只写日志。
+
+### 两个模块
+
+- `services/capability_status.py` —— 运行态能力状态（llm / web_search / vision / speech）。
+  **被动探活**：调用方在真实调用后 `safe_report(CAP_X, ok, reason=...)`，
+  不额外发探测请求、不花钱。`ok=None` 表示本次进程还没调用过（**不等于不可用**）。
+- `services/usage_ledger.py` —— 外部调用账本（按天 × 能力）。只记**成功**的调用；
+  有当日预算（`USAGE_DAILY_BUDGET_*`，0 = 不限）。落盘在 `get_data_dir()/usage_ledger.db`。
+
+两者都经 `GET /health/ready` 下发（`external_capabilities` / `usage_today`），
+前端在全局横幅（只在降级/超预算时出现）和设置页「运行状态」面板展示。
+
+### 接入约定（踩过的坑）
+
+- 上报**绝不能影响主流程**：用 `capability_status.safe_report(...)`（内部吞异常）。
+- 记账记在"**一次调用**"层面，不是"一次尝试"：底层有重试循环，按尝试记会虚高。
+- 区分"用户主动中断"与"真故障"：流式对话里客户端断开抛 `GeneratorExit`，
+  **不能**上报成降级（见 `model_service.OpenAICompatibleProvider.chat_stream`）。
+- 记账/上报挂在 `ModelProvider.chat` / `chat_stream` 上，**不要**挂
+  `_call_openai_compatible_api`——后者被 `vision` 复用，会把识图误记成文本调用。
+- 预算超限**只拦后台预生成**（`services/quiz_prewarm.py`），不拦学生交互。
+
+### 排查入口
+
+```bash
+curl -s http://localhost:8000/health/ready
+```
+
+看 `external_capabilities.<能力>.ok / last_error` 就知道"哪一环此刻坏了、为什么"，
+不用翻日志。
+
+---
+
+## 11. 出题的来源分层（2026-10-02 新增）
+
+各校教材版本不同，本地知识库只覆盖学生自己上传的资料。`note_service.generate_quiz`
+因此分三层降级，**每层都带来源标记**（写入 `quiz_questions.source`，前端显示成标签）：
+
+| 层 | 条件 | source |
+|---|---|---|
+| 1 | 知识库有证据（**且不联网**） | `knowledge_base` / `note` / `quiz` |
+| 2 | 证据不足 + Tavily 可用 | `web_search`（带回素材 URL） |
+| 3 | 联网不可用或没命中 | `general_knowledge` |
+
+**必须保持"不冒充"**：通用题不能显示成"你的资料里有这道题"。
+联网素材只当素材用——Tavily 的 `include_answer` 语言不稳定（中文查询会回英文摘要），
+且网页答案本身经常是错的，所以答案一律由我们自己的模型**重新推导核对**。
+
+配置在 `.env`：`TAVILY_API_KEY` / `WEB_SEARCH_ENABLED` / `WEB_SEARCH_MAX_RESULTS` /
+`WEB_SEARCH_PREGEN_POINTS` / `WEB_SEARCH_PREGEN_COUNT`。
+预生成由建库/重建成功后触发（`api/routes/knowledge.py` 的 `_schedule_quiz_prewarm`），
+每个学科在一个进程内只跑一次。
+

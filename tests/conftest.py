@@ -54,10 +54,40 @@ def pytest_configure(config):
     """会话开始前确定数据目录并显式打印（便于排查"数据写到哪去了"）"""
     active = _configure_isolation()
 
+    # xdist 并行执行时，给每个 worker 分配**独立**的数据目录（2026-10-02）。
+    #
+    # 不这么做的话所有 worker 共用同一个 git_text_test_data：并发读写同一批
+    # SQLite 库会让两类用例随机失败——跑真实子进程的（test_isolation_guard）
+    # 和时序敏感的（test_runtime_responsiveness 断言"长任务期间健康检查仍响应"）。
+    # 实测：同一批测试并行跑三次，失败的用例互不相同；串行则全绿。
+    # 这类"偶尔红一下"最消耗人：分不清是回归还是环境。
+    #
+    # 只在"自动落到默认测试目录"时才分 worker：用户显式指定的目录可能是
+    # 刻意要的（例如真实模型验收统一数据），不擅自改。
+    worker = getattr(config, "workerinput", None)
+    if worker and Path(active).resolve() == DEFAULT_TEST_DIR.resolve():
+        worker_id = str(worker.get("workerid") or "unknown")
+        worker_dir = DEFAULT_TEST_DIR / f"worker-{worker_id}"
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["EDU_DATA_DIR"] = str(worker_dir)
+        active = str(worker_dir)
+        print(f"[pytest 数据隔离] xdist {worker_id} 使用独立目录：{worker_dir}")
+
     # 视觉增强的"过小图片"过滤在测试中关闭：
     # 测试用的是合成小图（远小于 8KB 的生产阈值），若沿用默认阈值会被跳过，
     # 导致识图分支完全不可测。生产默认值仍为 8KB。
     os.environ.setdefault("VISION_MIN_IMAGE_BYTES", "0")
+
+    # 外部联网在测试会话里**默认关闭**（2026-10-02）。
+    #
+    # 背景：知识库证据不足时出题会降级到"联网搜索"，而真实请求会
+    #   1) 让测试变慢、在有网/无网环境下结果不一致；
+    #   2) 消耗真实 Tavily 额度；
+    #   3) 更隐蔽的是——用 mock.patch("...requests.post") 的测试会连它一起截住，
+    #      拿到假响应后静默走错分支（test_default_model_switch 就这样失败过）。
+    # 需要验证联网路径的用例，自己 mock services.web_search_service 即可。
+    # 直接赋值（而非 setdefault）：.env 里可能是 true，而环境变量优先级更高。
+    os.environ["WEB_SEARCH_ENABLED"] = "false"
 
     from config.path_config import get_data_dir
     resolved = Path(get_data_dir()).resolve()
