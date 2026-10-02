@@ -54,6 +54,14 @@ def prewarm_subject_quiz(subject_id: str) -> Dict[str, Any]:
     if not subject_id or limit <= 0:
         return {"skipped": True, "reason": "预生成已关闭或缺少学科"}
 
+    # 预算保护：预生成是"锦上添花"，用满当日预算就停——
+    # 绝不因为后台预热把额度烧光，导致学生真正要题时没得用。
+    from services import usage_ledger
+    for kind in (usage_ledger.KIND_LLM, usage_ledger.KIND_WEB_SEARCH):
+        if usage_ledger.is_over_budget(kind):
+            logger.info(f"题库预热跳过：{kind} 已达当日预算上限")
+            return {"skipped": True, "reason": f"{kind} 已达当日预算上限"}
+
     try:
         from services.learning_data import list_knowledge_points
         points = list_knowledge_points(subject_id) or []

@@ -7,6 +7,7 @@
 
 import os
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -23,6 +24,12 @@ class TestQuizPrewarm(unittest.TestCase):
 
     def setUp(self):
         reset_prewarm_state()
+        # 预热前会检查当日预算，而账本落在数据目录：
+        # 必须隔离到临时目录，否则测试会读到真实用量、结果不可复现。
+        self._tmp = tempfile.mkdtemp(prefix="prewarm_")
+        self._env = mock.patch.dict(os.environ, {"EDU_DATA_DIR": self._tmp})
+        self._env.start()
+        self.addCleanup(self._env.stop)
 
     def test_only_limited_points_are_prewarmed(self):
         """只预热前 N 个知识点，且按配置的题量出题（避免烧光模型额度）"""

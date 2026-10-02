@@ -448,7 +448,7 @@ def generate_quiz(
 
     except KBError:
         raise
-    except AIServiceError as e:
+    except AIServiceError:
         raise NoteServiceError("AI生成服务暂时不可用，请稍后重试", error_type="model_api_error")
     except NoteServiceError:
         raise
@@ -569,7 +569,7 @@ def generate_smart_note(
 
     except KBError:
         raise
-    except AIServiceError as e:
+    except AIServiceError:
         # LLM/模型调用失败 → model_api_error
         raise NoteServiceError("AI生成服务暂时不可用，请稍后重试", error_type="model_api_error")
     except NoteServiceError:
