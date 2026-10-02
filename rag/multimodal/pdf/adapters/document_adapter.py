@@ -43,6 +43,7 @@ class DocumentAdapter:
         pdf_path: Optional[Path] = None,
         merge_small: bool = False,
         target_chunk_chars: int = 600,
+        pre_merge_hook: Optional[Any] = None,
     ) -> List[Document]:
         """
         将 PDFElement 列表转换为 Document 列表
@@ -56,6 +57,11 @@ class DocumentAdapter:
                          字母都会各自成为 Document，实测导致 58%~73% 的 chunk 长度
                          不足 10 字符（中位仅 5 字符），真实内容被碎片淹没。
             target_chunk_chars: merge_small=True 时的合并目标长度
+            pre_merge_hook: 合并**之前**对每个 Document 调用的可选钩子（2026-10-02）。
+                         用于多模态增强：必须在合并前处理，否则合并会把 image/table/
+                         formula 的 modality 元数据覆盖掉，导致下游增强器只处理到
+                         块首那一个元素（实测 90 张图只识别了 1 张）。
+                         钩子应返回处理后的 Document（或 None 表示丢弃该元素）。
             
         Returns:
             Document 列表
@@ -69,6 +75,19 @@ class DocumentAdapter:
             except Exception as e:
                 logger.warning(f"转换元素失败: {element.type.value}, 错误: {str(e)}")
                 continue
+
+        # 合并前逐元素增强（保留各自的 modality）
+        if pre_merge_hook is not None:
+            hooked: List[Document] = []
+            for doc in documents:
+                try:
+                    out = pre_merge_hook(doc)
+                except Exception as e:
+                    logger.warning(f"pre_merge_hook 失败，保留原文档: {e}")
+                    out = doc
+                if out is not None:
+                    hooked.append(out)
+            documents = hooked
 
         if merge_small:
             merged = self._merge_by_window(documents, target_chunk_chars)
@@ -97,6 +116,11 @@ class DocumentAdapter:
         def _page(doc) -> Any:
             return (doc.metadata or {}).get("page")
 
+        def _modality(doc) -> str:
+            """元素模态：text / image / table / formula / merged"""
+            m = doc.metadata or {}
+            return str(m.get("modality") or m.get("type") or "text")
+
         merged: List[Document] = []
         buf: List[Document] = []
         buf_len = 0
@@ -120,6 +144,10 @@ class DocumentAdapter:
 
         for doc in documents:
             dlen = len(doc.page_content or "")
+            # 模态切换时先冲刷：图片摘要 / 表格 Markdown 不应与正文段落混成一块，
+            # 否则块首的 modality 会代表整块，造成下游按错误类型处理。
+            if buf and _modality(doc) != _modality(buf[-1]):
+                _flush()
             # 允许跨页累积：这些讲义类 PDF 每页文字很少（实测约 180 字符/页），
             # 若按页强制断开会产生大量远小于 chunk_size 的块。
             # 页码信息在 flush 时记录为页码范围，溯源能力不受影响。

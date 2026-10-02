@@ -53,6 +53,12 @@ def _configure_isolation() -> str:
 def pytest_configure(config):
     """会话开始前确定数据目录并显式打印（便于排查"数据写到哪去了"）"""
     active = _configure_isolation()
+
+    # 视觉增强的"过小图片"过滤在测试中关闭：
+    # 测试用的是合成小图（远小于 8KB 的生产阈值），若沿用默认阈值会被跳过，
+    # 导致识图分支完全不可测。生产默认值仍为 8KB。
+    os.environ.setdefault("VISION_MIN_IMAGE_BYTES", "0")
+
     from config.path_config import get_data_dir
     resolved = Path(get_data_dir()).resolve()
     assert resolved != PRODUCTION_DATA_DIR, "隔离失败：仍指向正式数据目录"

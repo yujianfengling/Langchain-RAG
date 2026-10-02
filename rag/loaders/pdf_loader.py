@@ -124,20 +124,28 @@ class PdfLoader(BaseLoader):
             # v2.6：生产入库路径启用小元素合并。PDF 抽取是逐元素的，
             # 不合并会产生大量单字符 Document（实测中位长度 5 字符），
             # 下游分块器只能切分过长内容、无法把碎片拼回段落。
-            documents = self.adapter.adapt(elements, file_path, merge_small=True)
+            #
+            # 2026-10-02：多模态增强改到**合并之前**逐元素执行。
+            # 原因：合并只保留块首元素的 metadata，会把 image/table/formula 的
+            # modality 覆盖掉，导致下游增强器只认到块首那一个元素
+            # （实测 90 张图只识别了 1 张）。放在合并前，每张图都能被识别，
+            # 识别出的正文再随合并进入最终 chunk。
+            def _enrich_one(doc):
+                try:
+                    out = self.enricher._enrich_single_document(doc)
+                    # 增强后正文为空的（判定为噪声/装饰）直接丢弃，不进索引
+                    return out if (out.page_content or "").strip() else None
+                except Exception as e:
+                    logger.warning(f"增强单个元素失败，保留原文档: {e}")
+                    return doc
+
+            documents = self.adapter.adapt(
+                elements, file_path, merge_small=True, pre_merge_hook=_enrich_one)
             
             if not documents:
                 logger.warning(f"文档转换失败: {file_path}")
                 # 降级到旧架构
                 return self._load_with_legacy_architecture(file_path)
-            
-            # 使用 MultimodalEnricher 增强文档
-            try:
-                documents = self.enricher.enrich(documents)
-                logger.info(f"文档增强完成: {len(documents)} 个文档")
-            except Exception as e:
-                logger.warning(f"文档增强失败，保留原始文档: {str(e)}")
-                # 增强失败时保留原始文档
             
             logger.info(f"PDF 加载成功（新架构）: {file_path}, {len(documents)} 个文档")
             return self._create_success_result(documents)

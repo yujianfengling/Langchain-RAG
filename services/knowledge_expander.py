@@ -349,12 +349,12 @@ def add_validated_knowledge_to_kb(
         # 添加到知识库
         try:
             # 使用现有的文档添加功能
-            from rag.loaders.text_loader import load_text
             from rag.text_splitter import split_documents
             from rag.vector_store import add_documents_to_store
 
             # 创建文档对象
-            from langchain.schema import Document
+            # 2026-10-02：langchain.schema 自 0.2 起已废弃，改用 langchain_core
+            from langchain_core.documents import Document
             doc = Document(
                 page_content=full_content,
                 metadata={
@@ -370,7 +370,12 @@ def add_validated_knowledge_to_kb(
             chunks = split_documents([doc])
 
             # 添加到向量存储
-            add_documents_to_store(chunks, subject_id)
+            # 注意：add_documents_to_store 会同步失效该学科的 BM25 索引，
+            # 因此追加后若发现关键词检索"少内容"，需重建该学科知识库。
+            result = add_documents_to_store(chunks, subject_id)
+            logger.info(
+                f"增量入库: subject={subject_id} 新增 {result.get('added')} chunk, "
+                f"当前共 {result.get('total')} 条")
 
             # 更新状态
             now = _now()

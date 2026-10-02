@@ -66,41 +66,65 @@ class MultimodalService:
         except Exception:
             pass
         
-        # 2. 回退到**具备视觉能力**的提供方（MiMo 视觉），而不是默认文本模型
+        # 2. 回退到**具备视觉能力**的提供方（按顺序取第一个"声明了 vision_model_name
+        #    且凭证确实可用"的），而不是拿纯文本模型冒充视觉模型。
         #
-        # 2026-09-25：默认文本模型是 DeepSeek（纯文本），把图片交给它会必然失败。
-        # 因此这里只接受显式声明了 vision_model_name 的提供方（当前为 MiMo），
-        # 且要求其凭证存在；否则视觉能力标记为不可用并说明原因，由调用方返回明确错误，
-        # 而不是拿文本模型冒充视觉模型。
+        # 2026-09-25：默认文本模型曾是 DeepSeek（当时视为纯文本），因此只认 MiMo。
+        # 2026-10-02 实测更正：DeepSeek 的对话模型同样接受 OpenAI 兼容的 image_url
+        # 输入（deepseek-chat/flash/reasoner 均可识图），因此纳入视觉候选。
+        #
+        # 顺序 = deepseek(已验证可用) > mimo(会员到期，key 常在但 401) > qwen-vision。
+        # 关键：**"key 存在"不等于"key 可用"**。实测 MiMo 的 MIMO_API_KEY 仍在 .env 里
+        # 但调用返回 401 invalid_api_key；若只按"key 非空"选提供方，会让失效凭证
+        # 挡住可用凭证。因此这里对候选做一次极轻量的探活（1 token），通过才采用。
+        #
+        # 同时修复原实现的一个缺陷：它用 OpenAICompatibleProvider.__new__ 手动拼装
+        # 实例，且 config["model_name"] 与 provider.model_name 语义不一致，
+        # 导致回退路径实际请求的模型名不确定。
         try:
             from services.model_service import OpenAICompatibleProvider
             from config.models import get_model_config, get_model_api_key
 
-            vision_model = ""
-            vision_config = None
-            for provider_name in ("mimo",):   # 目前唯一声明了 vision_model_name 的提供方
-                cfg = get_model_config(provider_name)
-                vm = cfg.get("vision_model_name")
-                if vm and get_model_api_key(provider_name):
-                    vision_model = vm
-                    vision_config = {**cfg, "model_name": vm}
-                    break
+            candidates = []
+            for provider_name in ("deepseek", "mimo", "qwen"):
+                try:
+                    cfg = get_model_config(provider_name)
+                except Exception:
+                    continue
+                vm = (cfg.get("vision_model_name") or "").strip()
+                if not vm:
+                    continue
+                key = get_model_api_key(provider_name)
+                if not key:
+                    continue
+                candidates.append((provider_name, cfg, vm, key))
 
-            if vision_config:
+            last_reason = ""
+            for provider_name, cfg, vm, key in candidates:
+                if provider_name != "deepseek" and not _provider_looks_usable(
+                        provider_name, cfg, vm, key):
+                    last_reason = f"{provider_name} 凭证不可用（探活失败）"
+                    logger.info(f"[Multimodal] 跳过视觉候选 {provider_name}：探活失败")
+                    continue
+
+                provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+                provider.model_name = provider_name
+                provider.config = {**cfg, "model_name": vm, "is_vision": True}
+                provider.api_key = key
+                self.vision_provider = provider
                 self.vision_unavailable_reason = ""
-                self.vision_provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
-                self.vision_provider.model_name = vision_model
-                self.vision_provider.config = vision_config
-                self.vision_provider.api_key = get_model_api_key(
-                    "mimo" if vision_model.startswith("mimo") else "qwen-vision")
-                logger.info(f"[Multimodal] qwen-vision 未配置，使用 {vision_model} 作为视觉模型")
-            else:
-                self.vision_provider = None
-                self.vision_unavailable_reason = (
-                    "视觉能力当前不可用：未配置可用的视觉模型凭证"
-                    "（qwen-vision 的 DASHSCOPE_API_KEY 未配置；MiMo 凭证已失效/会员到期）。"
-                    "文本问答与学习功能不受影响。")
-                logger.warning(f"[Multimodal] {self.vision_unavailable_reason}")
+                logger.info(
+                    f"[Multimodal] 使用视觉模型 provider={provider_name} model={vm}")
+                return
+
+            self.vision_provider = None
+            self.vision_unavailable_reason = (
+                "视觉能力当前不可用：未找到可用的视觉模型凭证。"
+                "请配置 DeepSeek 的 DEEPSEEK_API_KEY（其对话模型支持识图），"
+                "或配置 qwen-vision 的 DASHSCOPE_API_KEY。"
+                + (f"（最后检查：{last_reason}）" if last_reason else "")
+                + "文本问答与学习功能不受影响。")
+            logger.warning(f"[Multimodal] {self.vision_unavailable_reason}")
         except Exception as e:
             logger.warning(f"[Multimodal] 无法初始化视觉模型: {e}")
             self.vision_provider = None
@@ -180,12 +204,27 @@ class MultimodalService:
         return mime_types.get(ext, 'image/jpeg')
     
     def _get_default_image_prompt(self) -> str:
-        """获取默认的图片描述提示词（要求结构化JSON输出）"""
+        """
+        获取默认的图片描述提示词（要求结构化JSON输出）
+
+        2026-10-02：新增 is_content 判定。
+        实测课件里的图片约 56% 是噪声（校徽、PPT 模板底色、装饰边框、
+        与课程无关的书法/广告照片），只有约 31% 含真实教学内容。
+        把噪声图当知识入库会污染检索，因此让模型同时判定内容属性，
+        由调用方决定是否入库。
+        """
         return (
             "请分析这张教育图片，仅返回一个JSON对象，不要输出任何其他内容。\n"
-            '格式：{"description": "图片内容的中文描述，包含类型与关键信息", '
+            '格式：{"is_content": true/false, '
+            '"kind": "公式|示意图|数据表|专业文字|校徽/模板|广告/照片|装饰/背景|其他", '
+            '"description": "图片内容的中文描述，包含类型与关键信息", '
             '"ocr_text": "图片中出现的文字，逐字提取，没有文字则为空字符串"}\n'
-            "要求：description 需描述图片类型（图表/公式/实验图/教材插图/示意图等）、主要内容和关键信息。"
+            "要求：\n"
+            "1. is_content 表示这张图是否包含**学科知识内容**（公式、定理、数据表格、"
+            "专业示意图、专业文字）。校徽、PPT 模板底色、装饰边框、纯背景纹理、"
+            "与课程无关的照片/书法/广告，一律 is_content=false。\n"
+            "2. description 需描述图片类型与主要内容；即使 is_content=false 也要简要说明是什么。\n"
+            "3. ocr_text 逐字提取图中文字。"
         )
 
 
@@ -215,7 +254,10 @@ class MultimodalService:
             "error": None,
             "vision_status": "pending",  # pending / success / failed / skipped
             "retries": 0,
-            "error_type": None
+            "error_type": None,
+            # 内容判定（2026-10-02）：None=未判定/无法判定，True=含学科内容，False=噪声
+            "is_content": None,
+            "kind": "",
         }
         
         # 检查文件是否存在
@@ -281,10 +323,17 @@ class MultimodalService:
             vision_result = self.describe_image(image_path)
             latency = time.time() - start_time
 
-            # 解析结构化JSON响应（description + ocr_text）
+            # 解析结构化JSON响应（description + ocr_text + is_content）
             model_desc, model_ocr = parse_vision_json_response(vision_result.get("answer", ""))
             result["description"] = model_desc
             result["ocr_text"] = model_ocr
+
+            # 内容判定（2026-10-02）：区分"学科内容"与"校徽/模板/装饰"。
+            # 解析不出时留 None，由调用方按"不因判定失败而丢内容"的原则处理。
+            _d = _parse_vision_dict(vision_result.get("answer", ""))
+            result["is_content"] = _as_bool(_d.get("is_content"))
+            result["kind"] = str(_d.get("kind") or "")
+
             result["retries"] = vision_result.get("retries", 0)
             result["vision_status"] = "success"
 
@@ -292,6 +341,7 @@ class MultimodalService:
                 f"[Multimodal] Vision调用成功, image={Path(image_path).name}, "
                 f"provider={result['provider_used']}, model={result['model_used']}, "
                 f"latency={latency:.2f}s, retries={result['retries']}, "
+                f"is_content={result['is_content']}, kind={result['kind'] or '-'}, "
                 f"caption_length={len(model_desc)}, ocr_length={len(model_ocr)}"
             )
         except Exception as e:
@@ -388,6 +438,9 @@ class MultimodalService:
             "vision_status": extraction_result.get("vision_status", "unknown"),
             "vision_retries": extraction_result.get("retries", 0),
             "http_status": extraction_result.get("http_status"),
+            # 内容判定（2026-10-02）：透传给增强器，供"噪声图不入库"过滤使用
+            "is_content": extraction_result.get("is_content"),
+            "content_kind": extraction_result.get("kind") or "",
         }
 
         # 仅在失败时记录error_type
@@ -400,8 +453,50 @@ class MultimodalService:
         }
 
 
+# ---- 视觉提供方探活缓存（每进程只探一次）----
+_PROBE_CACHE: Dict[str, bool] = {}
+
+
+def _provider_looks_usable(provider_name: str, cfg: dict, model: str, key: str) -> bool:
+    """
+    轻量探活：确认该提供方的凭证当前真的可用。
+
+    为什么需要：`.env` 里存在 key ≠ key 有效。实测 MiMo 的 MIMO_API_KEY 仍在配置里，
+    但调用返回 401 invalid_api_key。若只按"key 非空"挑选视觉提供方，
+    失效凭证会把可用凭证（DeepSeek）挡在后面，表现为"配了 key 却用不了视觉"。
+
+    只发 1 个 token 的最小请求；结果按 provider 缓存，整个进程只探一次。
+    探活失败不抛异常，交由调用方跳到下一个候选。
+    """
+    if provider_name in _PROBE_CACHE:
+        return _PROBE_CACHE[provider_name]
+    try:
+        import json as _json
+        import requests
+
+        url = f"{cfg.get('base_url', '').rstrip('/')}/chat/completions"
+        body = _json.dumps({
+            "model": model,
+            "messages": [{"role": "user", "content": "ok"}],
+            "max_tokens": 1,
+        }).encode("utf-8")
+        resp = requests.post(
+            url, data=body, timeout=15,
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        ok = resp.status_code == 200
+        if not ok:
+            logger.info(f"[Multimodal] {provider_name} 探活 HTTP {resp.status_code}")
+        _PROBE_CACHE[provider_name] = ok
+        return ok
+    except Exception as e:
+        logger.info(f"[Multimodal] {provider_name} 探活异常: {type(e).__name__}")
+        _PROBE_CACHE[provider_name] = False
+        return False
+
+
 # 全局单例
 _multimodal_service: Optional[MultimodalService] = None
+
 
 def get_multimodal_service() -> MultimodalService:
     """获取多模态服务单例"""
@@ -424,8 +519,23 @@ def parse_vision_json_response(raw: str) -> Tuple[str, str]:
     """
     if not raw:
         return "", ""
+    data = _parse_vision_dict(raw)
+    if isinstance(data, dict):
+        return (str(data.get("description", "") or ""),
+                str(data.get("ocr_text", "") or ""))
+    return "", ""
+
+
+def _parse_vision_dict(raw: str) -> Dict[str, Any]:
+    """
+    解析 Vision 结构化响应为完整字典（含 is_content / kind）。
+
+    与 parse_vision_json_response 分开，是为了不破坏后者"返回两元组"的既有契约
+    （多个测试依赖该签名）。解析失败返回空字典。
+    """
+    if not raw:
+        return {}
     text = raw.strip()
-    # 剥离 Markdown 代码块
     if text.startswith("```"):
         lines = text.splitlines()
         if lines and lines[0].startswith("```"):
@@ -435,11 +545,22 @@ def parse_vision_json_response(raw: str) -> Tuple[str, str]:
         text = "\n".join(lines).strip()
     try:
         data = json.loads(text)
-        if isinstance(data, dict):
-            return str(data.get("description", "") or ""), str(data.get("ocr_text", "") or "")
+        return data if isinstance(data, dict) else {}
     except (ValueError, TypeError):
-        pass
-    return "", ""
+        return {}
+
+
+def _as_bool(v: Any) -> Optional[bool]:
+    """把模型返回的 true/false/"true"/"是" 等宽松地转成 bool；无法判断返回 None"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("true", "yes", "1", "是", "有", "内容"):
+            return True
+        if s in ("false", "no", "0", "否", "无", "噪声"):
+            return False
+    return None
 
 
 def describe_image(image_path: str, **kwargs) -> str:

@@ -30,6 +30,11 @@ MODEL_CONFIG = {
         "base_url": os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         "api_key": "",
         "model_name": os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+        # 视觉：DeepSeek 的对话模型同样接受 OpenAI 兼容的 image_url 输入
+        # （实测 deepseek-chat / deepseek-flash / deepseek-reasoner 均可识图）。
+        # 默认与文本模型同名，可用 DEEPSEEK_VISION_MODEL 单独指定。
+        "vision_model_name": os.getenv("DEEPSEEK_VISION_MODEL", "")
+                                      or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
     },
     "qwen": {
         "name": "通义千问",

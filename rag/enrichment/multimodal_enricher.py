@@ -5,6 +5,7 @@ V2.3.1 Phase 2.4.4: 添加Vision结果持久化缓存
 """
 
 import json
+import os
 import hashlib
 import logging
 from abc import ABC, abstractmethod
@@ -15,7 +16,23 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # Vision缓存版本标识
-VISION_PROMPT_VERSION = "v1.0"
+#
+# 2026-10-02 升到 v1.2：v1.1 虽然改了提示词，但那批缓存里的 is_content
+# 在数据流上是断的（service→enricher 未透传），落盘的都是 null，
+# 沿用会让噪声过滤失效。v1.2 修正透传，故必须让 v1.1 缓存失效。
+VISION_PROMPT_VERSION = "v1.2"
+
+# 过小图片阈值（字节）：低于此值视为装饰/校徽/边框，直接跳过识图。
+# 依据：实测课件 <8KB 的图占 44%~59%，抽检几乎全部为模板类噪声。
+#
+# 可用 VISION_MIN_IMAGE_BYTES 覆盖：
+#   - 测试环境（conftest.py）设为 0，让合成小图仍能走识图路径，保证该分支可测；
+#   - 若某些学科确实存在"小图但有内容"的情况（如纯公式截图），也可调低。
+def _min_content_image_bytes() -> int:
+    try:
+        return int(os.getenv("VISION_MIN_IMAGE_BYTES", str(8 * 1024)))
+    except (TypeError, ValueError):
+        return 8 * 1024
 
 # 图片描述缓存目录（与DocumentConverter共享）
 #
@@ -128,6 +145,13 @@ class QwenVisionProvider(VisionProvider):
             result["vision_status"] = metadata.get("vision_status", "unknown")
             result["vision_retries"] = metadata.get("vision_retries", 0)
             result["http_status"] = metadata.get("http_status")
+
+            # 内容判定（2026-10-02）：上游 MultimodalService 已解析出 is_content/kind，
+            # 必须在此透传，否则下游的噪声过滤拿不到判定结果，永远不生效。
+            if "is_content" in metadata:
+                result["is_content"] = metadata.get("is_content")
+            if metadata.get("content_kind"):
+                result["kind"] = metadata.get("content_kind")
 
             if metadata.get("vision_error_type"):
                 result["vision_error_type"] = metadata["vision_error_type"]
@@ -412,6 +436,22 @@ class MultimodalEnricher:
             return doc
         
         image_path_obj = Path(image_path)
+
+        # Step 0（2026-10-02）：体积预过滤 —— 调用识图**之前**就跳过明显的装饰图。
+        # 实测课件里 <8KB 的图占 44%~59%，几乎都是校徽/模板边框/纯色底纹；
+        # 对它们调用视觉模型既浪费额度，又会把"紫色渐变边框"这类描述写进知识库。
+        try:
+            if image_path_obj.exists() and image_path_obj.stat().st_size < _min_content_image_bytes():
+                doc.metadata["vision_status"] = "skipped"
+                doc.metadata["vision_skip_reason"] = "tiny_image"
+                doc.metadata["is_content"] = False
+                doc.page_content = ""
+                logger.debug(
+                    f"[Multimodal] 跳过过小图片({image_path_obj.stat().st_size}B): "
+                    f"{image_path_obj.name}")
+                return doc
+        except OSError:
+            pass
         
         # Step 1: 检查持久化缓存
         cache_key = self._compute_cache_key(image_path_obj)
@@ -420,6 +460,13 @@ class MultimodalEnricher:
         if cached_data:
             # 缓存命中，直接使用缓存数据
             cached_metadata = cached_data.get('metadata', {})
+            # 缓存里已判定为噪声的图同样不入库（v1.1 起缓存会记录 is_content）
+            if cached_metadata.get("is_content") is False:
+                doc.metadata["vision_status"] = "skipped"
+                doc.metadata["vision_skip_reason"] = "not_content"
+                doc.metadata["is_content"] = False
+                doc.page_content = ""
+                return doc
             doc.page_content = cached_data['page_content']
             doc.metadata["description"] = cached_metadata.get("description", "")
             doc.metadata["ocr_text"] = cached_metadata.get("ocr_text", "")
@@ -459,6 +506,24 @@ class MultimodalEnricher:
                 # 将结果写回metadata
                 doc.metadata["description"] = vision_result.get("description", "")
                 doc.metadata["ocr_text"] = vision_result.get("ocr_text", "")
+
+                # Step 2.5（2026-10-02）：内容判定 —— 噪声图不进知识库。
+                # 实测抽检中约 56% 的课件图片是校徽/PPT模板/装饰/无关照片，
+                # 把它们当知识入库会稀释检索结果（用户反馈"上传课件效益不高"的来源之一）。
+                # 仅当模型**明确**判定为噪声（is_content is False）才丢弃；
+                # 判定不出来（None）时保守保留，避免误杀真内容。
+                is_content = vision_result.get("is_content")
+                doc.metadata["is_content"] = is_content
+                if vision_result.get("kind"):
+                    doc.metadata["content_kind"] = vision_result["kind"]
+                if is_content is False:
+                    doc.metadata["vision_status"] = "skipped"
+                    doc.metadata["vision_skip_reason"] = "not_content"
+                    doc.page_content = ""
+                    logger.info(
+                        f"[Multimodal] 判定为非学科内容，不入库: "
+                        f"{image_path_obj.name} kind={vision_result.get('kind') or '-'}")
+                    return doc
 
                 # 更新page_content
                 self._update_page_content_with_vision(doc, vision_result)

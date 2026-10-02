@@ -27,37 +27,14 @@ _DATA_ROOT = str(_get_data_dir())
 _VECTOR_STORE_BASE = os.path.join(_DATA_ROOT, "vector_store")
 _SUBJECTS_DATA_BASE = os.path.join(_DATA_ROOT, "subjects")
 
-
-def _safe_dir_name(subject_id: str) -> str:
-    """
-    将学科ID转为文件系统安全的目录名。
-    FAISS在Windows上不支持中文路径，因此中文ID需编码为ASCII。
-    纯ASCII的ID直接返回。
-    """
-    try:
-        subject_id.encode('ascii')
-        return subject_id  # 纯ASCII，直接用
-    except UnicodeEncodeError:
-        # 中文ID → base64编码（去掉=填充，用_替代/和+）
-        encoded = base64.urlsafe_b64encode(subject_id.encode('utf-8')).decode('ascii').rstrip('=')
-        return f"_zh_{encoded}"
-
-
-def _original_subject_id(safe_name: str) -> str:
-    """
-    将安全目录名还原为原始学科ID（_safe_dir_name 的逆操作）。
-    """
-    if not safe_name.startswith('_zh_'):
-        return safe_name  # 纯ASCII，直接返回
-    try:
-        encoded = safe_name[4:]  # 去掉 _zh_ 前缀
-        # 补回 base64 的 = 填充
-        padding = 4 - len(encoded) % 4
-        if padding != 4:
-            encoded += '=' * padding
-        return base64.urlsafe_b64decode(encoded).decode('utf-8')
-    except Exception:
-        return safe_name  # 解码失败，返回原值
+# _safe_dir_name / _original_subject_id 已移到 vector_store 模块
+# （2026-10-02）：vector_store.add_documents_to_store 需要它，而本模块 import
+# vector_store，反向 import 会循环依赖。索引路径的唯一来源应放在 vector_store。
+# 这里重新导出以保持既有调用方（hybrid_retriever / knowledge_service 等）不变。
+from .vector_store import (  # noqa: E402,F401
+    _safe_dir_name,
+    _original_subject_id,
+)
 
 # 导入LangChain Document对象
 try:

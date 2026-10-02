@@ -39,7 +39,6 @@ class TestPdfMultimodalPipeline(unittest.TestCase):
             bbox=(0, 0, 100, 100),
             confidence=1.0
         )
-        
         self.image_element = PDFElement(
             type=ElementType.IMAGE,
             content={
@@ -66,7 +65,61 @@ class TestPdfMultimodalPipeline(unittest.TestCase):
     def tearDown(self):
         """清理测试环境"""
         shutil.rmtree(self.test_dir, ignore_errors=True)
-    
+
+    # ------------------------------------------------------------------
+    # 2026-10-02：管线契约变更后的测试辅助
+    #
+    # 变更前：PdfLoader 先 adapt 出全部 Document，再整体调 enricher.enrich(docs)。
+    # 变更后：多模态增强改为**合并前逐元素**执行（pre_merge_hook），原因是
+    #         merge_small 只保留块首元素的 metadata，会把 image/table/formula
+    #         的 modality 覆盖掉，导致 90 张图只识别到 1 张。
+    #
+    # 因此测试的 mock 需要同步：
+    #   1) 适配器 adapt 被调用时带上 pre_merge_hook —— 由本辅助函数模拟调用；
+    #   2) 增强入口从 enricher.enrich 变为 enricher._enrich_single_document；
+    #   3) 合并仍走真实 DocumentAdapter._merge_by_window，以验证合并后的元数据。
+    # ------------------------------------------------------------------
+    def _wire_adapter_with_hook(self, raw_docs, enriched_map):
+        """
+        让 mock 适配器按新契约工作：先对每个元素调 pre_merge_hook，再真实合并。
+
+        Args:
+            raw_docs: 适配器"产出"的原始 Document 列表
+            enriched_map: {原始 page_content: 增强后 Document}，缺省则原样返回
+        """
+        from rag.multimodal.pdf.adapters.document_adapter import DocumentAdapter
+
+        real_adapter = DocumentAdapter()
+        captured = {}
+
+        def fake_adapt(elements, pdf_path=None, merge_small=False,
+                       target_chunk_chars=600, pre_merge_hook=None):
+            captured["hook"] = pre_merge_hook
+            captured["merge_small"] = merge_small
+            docs = list(raw_docs)
+            if pre_merge_hook is not None:
+                out = []
+                for d in docs:
+                    r = pre_merge_hook(d)
+                    if r is not None:
+                        out.append(r)
+                docs = out
+            if merge_small:
+                return real_adapter._merge_by_window(docs, target_chunk_chars)
+            return docs
+
+        mock_adapter = Mock()
+        mock_adapter.adapt.side_effect = fake_adapt
+        mock_adapter._merge_by_window = real_adapter._merge_by_window
+        self.loader._adapter = mock_adapter
+
+        # 增强器：按新契约只暴露 _enrich_single_document
+        mock_enricher = Mock()
+        mock_enricher._enrich_single_document.side_effect = (
+            lambda d: enriched_map.get(d.page_content, d))
+        self.loader._enricher = mock_enricher
+        return mock_adapter, mock_enricher, captured
+
     def test_full_pipeline_with_multimodal_enricher(self):
         """测试PDF → Document完整链路，包含MultimodalEnricher"""
         # 准备元素列表
@@ -82,36 +135,39 @@ class TestPdfMultimodalPipeline(unittest.TestCase):
         mock_extractor.extract_all.return_value = [Path('/path/to/image.png')]
         self.loader._image_extractor = mock_extractor
         
-        # 模拟DocumentAdapter
+        # 模拟DocumentAdapter + MultimodalEnricher（按 2026-10-02 的新契约）
         text_doc = Document(page_content="文本内容", metadata={"source": "text"})
         image_doc = Document(page_content="[图片]", metadata={"image_path": "/path/to/image.png"})
         table_doc = Document(page_content="表格内容", metadata={"source": "table"})
-        mock_adapter = Mock()
-        mock_adapter.adapt.return_value = [text_doc, image_doc, table_doc]
-        self.loader._adapter = mock_adapter
-        
-        # 模拟MultimodalEnricher
-        mock_enricher = Mock()
-        enriched_text_doc = Document(page_content="文本内容", metadata={"source": "text", "modality": "text"})
-        enriched_image_doc = Document(page_content="图片描述...", metadata={"image_path": "/path/to/image.png", "modality": "image", "description": "描述"})
-        enriched_table_doc = Document(page_content="表格内容:\n| A | B |\n| --- | --- |\n| 1 | 2 |", metadata={"source": "table", "modality": "table"})
-        mock_enricher.enrich.return_value = [enriched_text_doc, enriched_image_doc, enriched_table_doc]
-        self.loader._enricher = mock_enricher
+        enriched_map = {
+            "文本内容": Document(page_content="文本内容",
+                             metadata={"source": "text", "modality": "text"}),
+            "[图片]": Document(page_content="图片描述...",
+                            metadata={"image_path": "/path/to/image.png",
+                                      "modality": "image", "description": "描述"}),
+            "表格内容": Document(page_content="表格内容:\n| A | B |\n| --- | --- |\n| 1 | 2 |",
+                             metadata={"source": "table", "modality": "table"}),
+        }
+        _, mock_enricher, captured = self._wire_adapter_with_hook(
+            [text_doc, image_doc, table_doc], enriched_map)
         
         # 执行加载
         result = self.loader.load(self.pdf_file)
         
-        # 验证结果
+        # 验证结果：三种模态互不合并，各自成块
         self.assertTrue(result.success)
         self.assertEqual(len(result.documents), 3)
         
-        # 验证MultimodalEnricher被调用
-        mock_enricher.enrich.assert_called_once_with([text_doc, image_doc, table_doc])
+        # 验证增强按新契约被逐元素调用（而不是一次性 enrich 整批）
+        self.assertEqual(mock_enricher._enrich_single_document.call_count, 3)
+        self.assertIsNotNone(captured.get("hook"), "适配器应收到 pre_merge_hook")
+        self.assertTrue(captured.get("merge_small"), "生产路径应启用合并")
         
-        # 验证文档被增强
-        self.assertEqual(result.documents[0].metadata["modality"], "text")
-        self.assertEqual(result.documents[1].metadata["modality"], "image")
-        self.assertEqual(result.documents[2].metadata["modality"], "table")
+        # 验证各模态元数据在合并后仍然保留
+        metas = [d.metadata for d in result.documents]
+        self.assertIn("text", [m.get("modality") for m in metas])
+        self.assertIn("image", [m.get("modality") for m in metas])
+        self.assertIn("table", [m.get("modality") for m in metas])
     
     def test_image_enrichment_call(self):
         """测试图片文档的enrichment调用"""
@@ -128,14 +184,8 @@ class TestPdfMultimodalPipeline(unittest.TestCase):
         mock_extractor.extract_all.return_value = [Path('/path/to/image.png')]
         self.loader._image_extractor = mock_extractor
         
-        # 模拟DocumentAdapter
+        # 模拟DocumentAdapter + MultimodalEnricher（新契约：合并前逐元素增强）
         image_doc = Document(page_content="[图片]", metadata={"image_path": "/path/to/image.png"})
-        mock_adapter = Mock()
-        mock_adapter.adapt.return_value = [image_doc]
-        self.loader._adapter = mock_adapter
-        
-        # 模拟MultimodalEnricher
-        mock_enricher = Mock()
         enriched_doc = Document(
             page_content="图片描述:\n这是一张图片",
             metadata={
@@ -146,8 +196,8 @@ class TestPdfMultimodalPipeline(unittest.TestCase):
                 "model_used": "qwen-vision"
             }
         )
-        mock_enricher.enrich.return_value = [enriched_doc]
-        self.loader._enricher = mock_enricher
+        _, mock_enricher, _ = self._wire_adapter_with_hook(
+            [image_doc], {"[图片]": enriched_doc})
         
         # 执行加载
         result = self.loader.load(self.pdf_file)
@@ -177,14 +227,8 @@ class TestPdfMultimodalPipeline(unittest.TestCase):
         mock_extractor.extract_all.return_value = []
         self.loader._image_extractor = mock_extractor
         
-        # 模拟DocumentAdapter
+        # 模拟DocumentAdapter + MultimodalEnricher（新契约：合并前逐元素增强）
         table_doc = Document(page_content="表格内容", metadata={"source": "table"})
-        mock_adapter = Mock()
-        mock_adapter.adapt.return_value = [table_doc]
-        self.loader._adapter = mock_adapter
-        
-        # 模拟MultimodalEnricher
-        mock_enricher = Mock()
         enriched_doc = Document(
             page_content="表格内容:\n| A | B |\n| --- | --- |\n| 1 | 2 |",
             metadata={
@@ -194,8 +238,7 @@ class TestPdfMultimodalPipeline(unittest.TestCase):
                 "ocr_text": "| A | B |\n| --- | --- |\n| 1 | 2 |"
             }
         )
-        mock_enricher.enrich.return_value = [enriched_doc]
-        self.loader._enricher = mock_enricher
+        self._wire_adapter_with_hook([table_doc], {"表格内容": enriched_doc})
         
         # 执行加载
         result = self.loader.load(self.pdf_file)
@@ -264,17 +307,12 @@ class TestPdfMultimodalPipeline(unittest.TestCase):
         mock_extractor.extract_all.return_value = []
         self.loader._image_extractor = mock_extractor
         
-        # 模拟DocumentAdapter
+        # 模拟DocumentAdapter + MultimodalEnricher（新契约：合并前逐元素增强）
         text_doc = Document(page_content="普通文本内容", metadata={"source": "text"})
-        mock_adapter = Mock()
-        mock_adapter.adapt.return_value = [text_doc]
-        self.loader._adapter = mock_adapter
-        
-        # 模拟MultimodalEnricher（只添加modality字段）
-        mock_enricher = Mock()
-        enriched_doc = Document(page_content="普通文本内容", metadata={"source": "text", "modality": "text"})
-        mock_enricher.enrich.return_value = [enriched_doc]
-        self.loader._enricher = mock_enricher
+        enriched_doc = Document(page_content="普通文本内容",
+                                metadata={"source": "text", "modality": "text"})
+        _, mock_enricher, _ = self._wire_adapter_with_hook(
+            [text_doc], {"普通文本内容": enriched_doc})
         
         # 执行加载
         result = self.loader.load(self.pdf_file)
@@ -288,8 +326,8 @@ class TestPdfMultimodalPipeline(unittest.TestCase):
         self.assertEqual(doc.page_content, "普通文本内容")
         self.assertEqual(doc.metadata["modality"], "text")
         
-        # 验证VisionProvider未被调用（通过enricher的enrich方法）
-        mock_enricher.enrich.assert_called_once()
+        # 验证增强器被调用（新契约下是逐元素调用）
+        mock_enricher._enrich_single_document.assert_called_once()
     
     def test_enricher_integration_with_real_components(self):
         """测试与真实组件的集成（但mock外部依赖）"""
@@ -306,16 +344,28 @@ class TestPdfMultimodalPipeline(unittest.TestCase):
         mock_extractor.extract_all.return_value = []
         self.loader._image_extractor = mock_extractor
         
-        # 模拟DocumentAdapter
+        # 模拟DocumentAdapter（新契约：带到 pre_merge_hook 的签名）
         text_doc = Document(page_content="测试内容", metadata={"source": "text"})
+        from rag.multimodal.pdf.adapters.document_adapter import DocumentAdapter
+        _real = DocumentAdapter()
+
+        def _fake_adapt(elements, pdf_path=None, merge_small=False,
+                        target_chunk_chars=600, pre_merge_hook=None):
+            docs = [text_doc]
+            if pre_merge_hook is not None:
+                docs = [d for d in (pre_merge_hook(x) for x in docs) if d is not None]
+            return _real._merge_by_window(docs, target_chunk_chars) if merge_small else docs
+
         mock_adapter = Mock()
-        mock_adapter.adapt.return_value = [text_doc]
+        mock_adapter.adapt.side_effect = _fake_adapt
         self.loader._adapter = mock_adapter
         
         # 使用真实的MultimodalEnricher，但mock VisionProvider
         with patch('rag.enrichment.multimodal_enricher.QwenVisionProvider') as MockVisionProvider:
             mock_vision_provider = Mock()
             MockVisionProvider.return_value = mock_vision_provider
+            mock_vision_provider.analyze_image.return_value = {
+                "description": "", "ocr_text": "", "vision_status": "success"}
             
             # 创建真实的MultimodalEnricher
             from rag.enrichment import MultimodalEnricher
@@ -328,7 +378,7 @@ class TestPdfMultimodalPipeline(unittest.TestCase):
             self.assertTrue(result.success)
             self.assertEqual(len(result.documents), 1)
             
-            # 验证文档被增强
+            # 验证文档被增强（文本元素也会被标注 modality）
             doc = result.documents[0]
             self.assertEqual(doc.metadata["modality"], "text")
             

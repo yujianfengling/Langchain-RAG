@@ -49,6 +49,45 @@ META_FILE = "meta.json"
 INDEX_SCHEMA_VERSION = 2
 
 
+def _safe_dir_name(subject_id: str) -> str:
+    """
+    将学科ID转为文件系统安全的目录名。
+
+    FAISS 的 C++ 层要求**整个路径为 ASCII**（实测仅文件名 ASCII 不够，
+    中文父目录同样 `could not open ... for writing`），因此中文 ID 需编码为 ASCII。
+    纯 ASCII 的 ID 直接返回。
+
+    2026-10-02：从 rag_service 移到本模块。
+    原因：本模块的 add_documents_to_store 需要它，而 rag_service 会 import 本模块，
+    反向 import 会形成循环。本模块是所有索引路径的唯一来源，放在这里最合理。
+    """
+    try:
+        subject_id.encode('ascii')
+        return subject_id  # 纯ASCII，直接用
+    except UnicodeEncodeError:
+        # 中文ID → base64编码（去掉=填充，用_替代/和+）
+        import base64
+        encoded = base64.urlsafe_b64encode(
+            subject_id.encode('utf-8')).decode('ascii').rstrip('=')
+        return f"_zh_{encoded}"
+
+
+def _original_subject_id(safe_name: str) -> str:
+    """将安全目录名还原为原始学科ID（_safe_dir_name 的逆操作）"""
+    if not safe_name.startswith('_zh_'):
+        return safe_name  # 纯ASCII，直接返回
+    try:
+        import base64
+        encoded = safe_name[4:]  # 去掉 _zh_ 前缀
+        # 补回 base64 的 = 填充
+        padding = 4 - len(encoded) % 4
+        if padding != 4:
+            encoded += '=' * padding
+        return base64.urlsafe_b64decode(encoded).decode('utf-8')
+    except Exception:
+        return safe_name  # 解码失败，返回原值
+
+
 class IndexMetaMismatch(RuntimeError):
     """索引元数据与当前配置不匹配（需重建知识库）"""
 
@@ -759,10 +798,18 @@ class FAISSVectorStore:
         meta.update({
             "schema_version": INDEX_SCHEMA_VERSION,
             "dimension": int(self.index.d),
+            # 必须同步文档数：否则下次加载时 load_vector_store 的
+            # index.ntotal == len(documents) 校验会失败，get() 静默返回 None
+            # （表现为"刚追加完就再也取不到索引"）。
             "documents": len(self.documents),
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         })
         _write_meta(self.persist_dir, meta)
+        # 写盘后必须刷新自身指纹，否则 GlobalFAISS 的新鲜度检查会认为缓存已过期，
+        # 下一次 get() 会白白重新加载一遍（且若调用方未传 embeddings，
+        # 重载出来的实例将没有嵌入模型，检索直接失败）。
+        self._fingerprint = GlobalFAISS._fingerprint(self.persist_dir) \
+            if self.persist_dir else None
         logger.info(f"已保存FAISS索引至: {self.persist_dir}（{len(self.documents)} 条）")
 
 
@@ -973,6 +1020,97 @@ class GlobalFAISS:
 
 # ============ 向后兼容的包装函数 ============
 
+def add_documents_to_store(
+    docs: List[Document],
+    subject_id: str,
+    embeddings: Any = None,
+    create_if_missing: bool = True,
+) -> Dict[str, Any]:
+    """
+    增量向指定学科的知识库追加文档（v2.6 新增）。
+
+    为什么需要：`services/knowledge_expander.add_knowledge_to_kb` 一直在调用本函数，
+    但它**从未被定义**（全仓无实现）—— 该 ImportError 被调用方的
+    `except Exception` 静默吞掉，导致"提取的知识点入库"功能长期完全失效且无任何报错。
+    这里补上真实实现。
+
+    与 `add_documents()`（按 collection_name 的通用包装）的区别：
+    - 入参是**原始 subject_id**（中文等），内部统一转 safe_name，
+      避免调用方各自拼目录名导致 BM25 与 FAISS 命名空间不一致；
+    - 追加后**同步失效 BM25 索引**：BM25 是独立持久化的，
+      不同步就会出现"FAISS 有新内容、BM25 没有"的条目数不一致
+      （AGENTS.md 第 6 节要求两者一致）。
+
+    Args:
+        docs: 待追加的 Document 列表
+        subject_id: 学科 ID（原始值，可为中文）
+        embeddings: 嵌入模型实例；None 时自动获取
+        create_if_missing: 索引不存在时是否新建（False 则抛错）
+
+    Returns:
+        {"subject_id", "added", "total", "created", "bm25_invalidated"}
+
+    Raises:
+        ValueError: docs 为空或 subject_id 为空
+        FileNotFoundError: 索引不存在且 create_if_missing=False
+    """
+    if not docs:
+        raise ValueError("待追加的文档列表不能为空")
+    if not subject_id or not str(subject_id).strip():
+        raise ValueError("学科ID不能为空")
+
+    safe_name = _safe_dir_name(subject_id)
+    persist_dir = os.path.join(VECTOR_STORE_DIR, safe_name)
+    index_path = os.path.join(persist_dir, "index.faiss")
+
+    if embeddings is None:
+        from rag.embedding import get_embedding_model
+        embeddings = get_embedding_model()
+
+    created = False
+    if not os.path.exists(index_path):
+        if not create_if_missing:
+            raise FileNotFoundError(
+                f"学科知识库不存在，无法追加: {subject_id}（目录 {persist_dir}）")
+        logger.info(f"索引不存在，改为新建: subject={subject_id}")
+        store = create_vector_store(
+            docs=docs, embeddings=embeddings,
+            collection_name=safe_name, persist_dir=persist_dir,
+            chunk_size=None, chunk_overlap=None)
+        GlobalFAISS.put(safe_name, store)
+        created = True
+    else:
+        # 走缓存（命中则复用，未命中则加载）
+        # 注意：必须传 embeddings —— 若缓存未命中而走重载，
+        # 不带嵌入模型的实例将无法执行 similarity_search。
+        store = GlobalFAISS.get(safe_name, embeddings, persist_dir)
+        if store is None:
+            raise FileNotFoundError(f"知识库加载失败，无法追加: {subject_id}")
+        before = store.count()
+        store.add_documents(docs, embeddings)
+        logger.info(
+            f"增量入库完成: subject={subject_id} {before} → {store.count()} 条")
+
+    # BM25 必须同步失效：它是独立持久化的，不失效就会与 FAISS 条目数不一致
+    bm25_invalidated = False
+    try:
+        from rag.hybrid_retriever import clear_index
+        clear_index(subject_id)
+        bm25_invalidated = True
+    except Exception as e:
+        logger.warning(
+            f"BM25 索引失效失败（FAISS 已更新，两者可能暂时不一致，"
+            f"建议重建该学科知识库）: {e}")
+
+    return {
+        "subject_id": subject_id,
+        "added": len(docs),
+        "total": store.count(),
+        "created": created,
+        "bm25_invalidated": bm25_invalidated,
+    }
+
+
 def add_documents(
     collection_name: str,
     docs: List[Document],
@@ -1057,6 +1195,11 @@ __all__ = [
     'create_vector_store',
     'load_vector_store',
     'add_documents',
+    'add_documents_to_store',
+    'filter_documents_by_min_length',
+    'clean_chunk_text',
+    'is_meta_wrapper',
+    'read_index_meta',
     'similarity_search',
     'get_retriever',
     'FAISSVectorStore',
