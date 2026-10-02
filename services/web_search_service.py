@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from services import capability_status, usage_ledger
 from utils.logger import logger
 
 # config 包在导入时会加载 .env；这里再显式兜底一次，保证脚本单独跑也生效
@@ -96,17 +97,24 @@ def search_question_material(
         resp = requests.post(TAVILY_ENDPOINT, json=payload, timeout=timeout)
     except Exception as e:
         logger.warning(f"联网搜题请求失败（降级为通用知识出题）: {e}")
+        capability_status.safe_report(capability_status.CAP_WEB_SEARCH, False,
+                                      reason=f"{type(e).__name__}: {e}")
         return []
 
     if resp.status_code != 200:
         # 401=key 失效，429=额度/频率，其他为服务侧问题
         logger.warning(f"联网搜题返回 {resp.status_code}（降级为通用知识出题）: {resp.text[:160]}")
+        capability_status.safe_report(
+            capability_status.CAP_WEB_SEARCH, False,
+            reason=f"HTTP {resp.status_code}: {resp.text[:120]}")
         return []
 
     try:
         data = resp.json()
     except ValueError:
         logger.warning("联网搜题返回内容不是合法 JSON（降级为通用知识出题）")
+        capability_status.safe_report(capability_status.CAP_WEB_SEARCH, False,
+                                      reason="返回内容不是合法 JSON")
         return []
 
     material: List[Dict[str, Any]] = []
@@ -122,6 +130,9 @@ def search_question_material(
             "content": content[:_MAX_CONTENT_CHARS],
         })
     logger.info(f"联网搜题完成: query={query!r}, 命中素材 {len(material)} 条")
+    capability_status.safe_report(capability_status.CAP_WEB_SEARCH, True,
+                                  reason=f"命中素材 {len(material)} 条")
+    usage_ledger.record(usage_ledger.KIND_WEB_SEARCH)
     return material
 
 

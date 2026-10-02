@@ -23,6 +23,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
 
+from services import capability_status
 from utils.logger import logger
 
 DEFAULT_URL = "http://127.0.0.1:8100"
@@ -67,21 +68,31 @@ def _http(method: str, path: str, body: Optional[dict] = None,
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            ok_payload = json.loads(resp.read().decode("utf-8"))
+        capability_status.safe_report(capability_status.CAP_SPEECH, True, reason=path)
+        return ok_payload
     except urllib.error.HTTPError as e:
         raw = e.read().decode("utf-8", "ignore")
         try:
             payload = json.loads(raw)
         except Exception:
             payload = {"message": raw[:200]}
+        capability_status.safe_report(
+            capability_status.CAP_SPEECH, False,
+            reason=f"本地语音服务 HTTP {e.code}: {payload.get('message')}")
         raise LocalSpeechError(
             payload.get("message") or f"本地语音服务返回 {e.code}",
             payload.get("error_type") or "speech_error")
     except urllib.error.URLError as e:
+        capability_status.safe_report(
+            capability_status.CAP_SPEECH, False,
+            reason=f"本地语音服务未启动或无法连接（{base_url()}）：{e.reason}")
         raise LocalSpeechError(
             f"本地语音服务未启动或无法连接（{base_url()}）：{e.reason}",
             "speech_unavailable")
     except TimeoutError:
+        capability_status.safe_report(capability_status.CAP_SPEECH, False,
+                                      reason="本地语音服务响应超时")
         raise LocalSpeechError("本地语音服务响应超时", "timeout")
 
 

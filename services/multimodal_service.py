@@ -9,6 +9,7 @@ import logging
 import os
 from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
+from services import capability_status
 from services.model_service import ModelProvider, get_model_provider
 
 logger = logging.getLogger(__name__)
@@ -146,6 +147,11 @@ class MultimodalService:
             ValueError: 如果视觉模型不可用或调用失败
         """
         if not self.vision_provider:
+            # 视觉不可用必须可见：VISION_MODE=ocr 曾让课件图片永远进不了知识库，
+            # 而当时只写日志，界面上和健康检查里都看不出来。
+            capability_status.safe_report(
+                capability_status.CAP_VISION, False,
+                reason=self.vision_unavailable_reason or "未配置可用的视觉提供方")
             raise ValueError(self.vision_unavailable_reason
                              or "视觉模型不可用，请配置通义千问视觉模型"
                                 "（DASHSCOPE_API_KEY 或可用的视觉提供方凭证）")
@@ -185,7 +191,14 @@ class MultimodalService:
         ]
         
         # 调用视觉模型（timeout通过provider内部处理）
-        result = self.vision_provider.vision(messages)
+        try:
+            result = self.vision_provider.vision(messages)
+        except Exception as e:
+            capability_status.safe_report(
+                capability_status.CAP_VISION, False,
+                reason=f"{type(e).__name__}: {e}")
+            raise
+        capability_status.safe_report(capability_status.CAP_VISION, True, reason="识图成功")
         return result
     
     def _detect_mime_type(self, image_path: str) -> str:

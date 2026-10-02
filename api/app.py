@@ -344,7 +344,13 @@ async def health_ready():
     """
     try:
         from rag import get_rag_readiness
-        readiness = get_rag_readiness()
+        from services import capability_status, usage_ledger
+        readiness = dict(get_rag_readiness())
+        # 运行态外部能力（LLM / 联网 / 视觉 / 语音）：反映**真实调用结果**，
+        # 与 /health 的配置态 capabilities 互补。降级时这里能看到原因。
+        readiness["external_capabilities"] = capability_status.snapshot()
+        # 当日外部调用用量与预算（成本可见；超限时后台预生成会自动停）
+        readiness["usage_today"] = usage_ledger.budget_status()
         return {
             "success": True,
             "data": readiness,

@@ -6,12 +6,25 @@ import PersonalizationSettings from '../components/PersonalizationSettings';
 import SpeechSettings from '../components/SpeechSettings';
 import TeacherActivation from '../components/TeacherActivation';
 import SubjectSelector from '../components/SubjectSelector';
+import SystemStatusPanel from '../components/SystemStatusPanel';
+import { getHealth } from '../api/health';
 
 const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
 
 const SettingsPage: React.FC = () => {
   const [selectedSubject, setSelectedSubject] = React.useState<string>('');
+  // 版本从后端取，不要在页面里硬编码（此前写死 1.0.0，而实际已是 2.2.1）
+  const [version, setVersion] = React.useState<string>('');
+
+  React.useEffect(() => {
+    let alive = true;
+    getHealth()
+      .then((info) => { if (alive) setVersion(info?.version || ''); })
+      .catch(() => { /* 后端未启动时不显示版本，也不弹错打扰用户 */ });
+    return () => { alive = false; };
+  }, []);
+
   return (
     <Layout style={{ height: '100%' }}>
       <Header style={{ 
@@ -65,6 +78,11 @@ const SettingsPage: React.FC = () => {
             <SubjectSelector value={selectedSubject} onChange={setSelectedSubject} />
           </div>
 
+          {/* 运行状态：外部能力与当日用量（观测数据的用户可见入口） */}
+          <div style={{ marginBottom: 24 }}>
+            <SystemStatusPanel />
+          </div>
+
           {/* 系统信息部分 */}
           <div>
             <Title level={5} style={{ marginBottom: '16px' }}>
@@ -79,7 +97,7 @@ const SettingsPage: React.FC = () => {
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <Text>版本</Text>
-                  <Text>1.0.0</Text>
+                  <Text>{version || '—'}</Text>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <Text>API文档</Text>

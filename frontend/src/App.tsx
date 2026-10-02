@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
-import { Layout, Menu, ConfigProvider, Drawer, Button, Space, Typography, Avatar } from 'antd';
+import { Layout, Menu, ConfigProvider, Drawer, Button, Space, Spin, Typography, Avatar } from 'antd';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   MessageOutlined,
@@ -14,13 +14,19 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
-import ChatPage from './pages/ChatPage';
-import KnowledgePage from './pages/KnowledgePage';
-import SettingsPage from './pages/SettingsPage';
-import LearningPlanPage from './pages/LearningPlanPage';
-import StudentPage from './pages/StudentPage';
-import TeacherPage from './pages/TeacherPage';
+// 路由级懒加载（2026-10-02）
+//
+// 此前所有页面都是静态导入：构建出的首屏 JS 达 3.94MB（gzip 1.30MB），
+// vite 直接给出 "chunks are larger than 500 kB" 警告——移动网络首次打开很慢。
+// 改成 lazy 之后主包只留框架与公共依赖，各页面按需加载。
+const ChatPage = lazy(() => import('./pages/ChatPage'));
+const KnowledgePage = lazy(() => import('./pages/KnowledgePage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const LearningPlanPage = lazy(() => import('./pages/LearningPlanPage'));
+const StudentPage = lazy(() => import('./pages/StudentPage'));
+const TeacherPage = lazy(() => import('./pages/TeacherPage'));
 import UserAuth, { AUTH_CHANGED_EVENT } from './components/UserAuth';
+import SystemStatusBanner from './components/SystemStatusBanner';
 import { isLoggedIn, me } from './api/auth';
 import { useIsNarrow } from './hooks/useIsNarrow';
 
@@ -39,6 +45,13 @@ const sidebarItems = [
   { key: '/learning',   icon: <CalendarOutlined />, label: '学习计划' },
   { key: '/settings',   icon: <SettingOutlined />,  label: '设置' },
 ];
+
+/** 懒加载页面时的占位，避免切换路由白屏 */
+const PageFallback: React.FC = () => (
+  <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+    <Spin />
+  </div>
+);
 
 const App: React.FC = () => {
   const location = useLocation();
@@ -279,6 +292,9 @@ const App: React.FC = () => {
           className={isNarrow ? 'app-content app-content-narrow' : 'app-content'}
           style={{ flex: 1, minWidth: 0, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}
         >
+          {/* 外部能力降级提示：平时不占位，降级时才出现 */}
+          <SystemStatusBanner />
+
           {/* 页面内容 */}
           <div style={{ flex: 1, minWidth: 0 }}>
             <AnimatePresence mode="sync">
@@ -289,15 +305,17 @@ const App: React.FC = () => {
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.12 }}
               >
-                <Routes location={location}>
-                  <Route path="/" element={<StudentPage />} />
-                  <Route path="/student" element={<StudentPage />} />
-                  <Route path="/teacher" element={<TeacherPage onNavigate={navigate} />} />
-                  <Route path="/chat" element={<ChatPage />} />
-                  <Route path="/knowledge" element={<KnowledgePage />} />
-                  <Route path="/learning" element={<LearningPlanPage />} />
-                  <Route path="/settings" element={<SettingsPage />} />
-                </Routes>
+                <Suspense fallback={<PageFallback />}>
+                  <Routes location={location}>
+                    <Route path="/" element={<StudentPage />} />
+                    <Route path="/student" element={<StudentPage />} />
+                    <Route path="/teacher" element={<TeacherPage onNavigate={navigate} />} />
+                    <Route path="/chat" element={<ChatPage />} />
+                    <Route path="/knowledge" element={<KnowledgePage />} />
+                    <Route path="/learning" element={<LearningPlanPage />} />
+                    <Route path="/settings" element={<SettingsPage />} />
+                  </Routes>
+                </Suspense>
               </motion.div>
             </AnimatePresence>
           </div>

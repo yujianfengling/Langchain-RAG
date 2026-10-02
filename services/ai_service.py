@@ -184,10 +184,13 @@ def call_llm(
             {"role": "user", "content": prompt}
         ]
         
+        # 能力上报与用量记账已下沉到 ModelProvider.chat（那里同时覆盖流式），
+        # 此处不再重复，否则同一次调用会被记两遍
         result = provider.chat(messages, temperature=temperature, max_tokens=max_tokens)
         return result.get("answer", "")
         
     except Exception as e:
+        # 失败上报同样在 ModelProvider.chat 里完成，这里只负责转换异常类型
         logger.error(f"LLM调用失败: {e}", exc_info=True)
         raise AIServiceError(f"LLM调用失败: {str(e)}")
 

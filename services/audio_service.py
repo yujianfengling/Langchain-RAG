@@ -49,7 +49,7 @@ import time
 from typing import Optional, Dict, Any, List
 
 from utils.logger import logger
-from services import local_speech
+from services import capability_status, local_speech
 
 # 音频大小限制（20MB，与知识库上传一致）
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
@@ -250,12 +250,21 @@ def transcribe_audio_detailed(audio_data: bytes, filename: Optional[str] = None)
             timeout=ASR_TIMEOUT,
         )
     except requests.exceptions.Timeout:
+        capability_status.safe_report(capability_status.CAP_SPEECH, False,
+                                      reason="MiMo 语音识别超时")
         raise AudioServiceError("语音识别超时，请重试", error_type="timeout")
     except requests.exceptions.ConnectionError:
+        capability_status.safe_report(capability_status.CAP_SPEECH, False,
+                                      reason="MiMo 语音服务连接失败")
         raise AudioServiceError("语音服务连接失败", error_type="connection_error")
 
     if resp.status_code != 200:
+        capability_status.safe_report(capability_status.CAP_SPEECH, False,
+                                      reason=f"MiMo 语音服务 HTTP {resp.status_code}")
         _raise_status_error(resp.status_code, "asr_api_error")
+
+    capability_status.safe_report(capability_status.CAP_SPEECH, True,
+                                  reason="MiMo 语音识别成功")
 
     try:
         data = resp.json()

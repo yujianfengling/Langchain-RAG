@@ -294,9 +294,51 @@ class OpenAICompatibleProvider(ModelProvider):
         super().__init__(model_name)
     
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
-        return self._call_openai_compatible_api(messages, **kwargs)
+        # 观测与记账放在这一层（而不是 _call_openai_compatible_api）：后者被
+        # vision 复用，挂在那里会把图片识别误记成文本模型调用。
+        from services import capability_status, usage_ledger
+        try:
+            result = self._call_openai_compatible_api(messages, **kwargs)
+        except Exception as e:
+            capability_status.safe_report(
+                capability_status.CAP_LLM, False,
+                reason=f"{type(e).__name__}: {e}")
+            raise
+        # 上报真实模型名（self.model_name 是 provider 键，如 deepseek）
+        capability_status.safe_report(
+            capability_status.CAP_LLM, True,
+            reason=f"model={(self.config or {}).get('model_name') or self.model_name}")
+        usage_ledger.record(usage_ledger.KIND_LLM)
+        return result
 
     def chat_stream(self, messages: List[Dict[str, str]], **kwargs):
+        """
+        真流式对话（SSE / OpenAI 兼容 stream=True）
+
+        外面这层包装专门做**观测与记账**：流式对话是聊天的主入口，但它不经过
+        call_llm，曾经既不进能力状态、也不进用量账本——聊天消耗的模型调用
+        完全不可见（预算是按账本算的，等于聊天不花钱）。
+        记账落在"一次调用"层面而不是"一次尝试"：底层有重试循环，按尝试记会虚高。
+        """
+        from services import capability_status, usage_ledger
+        try:
+            for chunk in self._iter_stream(messages, **kwargs):
+                yield chunk
+        except GeneratorExit:
+            # 客户端主动断开（用户切页/停止生成）不是模型故障，不能误报成降级
+            raise
+        except Exception as e:
+            capability_status.safe_report(
+                capability_status.CAP_LLM, False,
+                reason=f"{type(e).__name__}: {e}")
+            raise
+        else:
+            capability_status.safe_report(
+                capability_status.CAP_LLM, True,
+                reason=f"model={(self.config or {}).get('model_name') or self.model_name}（流式）")
+            usage_ledger.record(usage_ledger.KIND_LLM)
+
+    def _iter_stream(self, messages: List[Dict[str, str]], **kwargs):
         """
         真流式对话（SSE / OpenAI 兼容 stream=True）
 
@@ -335,14 +377,10 @@ class OpenAICompatibleProvider(ModelProvider):
             f"[Chat] stream start: provider={self.model_name} model={self.config.get('model_name')} "
             f"url={url}")
 
-        last_error = None
-        total_latency = 0.0
-
         for attempt in range(max_retries):
             try:
                 import json as _json
                 _body = _json.dumps(payload, ensure_ascii=False).encode('utf-8')
-                start_time = time.time()
                 with requests.post(url, headers=headers, data=_body,
                                    timeout=timeout, stream=True) as resp:
                     # 非流式错误（4xx/5xx 在 iter_lines 前抛出）
@@ -376,7 +414,7 @@ class OpenAICompatibleProvider(ModelProvider):
                                     content = delta.get("content", "")
                                     if content:
                                         yield content
-                            except _json.JSONDecodeError as je:
+                            except _json.JSONDecodeError:
                                 # 解析失败给明确错误，不静默跳过
                                 logger.warning(
                                     f"[Chat] SSE JSON 解析失败: provider={self.model_name} "
@@ -388,7 +426,6 @@ class OpenAICompatibleProvider(ModelProvider):
 
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
                     requests.exceptions.HTTPError) as e:
-                last_error = e
                 error_type = _get_error_type(e)
                 status_code = getattr(getattr(e, "response", None), "status_code", None)
                 if not _is_retryable_error(e):
