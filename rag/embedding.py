@@ -297,6 +297,41 @@ def _local_cache_snapshot(model_name: str) -> Optional[str]:
     return None
 
 
+def _discover_bundled_model() -> Optional[str]:
+    """在项目 models/ 下自动发现随项目分发的模型快照。
+
+    背景：models/ 被 .gitignore 忽略，部署时要手动拷贝；而 snapshot 哈希是
+    下载时随机生成的，让部署的人手工填 EMBEDDING_LOCAL_DIR 很容易填错。
+    这里按"有 config.json + 有权重文件"判定，找到就用，省掉这一步手工配置。
+
+    兼容两种常见布局：
+        models/<name>/snapshots/<hash>/
+        models/<org>/<name>/snapshots/<hash>/
+    """
+    model_name = _get_model_name()
+    if "/" not in model_name:
+        return None
+    org, name = model_name.split("/", 1)
+    root = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / "models"
+    weight_names = (
+        "model.safetensors", "pytorch_model.bin", "model.bin", "pytorch_model.safetensors",
+    )
+    for base in (root / name, root / model_name):
+        snaps = base / "snapshots"
+        if not snaps.is_dir():
+            continue
+        try:
+            for snap in sorted(snaps.iterdir()):
+                if not snap.is_dir() or not (snap / "config.json").exists():
+                    continue
+                if any((snap / w).exists() for w in weight_names):
+                    logger.info(f"自动发现随项目分发的 embedding 模型：{base.name}")
+                    return str(snap)
+        except OSError:
+            continue
+    return None
+
+
 def _resolve_local_dir() -> Optional[str]:
     """
     解析EMBEDDING_LOCAL_DIR配置并校验完整性
@@ -306,7 +341,9 @@ def _resolve_local_dir() -> Optional[str]:
     """
     local_dir = os.getenv("EMBEDDING_LOCAL_DIR", "").strip()
     if not local_dir:
-        return None
+        # 没显式配置时，先看项目里有没有自带模型——部署场景下模型目录
+        # 通常是随项目一起拷过去的，不该强迫对方手填 snapshot 哈希。
+        return _discover_bundled_model()
     p = Path(local_dir)
     if not p.is_absolute():
         p = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) / p

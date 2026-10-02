@@ -49,6 +49,20 @@ notepad .env
 
 > `.env` 已在 `.gitignore` 中，**不会被提交**，也不要把 Key 写进任何被跟踪的文件。
 
+### 4. 确认本地 embedding 模型在位（必做）
+
+知识库检索依赖本地模型 **BAAI/bge-small-zh-v1.5**（约 92MB，位于项目 `models/` 下）。
+
+**它不在 git 里**（`.gitignore` 忽略了 `models/`）——所以用 git 拉代码部署时，
+必须把 `models/` 目录**一起复制**过去，否则知识库与检索不可用。
+
+- 模型在位时程序会**自动发现**它（2026-10-02 起支持，无需手工配置路径）。
+- 要把模型放到别处，可在 `.env` 里显式指定
+  `EMBEDDING_LOCAL_DIR=<模型快照目录>`（快照目录是
+  `models/bge-small-zh-v1.5/snapshots/` 下的那个哈希目录）。
+- 代码以 `local_files_only=True` 加载：模型缺失时**不会静默联网下载**，
+  而是明确报"不可用"——这是有意的，免得部署时卡在一个漫长的下载上还不知道。
+
 ## 三、启动（日常就用这个）
 
 **双击 `start_production.bat`** 即可。它会：

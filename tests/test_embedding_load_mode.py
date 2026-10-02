@@ -56,6 +56,14 @@ class TestEmbeddingLoadMode(unittest.TestCase):
         for k in self._ENV_KEYS:
             os.environ.pop(k, None)
         embedding.reset_embedding_loader()
+        # 本组用例验证的是"没有显式配置时的加载来源选择"，前提是**项目里没有自带模型**。
+        # 2026-10-02 起 _resolve_local_dir 在未配置时会自动发现项目 models/，
+        # 前提被打破后这些用例会误判成 explicit_local_dir。这里显式屏蔽自动发现，
+        # 还原成用例本来要测的场景（自动发现另有专门用例）。
+        self._discover_patcher = mock.patch.object(
+            embedding, "_discover_bundled_model", return_value=None)
+        self._discover_patcher.start()
+        self.addCleanup(self._discover_patcher.stop)
 
     def tearDown(self):
         for k, v in self._saved.items():
@@ -77,6 +85,20 @@ class TestEmbeddingLoadMode(unittest.TestCase):
         self.assertEqual(embedding.get_load_mode(), "offline")
         os.environ["EMBEDDING_LOAD_MODE"] = "online"
         self.assertEqual(embedding.get_load_mode(), "online")
+
+    def test_bundled_model_is_discovered_when_unconfigured(self):
+        """未配置 EMBEDDING_LOCAL_DIR 时，应能自动发现随项目分发的模型
+
+        部署场景：models/ 被 .gitignore 忽略，模型要随项目一起拷贝，
+        而 snapshot 哈希是随机串——不该强迫部署的人手填。
+        """
+        found = embedding._discover_bundled_model()
+        if found is None:
+            self.skipTest("当前环境没有随项目分发的 models/ 目录")
+        self.assertTrue(Path(found, "config.json").is_file())
+        self.assertTrue(
+            any(Path(found, w).is_file()
+                for w in ("model.safetensors", "pytorch_model.bin", "model.bin")))
 
     def test_explicit_local_dir_priority(self):
         """显式本地目录优先于本地缓存"""
