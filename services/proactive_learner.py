@@ -17,7 +17,6 @@ from services.user_profiler import (
     get_or_create_profile,
     get_weak_points,
     get_strong_points,
-    analyze_user_performance,
     get_user_interactions,
     _get_db,
     _row_to_dict,
@@ -62,8 +61,8 @@ def generate_recommendations(
         strong = get_strong_points(user_id, subject_id) if subject_id else []
         strong_points = [s["knowledge_point"] for s in strong[:5]]
 
-        # 4. 获取用户表现
-        perf = analyze_user_performance(user_id, subject_id) if subject_id else {}
+        # 4. 用户表现：当前推荐逻辑没有消费它（此前算完即丢，白搭一次查询）。
+        #    若要用它参与推荐，在这里恢复 analyze_user_performance(user_id, subject_id)。
 
         # 5. 生成推荐
         recommendations = []

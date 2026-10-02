@@ -468,9 +468,9 @@ def create_vector_store(
         if not docs:
             raise RuntimeError("清洗后无剩余内容，请检查文档抽取质量")
         
-        # 获取文档文本
+        # 获取文档文本。metadata 随 docs 一起由 _atomic_write_index 持久化，
+        # 这里不需要再单独抽一份（此前多出的 metadatas 从未被使用）。
         texts = [doc.page_content for doc in docs]
-        metadatas = [doc.metadata for doc in docs]
         
         logger.info(f"正在为 {len(texts)} 个文档创建FAISS索引...")
         

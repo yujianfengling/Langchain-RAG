@@ -51,7 +51,8 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ onModelChange }) => {
     setSwitching(provider);
     try {
       await switchModel(provider);
-      message.success(`已切换到 ${provider} 模型`);
+      // 后端不会改动默认模型：如实说"已选择"，不谎称"已切换"
+      message.success(`已选择 ${provider}（本次会话后续请求生效）`);
       await loadModelInfo(); // 重新加载信息
       onModelChange?.(provider);
     } catch (error) {

@@ -25,8 +25,11 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 
 from utils.logger import logger
-from services.learning_data import LEGACY_OWNER, _DATA_DIR, _BUSINESS_DBS
+from services.learning_data import LEGACY_OWNER, _BUSINESS_DBS
 
+# 本模块的数据目录按 config 单独解析。
+# 注意：此前这里又从 learning_data 导入了 _DATA_DIR 再整行覆盖掉（F811），
+# 读代码的人会误以为两者是同一个值，实际不是。
 _DATA_DIR = str(get_data_dir())
 DB_PATH = os.path.join(_DATA_DIR, "auth.db")
 

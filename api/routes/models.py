@@ -129,17 +129,21 @@ async def switch_model_provider(request: SwitchModelRequest):
         
         # 获取模型配置
         config = get_model_config(request.model)
-        provider = get_model_provider(request.model)
-        
         api_key = get_model_api_key(request.model)
+
+        display = config.get("name", request.model)
+        # 文案诚实化（2026-10-02）：本接口**不改动后端默认模型**，只校验该提供方
+        # 是否已配置可用。此前返回"模型切换成功"，而实际上什么都没切
+        # （前端选择器刷新后仍显示旧模型），属于会误导人的说法。
         return SuccessResponse(
             data={
                 "model": request.model,
-                "display_name": config.get("name", request.model),
+                "display_name": display,
                 "has_api_key": bool(api_key),
-                "message": f"模型切换成功: {config.get('name', request.model)}",
+                "applied_to_default": False,
+                "message": f"已选择 {display}（不改动后端默认模型）",
             },
-            message=f"模型切换成功: {config.get('name', request.model)}",
+            message=f"已选择 {display}（不改动后端默认模型）",
         )
     except HTTPException:
         raise

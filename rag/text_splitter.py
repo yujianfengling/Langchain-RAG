@@ -9,9 +9,27 @@ v2.0 语义感知切分策略：
 
 import re
 import logging
-from typing import List, Optional, Union
+from typing import TYPE_CHECKING, List, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:  # pragma: no cover - 仅供静态检查；运行时由各分支按需导入
+    from langchain_core.documents import Document
+
+
+class SimpleDocument:
+    """
+    LangChain Document 不可用时的轻量替代（只需 page_content / metadata）。
+
+    此前它在三个 ImportError 分支里各被定义了一遍——同一个类抄三份，
+    模块级类型注解又只能写成字符串引用它，ruff 因此报 F821。
+    这里统一定义一次，注解也就能真正解析了。
+    """
+
+    def __init__(self, page_content: str, metadata: dict):
+        self.page_content = page_content
+        self.metadata = metadata
+
 
 # 尝试导入LangChain文本分割器
 try:
@@ -54,10 +72,6 @@ except ImportError:
                             metadata=new_metadata
                         ))
                     except ImportError:
-                        class SimpleDocument:
-                            def __init__(self, page_content, metadata):
-                                self.page_content = page_content
-                                self.metadata = metadata
                         split_docs.append(SimpleDocument(chunk, new_metadata))
             
             return split_docs
@@ -81,10 +95,6 @@ def _make_doc(page_content: str, metadata: dict):
         from langchain_core.documents import Document
         return Document(page_content=page_content, metadata=metadata)
     except ImportError:
-        class SimpleDocument:
-            def __init__(self, page_content, metadata):
-                self.page_content = page_content
-                self.metadata = metadata
         return SimpleDocument(page_content, metadata)
 
 
@@ -446,10 +456,6 @@ def split_text(
         from langchain_core.documents import Document
         doc = Document(page_content=text, metadata={'source': 'text_input'})
     except ImportError:
-        class SimpleDocument:
-            def __init__(self, page_content, metadata):
-                self.page_content = page_content
-                self.metadata = metadata
         doc = SimpleDocument(text, {'source': 'text_input'})
     
     # 分割文档

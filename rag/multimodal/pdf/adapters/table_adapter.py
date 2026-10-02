@@ -42,9 +42,6 @@ class TableAdapter:
             return None
         
         try:
-            # 获取表格数据
-            content = element.content
-            
             # 构建表格描述
             description = self._build_description(element)
             

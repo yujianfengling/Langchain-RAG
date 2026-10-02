@@ -506,7 +506,6 @@ def plan_steps(goal: str, intent: str, state: Dict[str, Any]) -> List[Dict[str, 
     """
     steps: List[Dict[str, Any]] = [{"tool": "get_learning_state", "args": {}}]
 
-    text = (goal or "").lower()
     signals = _extract_goal_signals(goal or "")
     if signals.get("deadline") or signals.get("daily_minutes"):
         steps.append({"tool": "analyze_budget",

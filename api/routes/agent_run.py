@@ -60,7 +60,7 @@ async def run_agent_api(request: RunRequest,
         return SuccessResponse(data=result, message="学习助手已完成本轮安排")
     except AgentRuntimeError as e:
         return _error(e.message, 400, e.error_type)
-    except Exception as e:
+    except Exception:
         return _error("学习助手执行失败，请稍后重试或使用手动操作", 500, "runtime_error")
 
 

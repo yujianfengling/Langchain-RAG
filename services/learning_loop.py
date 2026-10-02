@@ -99,8 +99,8 @@ def on_quiz_answered(
             answer="正确" if is_correct else "错误",
         )
         
-        # 获取当前掌握度
-        profile = get_or_create_profile(user_id)
+        # 确保用户画像存在（这个调用带"或创建"的副作用，返回值当前用不到）
+        get_or_create_profile(user_id)
         
         return {
             "success": True,

@@ -19,9 +19,22 @@ logger = logging.getLogger(__name__)
 class VisionProcessor:
     """
     视觉处理器
-    
+
     使用视觉模型（如Qwen Vision）处理图片、表格等视觉元素，
     生成文本描述和结构化数据。
+
+    ⚠️ 本类**未接入任何生产链路**（2026-10-02 核实）：PDF 导入实际走的是
+    `rag/enrichment/multimodal_enricher.py` 的 `MultimodalEnricher`
+    （见 `rag/loaders/pdf_loader.py`）。两者是并行的视觉实现：
+
+      - 本类：面向"图片文件 / PDFElement"，自带缓存 `cache/vision_descriptions`，
+        模型名写死为 qwen-vision；
+      - MultimodalEnricher：面向 documents（图片/表格/文本分派），走
+        `services/multimodal_service`（多提供方 + 能力状态上报），
+        缓存带 `VISION_PROMPT_VERSION`。
+
+    **改视觉行为请改活的那一套**，否则改了看不到效果。
+    统一两者是待办，见 AGENTS.md 第 8 节。
     """
     
     # 缓存配置

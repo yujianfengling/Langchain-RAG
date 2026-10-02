@@ -277,8 +277,8 @@ async def admin_grant_teacher(target_user_id: str,
     """管理员直接把某账号开通为教师（不依赖邀请码）"""
     from services import auth_service
     try:
-        user = auth_service.grant_role(target_user_id, auth_service.ROLE_TEACHER,
-                                       reason="admin")
+        # grant_role 的副作用是写角色；返回值这里用不到（role 下面直接从库里读）
+        auth_service.grant_role(target_user_id, auth_service.ROLE_TEACHER, reason="admin")
         return SuccessResponse(data={"user_id": target_user_id,
                                      "role": auth_service.get_role(target_user_id)},
                                message="已开通教师身份")

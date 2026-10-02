@@ -515,7 +515,7 @@ def generate_plan(subject_id: str, goal: str, model: Optional[str] = None,
 
     except KBError:
         raise
-    except AIServiceError as e:
+    except AIServiceError:
         raise LearningServiceError("AI生成服务暂时不可用，请稍后重试", error_type="model_api_error")
     except LearningServiceError:
         raise

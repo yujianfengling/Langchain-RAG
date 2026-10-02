@@ -42,9 +42,6 @@ class ImageAdapter:
             return None
         
         try:
-            # 获取图片信息
-            content = element.content
-            
             # 构建图片描述
             description = self._build_description(element)
             

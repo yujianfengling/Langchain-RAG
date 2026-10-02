@@ -17,7 +17,10 @@ import time
 import logging
 import threading
 from pathlib import Path
-from typing import List, Optional, Union, Dict, Any
+from typing import TYPE_CHECKING, List, Optional, Union, Dict, Any
+
+if TYPE_CHECKING:  # pragma: no cover - 仅供静态检查；运行时按需导入 langchain
+    from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
 
