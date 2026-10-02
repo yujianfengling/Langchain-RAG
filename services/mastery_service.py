@@ -24,6 +24,7 @@ from services.learning_data import (
     _now,
     _new_id,
     ensure_knowledge_point,
+    GRADE_SELF_EVALUATED,
     MASTERY_PENDING,
     MASTERY_ESTIMATED,
 )
@@ -237,6 +238,27 @@ def _consolidation(ind_correct: int, first_correct_at: Optional[str],
     return CONSOLIDATION_UNVERIFIED
 
 
+def _mastery_reason(ind_correct: int, ind_wrong: int, rev_correct: int, rev_wrong: int,
+                    excluded: int, behavior_count: int, consolidation: str) -> str:
+    """
+    掌握度理由文案。
+
+    **增量记录（record_evidence）与重算（rebuild_point_from_attempts）共用**，
+    避免两处各写一份、日后悄悄漂移——这类"两份文案不一致"正是最难查的问题。
+    """
+    return (
+        f"掌握估计（暂估值，非长期掌握结论）：基于 {ind_correct + ind_wrong} 次独立作答"
+        f"（对 {ind_correct} / 错 {ind_wrong}）"
+        + (f"，另有复习重做 对 {rev_correct} / 错 {rev_wrong}（按 0.5 权重折算）"
+           if (rev_correct + rev_wrong) else "")
+        + (f"；已排除 {excluded} 次（看过答案后作答/自评）" if excluded else "")
+        + f"；学习行为 {behavior_count} 次不计入掌握度"
+        + ("；已通过间隔复现，判定为已巩固"
+           if consolidation == CONSOLIDATION_CONSOLIDATED
+           else "；尚缺间隔复现，暂不认定为长期掌握")
+    )
+
+
 def record_evidence(
     user_id: str,
     subject_id: str,
@@ -331,17 +353,8 @@ def record_evidence(
         status = MASTERY_ESTIMATED if level is not None else MASTERY_PENDING
         consolidation = _consolidation(ind_correct, first_correct_at, last_correct_at)
 
-        reason = (
-            f"掌握估计（暂估值，非长期掌握结论）：基于 {ind_correct + ind_wrong} 次独立作答"
-            f"（对 {ind_correct} / 错 {ind_wrong}）"
-            + (f"，另有复习重做 对 {rev_correct} / 错 {rev_wrong}（按 0.5 权重折算）"
-               if (rev_correct + rev_wrong) else "")
-            + (f"；已排除 {excluded} 次（看过答案后作答/自评）" if excluded else "")
-            + f"；学习行为 {behavior_count} 次不计入掌握度"
-            + ("；已通过间隔复现，判定为已巩固"
-               if consolidation == CONSOLIDATION_CONSOLIDATED
-               else "；尚缺间隔复现，暂不认定为长期掌握")
-        )
+        reason = _mastery_reason(ind_correct, ind_wrong, rev_correct, rev_wrong,
+                                 excluded, behavior_count, consolidation)
 
         conn.execute(
             """UPDATE knowledge_mastery
@@ -376,6 +389,132 @@ def record_evidence(
             pass
         logger.error(f"记录作答证据失败: {e}", exc_info=True)
         raise MasteryServiceError("记录作答证据失败", "database_error")
+    finally:
+        conn.close()
+
+
+def rebuild_point_from_attempts(
+    user_id: str,
+    subject_id: str,
+    knowledge_point_name: str,
+) -> Dict[str, Any]:
+    """
+    按"作答记录的当前事实"重算某知识点的掌握聚合（2026-10-02）。
+
+    为什么需要：record_evidence 是**增量累加**、按 attempt_id 幂等，没有撤销接口。
+    一旦某次作答的判定被事后修正（例如学生用「我答错了」覆盖 AI 的判分），
+    聚合值就与实际作答记录长期不一致，而且没有任何办法修正——掌握度会一直
+    显示一个已被推翻的结论。
+
+    这个函数把该知识点的证据**从原始作答重放一遍**，让聚合重新与事实对齐。
+    口径与 record_evidence 严格一致（同一套 MASTERY_RULES）：
+    - 只重放 is_correct 非空的作答——这正是会触发 record_evidence 的那些；
+    - independent 计独立证据；review 计复习证据；其余（after_reveal）计 excluded；
+    - **不动 behavior_count**（学习行为不来自作答，重算不该抹掉它）。
+
+    Returns:
+        {"rebuilt": bool, "reason": str, ...重算后的关键计数}
+    """
+    if not user_id or not subject_id or not knowledge_point_name:
+        return {"rebuilt": False, "reason": "缺少必要参数"}
+
+    conn = _get_db()
+    try:
+        kp_id = ensure_knowledge_point(subject_id, knowledge_point_name, source="mastery")
+        row = _ensure_row(conn, user_id, subject_id, knowledge_point_name, kp_id)
+        if not row:
+            return {"rebuilt": False, "reason": "掌握度行不存在且无法创建"}
+
+        # 注意库分离：quiz_attempts 在学习闭环库，knowledge_mastery 在用户画像库，
+        # 必须各取各的连接（这里曾经写成用画像库连接查作答，直接 no such table）。
+        from services import learning_data as _learning_data
+        lconn = _learning_data._get_db()
+        try:
+            attempts = lconn.execute(
+                """SELECT attempt_kind, is_correct, grade_status, created_at
+                   FROM quiz_attempts
+                   WHERE user_id=? AND subject_id=? AND is_correct IS NOT NULL
+                     AND (knowledge_point_id=? OR knowledge_point_name=?)
+                   ORDER BY created_at ASC, rowid ASC""",
+                (user_id, subject_id, kp_id, knowledge_point_name)).fetchall()
+        finally:
+            lconn.close()
+
+        ind_correct = ind_wrong = rev_correct = rev_wrong = excluded = 0
+        evidence_count = 0
+        first_correct_at = None
+        last_correct_at = None
+        for a in attempts:
+            kind = a["attempt_kind"] or "independent"
+            correct = bool(a["is_correct"])
+            grade = a["grade_status"]
+            at = a["created_at"]
+
+            # 单向从严（2026-10-02）：学生自己点「我答对了」不采信——否则可以刷分；
+            # 「我答错了」采信——承认不会，是有效证据。
+            # 效果：AI 判对 → 改判错，能把掌握度拉回"错"；
+            #       AI 判错 → 改判对，撤不掉那条错误证据。
+            if grade == GRADE_SELF_EVALUATED and correct:
+                continue
+
+            if kind in MASTERY_RULES["independent_kinds"]:
+                evidence_count += 1
+                if correct:
+                    ind_correct += 1
+                    last_correct_at = at
+                    if not first_correct_at:
+                        first_correct_at = at
+                else:
+                    ind_wrong += 1
+            elif kind in MASTERY_RULES["review_kinds"]:
+                if correct:
+                    rev_correct += 1
+                else:
+                    rev_wrong += 1
+            else:
+                excluded += 1
+
+        level = _compute_level(ind_correct, ind_wrong, rev_correct, rev_wrong)
+        status = MASTERY_ESTIMATED if level is not None else MASTERY_PENDING
+        consolidation = _consolidation(ind_correct, first_correct_at, last_correct_at)
+        behavior_count = row["behavior_count"] or 0
+        now = _now()
+        reason = _mastery_reason(ind_correct, ind_wrong, rev_correct, rev_wrong,
+                                 excluded, behavior_count, consolidation)
+
+        conn.execute(
+            """UPDATE knowledge_mastery
+               SET mastery_level=?, mastery_status=?, evidence_count=?,
+                   independent_correct_count=?, independent_wrong_count=?,
+                   review_correct_count=?, review_wrong_count=?, excluded_count=?,
+                   first_correct_at=?, last_correct_at=?, consolidation_status=?,
+                   test_count=?, correct_count=?, last_tested_at=?, last_evidence_at=?,
+                   mastery_reason=?, updated_at=?
+               WHERE id=?""",
+            (level, status, evidence_count,
+             ind_correct, ind_wrong, rev_correct, rev_wrong, excluded,
+             first_correct_at, last_correct_at, consolidation,
+             evidence_count, ind_correct, now, now, reason, now, row["id"]))
+        conn.commit()
+        logger.info(f"按作答记录重算掌握度: user={user_id}, kp={knowledge_point_name}, "
+                    f"attempts={len(attempts)}, level={level}, consolidation={consolidation}")
+        return {
+            "rebuilt": True,
+            "attempts_replayed": len(attempts),
+            "mastery_status": status, "mastery_level": level,
+            "consolidation_status": consolidation,
+            "evidence_count": evidence_count,
+            "independent_correct": ind_correct, "independent_wrong": ind_wrong,
+            "review_correct": rev_correct, "review_wrong": rev_wrong,
+            "excluded_count": excluded, "reason": reason,
+        }
+    except sqlite3.Error as e:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        logger.error(f"重算掌握度失败: {e}", exc_info=True)
+        raise MasteryServiceError("重算掌握度失败", "database_error")
     finally:
         conn.close()
 
@@ -557,6 +696,7 @@ def summarize_mastery(user_id: str, subject_id: str) -> Dict[str, Any]:
 
 __all__ = [
     "MASTERY_RULES",
+    "rebuild_point_from_attempts",
     "CONSOLIDATION_UNVERIFIED",
     "CONSOLIDATION_CONSOLIDATED",
     "MasteryServiceError",

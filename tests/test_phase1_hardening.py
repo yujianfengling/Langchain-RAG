@@ -385,8 +385,9 @@ class TestReviewSemantics(HardeningTestBase):
         变更说明（2026-10-02）：简答题原先一律 pending_self_eval（不进掌握证据）。
         现改为有参考答案/解析时由 AI 判分（ai_graded），并保留
         「我答对了 / 我答错了」两个按钮让用户覆盖。
-        覆盖只改写作答记录（错题本与正确率随之变化），不回溯已写入的掌握证据——
-        掌握度是增量证据流，同一次作答不能既算 AI 的又算用户的。
+        变更说明（2026-10-02 晚）：自评"答错"现在会**重算掌握度**（单向从严）。
+        此前只改写作答记录、掌握度停在 AI 的结论，造成"掌握度与作答记录打架"；
+        现在按作答记录重放：AI 的"对"被撤回，记为"错"。同一次作答仍只算一条证据。
         """
         token, _ = self.login("rvw_selfeval")
         quiz = self.gen_quiz(token)
@@ -409,12 +410,47 @@ class TestReviewSemantics(HardeningTestBase):
         mastery2 = self.req("GET", "/api/student/mastery", token=token,
                             params={"subject_id": SUBJECT}).json()["data"]
         point2 = next(p for p in mastery2["points"] if p["knowledge_point"] == KP)
-        self.assertEqual(point2["evidence_count"], 1, "自评不应重复计入证据")
+        self.assertEqual(point2["evidence_count"], 1, "同一次作答不该被记成两条证据")
+        self.assertEqual(point2["independent_correct_count"], 0, "AI 的'对'没有被撤回")
+        self.assertEqual(point2["independent_wrong_count"], 1, "改判的'错'没有计入")
 
         wrong = self.req("GET", "/api/quiz/wrong", token=token,
                          params={"subject_id": SUBJECT}).json()["data"]
         self.assertTrue(any(w["question_id"] == short["id"] for w in wrong),
                         "覆盖为答错后该题应进入错题本")
+
+    def test_self_eval_correct_cannot_erase_wrong_evidence(self):
+        """单向从严：AI 判错后学生点「我答对了」，撤不掉那条错误证据
+
+        这就是自评不能"完全生效"的原因：否则点一下就能把自己洗白。
+        """
+        token, _ = self.login("rvw_strict_right")
+        quiz = self.gen_quiz(token)
+        short = next(q for q in quiz if q["type"] == "short_answer")
+
+        # 让 AI 判这道题"错"
+        with mock.patch("services.quiz_service.call_llm",
+                        side_effect=lambda *a, **k: json.dumps(
+                            {"is_correct": False, "reason": "要点缺失"},
+                            ensure_ascii=False)):
+            data = self._answer(token, short["id"], "不知道", "rvw-strict-r1")
+        self.assertEqual(data["grade_status"], "ai_graded")
+        self.assertFalse(data["is_correct"])
+
+        before = self.req("GET", "/api/student/mastery", token=token,
+                          params={"subject_id": SUBJECT}).json()["data"]
+        p1 = next(p for p in before["points"] if p["knowledge_point"] == KP)
+        self.assertEqual(p1["independent_wrong_count"], 1)
+
+        # 学生自称答对
+        self.req("POST", "/api/quiz/self-evaluate", token=token,
+                 json={"attempt_id": data["attempt_id"], "is_correct": True})
+
+        after = self.req("GET", "/api/student/mastery", token=token,
+                         params={"subject_id": SUBJECT}).json()["data"]
+        p2 = next(p for p in after["points"] if p["knowledge_point"] == KP)
+        self.assertEqual(p2["independent_wrong_count"], 1,
+                         "自评'答对'把错误证据抹掉了——会给刷分留口子")
 
     def test_self_eval_wrong_creates_review_task(self):
         """自评"答错"要补触发复习安排（此前自评不参与联动）"""

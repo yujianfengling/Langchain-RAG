@@ -51,6 +51,9 @@ GRADE_GRADED = "graded"
 GRADE_PENDING_SELF = "pending_self_eval"
 # 简答题由 AI 判分；用户仍可用"我答对了/我答错了"覆盖为 self_evaluated
 GRADE_AI_GRADED = "ai_graded"
+# 用户自评（覆盖 AI 判定）。掌握度对它采取"单向从严"：
+# 自评"答错"采信、自评"答对"不采信（防刷分）——见 mastery_service.rebuild_point_from_attempts
+GRADE_SELF_EVALUATED = "self_evaluated"
 # 复习任务状态
 REVIEW_PENDING = "PENDING"
 REVIEW_DONE = "DONE"
@@ -560,7 +563,6 @@ def migrate_legacy() -> Dict[str, Any]:
             # 回填：用户归属 / 知识点稳定 ID / 计划日期
             rows = conn.execute("SELECT * FROM learning_tasks").fetchall()
             for r in rows:
-                keys = r.keys()
                 updates, params = [], []
                 if not r["user_id"]:
                     updates.append("user_id=?")
@@ -741,6 +743,7 @@ __all__ = [
     "GRADE_GRADED",
     "GRADE_PENDING_SELF",
     "GRADE_AI_GRADED",
+    "GRADE_SELF_EVALUATED",
     "REVIEW_PENDING",
     "REVIEW_DONE",
     "REVIEW_CANCELLED",

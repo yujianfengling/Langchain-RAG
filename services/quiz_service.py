@@ -684,6 +684,26 @@ def self_evaluate(attempt_id: str, user_id: str, is_correct: bool) -> Dict[str, 
             logger.warning(f"自评答错的复习联动发送失败（自评已保存）: {e}")
             linkage = {"event_status": "failed_to_emit", "error": str(e)[:120]}
 
+        # ---- 掌握度修正：必须重算，不能只靠补发事件 ----
+        #
+        # record_evidence 按 attempt_id 幂等：同一作答 AI 已经记过（判对），
+        # 补发事件会被直接跳过，掌握度仍停在"对"——这正是"自评后掌握度和
+        # 作答记录打架"的根因。所以这里按作答记录**重算**该知识点。
+        #
+        # 重算口径是"单向从严"（见 mastery_service.rebuild_point_from_attempts）：
+        #   「我答错了」采信 → 掌握度拉回"错"；
+        #   「我答对了」既不重算也不采信 → 撤不掉 AI 判的那条错误证据。
+        try:
+            from services import mastery_service
+            rebuilt = mastery_service.rebuild_point_from_attempts(
+                user_id, snapshot["subject_id"],
+                snapshot["knowledge_point_name"] or "")
+            linkage["mastery_rebuilt"] = bool(rebuilt.get("rebuilt"))
+            linkage["mastery_level"] = rebuilt.get("mastery_level")
+        except Exception as e:
+            logger.warning(f"自评答错后的掌握度重算失败（自评已保存）: {e}")
+            linkage["mastery_rebuilt"] = False
+
     return {"attempt_id": attempt_id, "is_correct": is_correct,
             "grade_status": "self_evaluated", "linkage": linkage}
 
