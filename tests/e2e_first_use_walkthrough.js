@@ -77,7 +77,16 @@ async function requireBackendIsolated() {
 (async () => {
   await requireBackendIsolated();
   fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  // 浏览器：优先用系统 Chrome（与老师真实使用环境最接近）；没有就回退到
+  // playwright 自带的 chromium——否则没装 Chrome 的机器连走查都跑不起来，
+  // 而"能不能在自己机器上验收"本身也是交付能力的一部分。
+  let browser;
+  try {
+    browser = await chromium.launch({ channel: 'chrome', headless: true });
+  } catch (e) {
+    console.log('[提示] 未找到系统 Chrome，回退到 playwright 自带 chromium');
+    browser = await chromium.launch({ headless: true });
+  }
   const context = await browser.newContext({ viewport: { width: 1366, height: 768 } });
   const page = await context.newPage();
 
