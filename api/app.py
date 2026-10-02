@@ -10,7 +10,8 @@
 """
 
 import os
-from fastapi import FastAPI, Request
+from pathlib import Path
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -169,15 +170,17 @@ _VECTOR_STORE_DIR = str(get_data_dir() / "vector_store")
 @app.get("/")
 async def root():
     """
-    根路径欢迎接口
+    根路径。
 
-    返回：
-    {
-        "service": "智慧教育RAG系统",
-        "version": "2.2.1",
-        "status": "running"
-    }
+    - **已构建前端（有 frontend/dist）**：返回平台首页，用户访问域名就能看到界面；
+    - **开发模式（无 dist）**：返回服务信息 JSON，便于确认后端是否起来。
+
+    此前这里恒定返回 JSON，导致即使托管了前端、访问根路径也看不到平台。
     """
+    dist_index = Path(__file__).resolve().parent.parent / "frontend" / "dist" / "index.html"
+    if dist_index.is_file():
+        from fastapi.responses import FileResponse
+        return FileResponse(str(dist_index))
     return {
         "service": "智慧教育RAG系统",
         "version": APP_VERSION,
@@ -367,3 +370,38 @@ async def health_ready():
                 "request_id": None,
             },
         )
+
+
+# ============================================================
+# 生产模式：托管前端构建产物（frontend/dist）
+# ============================================================
+#
+# 单机部署时让后端直接服务前端，**一个进程就是一个完整平台**——不需要额外装
+# nginx、也不用再起一个前端服务。开发模式（npm run dev，dist 不存在）下这段
+# 会安静跳过并提示，不影响原有开发流程。
+#
+# 注意：catch-all 路由必须**最后注册**，否则会抢走前面所有 API 路由。
+_DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+if (_DIST_DIR / "index.html").is_file():
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    _assets_dir = _DIST_DIR / "assets"
+    if _assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+
+    # 这些前缀属于后端自己的命名空间，不能被 SPA 回退吞掉
+    _BACKEND_PREFIXES = ("api/", "docs", "redoc", "openapi.json", "health")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa_fallback(full_path: str):
+        """SPA 路由回退：非后端路径一律交给前端路由（返回 index.html）"""
+        if full_path.startswith(_BACKEND_PREFIXES):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return FileResponse(str(_DIST_DIR / "index.html"))
+
+    logger.info(f"已托管前端构建产物: {_DIST_DIR}")
+else:
+    logger.info("未检测到 frontend/dist —— 跳过后端静态托管"
+                "（开发模式请用 npm run dev；生产请先 npm run build）")
