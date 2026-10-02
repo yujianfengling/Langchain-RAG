@@ -58,6 +58,8 @@ export interface PublicQuestion {
   knowledge_point?: string | null;
   knowledge_point_id?: string | null;
   server_persisted?: boolean;
+  /** 题目来源：knowledge_base|note|quiz(你的资料) / web_search(网络资料) / general_knowledge(AI 通用知识) */
+  source?: string | null;
 }
 
 export interface AttemptResult {
@@ -66,7 +68,9 @@ export interface AttemptResult {
   knowledge_point?: string | null;
   knowledge_point_id?: string | null;
   is_correct: boolean | null;
-  grade_status: 'graded' | 'pending_self_eval' | 'self_evaluated' | string;
+  grade_status: 'graded' | 'ai_graded' | 'pending_self_eval' | 'self_evaluated' | string;
+  /** AI 判分简答题的评判理由（grade_status=ai_graded 时有值） */
+  ai_feedback?: string | null;
   user_answer?: string | null;
   user_answer_text?: string | null;
   correct_option_id?: string | null;
@@ -93,6 +97,12 @@ export interface WrongQuestion {
   reference_answer?: string | null;
   last_attempt_at?: string;
   attempt_count?: number;
+  /** 该题答案此前是否已被显式查看过（查看后后端会直接带上答案） */
+  revealed?: boolean;
+  /** 本次响应是否已包含答案与解析 */
+  answers_included?: boolean;
+  /** AI 判分简答题的评判理由（不泄露标准答案，可随列表下发） */
+  ai_feedback?: string | null;
 }
 
 export interface ReviewTask {
@@ -237,6 +247,28 @@ export const getAttempts = async (params?: { subject_id?: string; question_id?: 
 
 export const getWrongQuestions = async (subjectId?: string): Promise<ApiResponse<WrongQuestion[]>> => {
   return apiClient.get('/quiz/wrong', { params: subjectId ? { subject_id: subjectId } : {} });
+};
+
+/** 错题答案与解析。注意：后端会登记"已查看答案"，
+ *  该题之后的作答将记为 after_reveal、不计入独立掌握证据。 */
+export const getWrongQuestionDetail = async (questionId: string)
+  : Promise<ApiResponse<{
+    question_id: string;
+    stem: string;
+    question_type?: string;
+    options?: QuizOption[];
+    knowledge_point?: string | null;
+    user_answer?: string | null;
+    user_answer_text?: string | null;
+    correct_option_id?: string | null;
+    correct_option_text?: string | null;
+    reference_answer?: string | null;
+    explanation?: string | null;
+    revealed: boolean;
+    reveal_recorded: boolean;
+    note?: string;
+  }>> => {
+  return apiClient.get(`/quiz/wrong/${questionId}`);
 };
 
 export const getQuizStats = async (subjectId?: string): Promise<ApiResponse<any>> => {

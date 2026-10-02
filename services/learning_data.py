@@ -49,6 +49,8 @@ ATTEMPT_KINDS = ("independent", "review", "after_reveal")
 # 判分状态
 GRADE_GRADED = "graded"
 GRADE_PENDING_SELF = "pending_self_eval"
+# 简答题由 AI 判分；用户仍可用"我答对了/我答错了"覆盖为 self_evaluated
+GRADE_AI_GRADED = "ai_graded"
 # 复习任务状态
 REVIEW_PENDING = "PENDING"
 REVIEW_DONE = "DONE"
@@ -145,6 +147,7 @@ def _init_db() -> None:
             correct_option_id TEXT,
             is_correct INTEGER,
             grade_status TEXT NOT NULL DEFAULT 'graded',
+            ai_feedback TEXT,
             used_hint INTEGER DEFAULT 0,
             revealed_answer INTEGER DEFAULT 0,
             duration_sec INTEGER,
@@ -197,6 +200,8 @@ def _init_db() -> None:
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_review_pending_unique
                ON review_tasks(user_id, subject_id, knowledge_point_id)
                WHERE status = 'PENDING'""")
+        # 老库补列：CREATE TABLE IF NOT EXISTS 不会改动已存在的表
+        ensure_columns(conn, "quiz_attempts")
         conn.commit()
     finally:
         conn.close()
@@ -470,8 +475,14 @@ _MASTERY_COLUMNS = {
 }
 
 # 表名 → 阶段一新增列定义（供 ensure_columns 与 migrate_legacy 共用，避免两处漂移）
+# quiz_attempts：AI 判分简答题的评判理由（刷新后仍可查看）
+_ATTEMPT_COLUMNS = {
+    "ai_feedback": "TEXT",
+}
+
 _COLUMN_SETS = {
     "learning_tasks": _TASK_COLUMNS,
+    "quiz_attempts": _ATTEMPT_COLUMNS,
     "learning_plans": _PLAN_COLUMNS,
     "conversations": _CONVERSATION_COLUMNS,
     "messages": _MESSAGE_COLUMNS,
@@ -729,6 +740,7 @@ __all__ = [
     "ATTEMPT_KINDS",
     "GRADE_GRADED",
     "GRADE_PENDING_SELF",
+    "GRADE_AI_GRADED",
     "REVIEW_PENDING",
     "REVIEW_DONE",
     "REVIEW_CANCELLED",

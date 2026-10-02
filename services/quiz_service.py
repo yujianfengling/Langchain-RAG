@@ -19,6 +19,7 @@ import sqlite3
 from typing import List, Dict, Any, Optional
 
 from utils.logger import logger
+from services.ai_service import call_llm
 from services.learning_data import (
     _get_db,
     _now,
@@ -28,6 +29,7 @@ from services.learning_data import (
     ATTEMPT_KINDS,
     GRADE_GRADED,
     GRADE_PENDING_SELF,
+    GRADE_AI_GRADED,
 )
 
 # 选项 ID 序列（单选）
@@ -46,6 +48,98 @@ class QuizServiceError(Exception):
         super().__init__(message)
 
 
+# ==================== 简答题 AI 判分 ====================
+
+# 简答题判分 Prompt：只依据题目的参考答案/解析判断，不引入外部知识
+SHORT_ANSWER_GRADER_PROMPT = """你是一名严谨的阅卷老师，请判断学生的简答题作答是否达到参考答案的要求。
+
+## 题目
+{stem}
+
+## 参考答案
+{reference_answer}
+
+## 参考解析
+{explanation}
+
+## 学生作答
+{user_answer}
+
+## 输出要求（严格 JSON，不要输出任何其他内容）
+{{
+  "is_correct": true 或 false,
+  "reason": "20-60 字的判分理由，指出答对的关键点或遗漏、错误的要点"
+}}
+
+## 判分规则
+1. 只依据上面的参考答案与解析判断，不要引入任何额外知识。
+2. 语义等价、要点齐全算正确；表述不完整但核心要点正确也算正确。
+3. 遗漏关键要点或出现明显错误算错误。
+4. 实在无法判断时判为 false，并在 reason 里说明原因。
+"""
+
+
+def _parse_grader_json(text: str) -> Dict[str, Any]:
+    """解析 AI 判分输出（兼容 markdown 代码块与前后夹带的文字）"""
+    if not text:
+        return {}
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    candidates = [stripped]
+    m = re.search(r"\{[\s\S]*\}", stripped)
+    if m:
+        candidates.append(m.group())
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return {}
+
+
+def grade_short_answer_with_ai(
+    stem: str,
+    reference_answer: Optional[str],
+    explanation: Optional[str],
+    user_answer: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    用模型评判简答题作答（不伪装成客观判分）。
+
+    Returns:
+        {"is_correct": bool, "reason": str}；无判分依据或模型不可用时返回 None，
+        由调用方降级为 pending_self_eval —— 宁可让用户自评，也不伪造判分。
+    """
+    ref = (reference_answer or "").strip()
+    exp = (explanation or "").strip()
+    ans = (user_answer or "").strip()
+    if not ans or not (ref or exp):
+        return None
+    prompt = SHORT_ANSWER_GRADER_PROMPT.format(
+        stem=stem, reference_answer=ref or "（无）", explanation=exp or "（无）", user_answer=ans)
+    try:
+        raw = call_llm(prompt, system_message="你是智慧教育阅卷助手，只输出 JSON。")
+    except Exception as e:
+        logger.warning(f"简答题 AI 判分调用失败（降级为待自评）: {e}")
+        return None
+    data = _parse_grader_json(raw)
+    if not isinstance(data, dict) or "is_correct" not in data:
+        logger.warning(f"简答题 AI 判分输出无法解析（降级为待自评）: {str(raw)[:120]}")
+        return None
+    return {
+        "is_correct": bool(data.get("is_correct")),
+        "reason": str(data.get("reason") or "").strip(),
+    }
+
+
 def to_public(row: Any) -> Dict[str, Any]:
     """
     把题库记录转换为"可下发给前端"的题目结构（**不含标准答案与解析**）。
@@ -59,9 +153,11 @@ def to_public(row: Any) -> Dict[str, Any]:
     if isinstance(row, dict):
         options = row.get("options") or []
         version = row.get("version") or 1
+        source = row.get("source")
     else:
         options = json.loads(row["options_json"] or "[]")
         version = row["version"] or 1
+        source = row["source"]
     return {
         "id": row["id"],
         "question": row["stem"],
@@ -71,6 +167,10 @@ def to_public(row: Any) -> Dict[str, Any]:
         "knowledge_point_id": row["knowledge_point_id"],
         "version": version,
         "server_persisted": True,
+        # 题目来源：knowledge_base(你的资料) / web_search(网络资料) /
+        # general_knowledge(AI 通用知识) / note / quiz。前端据此标注，避免
+        # 把通用知识出的题误当成"我上传的资料里有这道题"。
+        "source": source,
     }
 
 
@@ -408,11 +508,21 @@ def submit_attempt(
         grade_status = GRADE_GRADED
         is_correct: Optional[int] = None
         user_answer_text = None
+        ai_feedback: Optional[str] = None
 
         if qtype == "short_answer":
-            # 简答：无客观评分，标记为待自评
-            grade_status = GRADE_PENDING_SELF
+            # 简答题：有参考答案/解析时交给 AI 判分（记为 ai_graded，不冒充客观判分）；
+            # 没有判分依据或模型不可用时降级为待自评。
+            # 用户之后仍可用"我答对了 / 我答错了"覆盖 AI 判定（见 self_evaluate）。
             user_answer_text = (user_answer or "").strip()
+            judged = grade_short_answer_with_ai(
+                q["stem"], q["reference_answer"], q["explanation"], user_answer_text or "")
+            if judged is None:
+                grade_status = GRADE_PENDING_SELF
+            else:
+                grade_status = GRADE_AI_GRADED
+                is_correct = 1 if judged["is_correct"] else 0
+                ai_feedback = judged.get("reason") or None
         elif correct_option_id is None:
             # 模型答案无法可靠映射为选项 → 不伪造客观判分
             grade_status = GRADE_PENDING_SELF
@@ -427,13 +537,13 @@ def submit_attempt(
             """INSERT INTO quiz_attempts
                (id, user_id, subject_id, question_id, knowledge_point_id, knowledge_point_name,
                 attempt_no, attempt_kind, user_answer, user_answer_text, correct_option_id,
-                is_correct, grade_status, used_hint, revealed_answer, duration_sec,
+                is_correct, grade_status, ai_feedback, used_hint, revealed_answer, duration_sec,
                 source_task_id, conversation_id, client_token, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (attempt_id, user_id, subject_id, question_id,
              q["knowledge_point_id"], q["knowledge_point_name"],
              attempt_no, attempt_kind, (user_answer or "").strip() or None, user_answer_text,
-             correct_option_id, is_correct, grade_status,
+             correct_option_id, is_correct, grade_status, ai_feedback,
              1 if used_hint else 0, 1 if revealed else 0,
              duration_sec, source_task_id, conversation_id, client_token, now))
         conn.commit()
@@ -500,6 +610,7 @@ def _attempt_result(row, q) -> Dict[str, Any]:
         "knowledge_point_id": row["knowledge_point_id"],
         "is_correct": None if row["is_correct"] is None else bool(row["is_correct"]),
         "grade_status": row["grade_status"],
+        "ai_feedback": row["ai_feedback"] if "ai_feedback" in row.keys() else None,
         "user_answer": row["user_answer"],
         "user_answer_text": row["user_answer_text"],
         "correct_option_id": row["correct_option_id"],
@@ -514,9 +625,17 @@ def _attempt_result(row, q) -> Dict[str, Any]:
 
 def self_evaluate(attempt_id: str, user_id: str, is_correct: bool) -> Dict[str, Any]:
     """
-    简答题自评：把 pending_self_eval 的作答标记为自评结果。
+    简答题自评：把 pending_self_eval / ai_graded 的作答标记为自评结果。
 
     自评结果不等同客观判分，仅作为自评证据记录。
+
+    联动（2026-10-02 补）：
+    - 自评**答错** → 补发一条作答事件，让"错题 → 复习安排"联动生效。
+      此前自评不参与联动，学生点「我答错了」既不会排复习，错题本之外的
+      闭环也不会动。掌握度按 attempt_id 幂等，同一次作答不会被 AI 与自评
+      各记一遍（AI 已判过就仍以 AI 的那条为准）。
+    - 自评**答对** → **不**补发事件：自评不能证明掌握，也就不能关闭待办复习
+      （与 after_reveal 不关闭待办同一原则，避免"点一下就完成复习"）。
     """
     conn = _get_db()
     try:
@@ -525,16 +644,48 @@ def self_evaluate(attempt_id: str, user_id: str, is_correct: bool) -> Dict[str, 
             raise QuizServiceError("作答记录不存在", "not_found")
         if row["user_id"] != user_id:
             raise QuizServiceError("无权操作他人的作答记录", "forbidden")
-        if row["grade_status"] != GRADE_PENDING_SELF:
+        # 允许覆盖：pending_self_eval（无判分依据）或 ai_graded（AI 已判，用户不认同）
+        if row["grade_status"] not in (GRADE_PENDING_SELF, GRADE_AI_GRADED):
             raise QuizServiceError("该作答已有判分结果，无需自评", "invalid_request")
         conn.execute(
             "UPDATE quiz_attempts SET is_correct=?, grade_status=? WHERE id=?",
             (1 if is_correct else 0, "self_evaluated", attempt_id))
         conn.commit()
         logger.info(f"简答题自评完成: attempt={attempt_id}, is_correct={is_correct}")
-        return {"attempt_id": attempt_id, "is_correct": is_correct, "grade_status": "self_evaluated"}
+        snapshot = dict(row)
     finally:
         conn.close()
+
+    # ---- 自评已持久化后再做联动（联动失败不影响自评记录，可重试） ----
+    linkage: Dict[str, Any] = {"event_status": "skipped",
+                               "reason": "自评答对不进入复习与掌握证据"}
+    if not is_correct:
+        try:
+            from services.learning_events import emit_event
+            ev = emit_event(
+                event_type="quiz_attempt_recorded",
+                # 与提交作答的幂等键区分：同一次作答的"提交"与"自评"是两次动作
+                idempotency_key=f"quiz_self_eval:{attempt_id}",
+                user_id=user_id,
+                subject_id=snapshot["subject_id"],
+                payload={
+                    "attempt_id": attempt_id,
+                    "question_id": snapshot["question_id"],
+                    "knowledge_point": snapshot["knowledge_point_name"],
+                    "knowledge_point_id": snapshot["knowledge_point_id"],
+                    "is_correct": False,
+                    "attempt_kind": snapshot["attempt_kind"],
+                    "source_task_id": snapshot["source_task_id"],
+                },
+            )
+            linkage = {"event_id": ev.get("event_id"), "event_status": ev.get("status"),
+                       "handler_errors": ev.get("handler_errors", [])}
+        except Exception as e:
+            logger.warning(f"自评答错的复习联动发送失败（自评已保存）: {e}")
+            linkage = {"event_status": "failed_to_emit", "error": str(e)[:120]}
+
+    return {"attempt_id": attempt_id, "is_correct": is_correct,
+            "grade_status": "self_evaluated", "linkage": linkage}
 
 
 # ==================== 作答与错题查询 ====================
@@ -618,6 +769,8 @@ def list_wrong_questions(user_id: str, subject_id: Optional[str] = None,
                 "user_answer_text": r["user_answer_text"],
                 "last_attempt_at": r["created_at"],
                 "attempt_count": _attempt_count(conn, user_id, r["question_id"]),
+                # AI 对用户自己作答的评判理由：不属于"标准答案"，因此不受答案隔离限制
+                "ai_feedback": r["ai_feedback"] if "ai_feedback" in r.keys() else None,
                 # 答案是否已下发：前端据此显示"查看解析"或直接显示答案
                 "revealed": revealed,
                 "answers_included": expose,
@@ -674,6 +827,7 @@ def get_wrong_question_detail(user_id: str, question_id: str) -> Dict[str, Any]:
         "correct_option_text": _option_text(options, exposed.get("correct_option_id")),
         "reference_answer": exposed.get("reference_answer"),
         "explanation": exposed.get("explanation"),
+        "ai_feedback": target.get("ai_feedback"),
         "revealed": True,
         "reveal_recorded": True,
         "note": "已登记查看答案：该题后续作答不计入独立掌握证据",
@@ -727,6 +881,7 @@ __all__ = [
     "has_revealed",
     "submit_attempt",
     "self_evaluate",
+    "grade_short_answer_with_ai",
     "list_attempts",
     "list_wrong_questions",
     "get_wrong_question_detail",

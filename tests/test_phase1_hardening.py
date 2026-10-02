@@ -97,8 +97,15 @@ class HardeningTestBase(IsolatedDataTestCase):
                                        "type": "text"}],
                           "context_used": True, "documents": []})
         self._rag_patch.start()
+        # 简答题 AI 判分（缺省判为答对）
+        self._short_patch = mock.patch(
+            "services.quiz_service.call_llm",
+            side_effect=lambda prompt, system_message=None, model=None, **kw:
+            json.dumps({"is_correct": True, "reason": "要点齐全"}, ensure_ascii=False))
+        self._short_patch.start()
         self.addCleanup(self._llm_patch.stop)
         self.addCleanup(self._rag_patch.stop)
+        self.addCleanup(self._short_patch.stop)
 
     # ---------- HTTP 辅助（每个 client 独立，用于模拟"换客户端"） ----------
 
@@ -372,26 +379,105 @@ class TestReviewSemantics(HardeningTestBase):
         self.assertFalse(point["consolidated"], "一次复习答对不等于长期掌握")
         self.assertEqual(point["consolidation_status"], "unverified")
 
-    def test_self_evaluated_short_answer_is_not_objective_evidence(self):
-        """自评简答题不冒充客观判分，也不进入掌握证据"""
+    def test_ai_graded_short_answer_is_evidence_and_self_eval_can_override(self):
+        """简答题：AI 判分计入证据；用户自评可覆盖判定，但不重复计入证据
+
+        变更说明（2026-10-02）：简答题原先一律 pending_self_eval（不进掌握证据）。
+        现改为有参考答案/解析时由 AI 判分（ai_graded），并保留
+        「我答对了 / 我答错了」两个按钮让用户覆盖。
+        覆盖只改写作答记录（错题本与正确率随之变化），不回溯已写入的掌握证据——
+        掌握度是增量证据流，同一次作答不能既算 AI 的又算用户的。
+        """
         token, _ = self.login("rvw_selfeval")
         quiz = self.gen_quiz(token)
         short = next(q for q in quiz if q["type"] == "short_answer")
 
         data = self._answer(token, short["id"], "根左右", "rvw3-1")
-        self.assertEqual(data["grade_status"], "pending_self_eval")
-        self.assertIsNone(data["is_correct"])
-
-        self.req("POST", "/api/quiz/self-evaluate", token=token,
-                 json={"attempt_id": data["attempt_id"], "is_correct": True})
+        self.assertEqual(data["grade_status"], "ai_graded")
+        self.assertTrue(data["is_correct"])
 
         mastery = self.req("GET", "/api/student/mastery", token=token,
                            params={"subject_id": SUBJECT}).json()["data"]
         point = next(p for p in mastery["points"] if p["knowledge_point"] == KP)
-        self.assertEqual(point["evidence_count"], 0,
-                         "自评结果被当成客观判分证据了")
-        self.assertEqual(point["mastery_level"], None)
-        self.assertEqual(point["mastery_status"], "pending")
+        self.assertEqual(point["evidence_count"], 1, "AI 判分应作为一条证据")
+
+        # 用户推翻 AI 判定：作答记录改为"错"，但不追加第二条证据
+        r = self.req("POST", "/api/quiz/self-evaluate", token=token,
+                     json={"attempt_id": data["attempt_id"], "is_correct": False})
+        self.assertEqual(r.json()["data"]["grade_status"], "self_evaluated")
+
+        mastery2 = self.req("GET", "/api/student/mastery", token=token,
+                            params={"subject_id": SUBJECT}).json()["data"]
+        point2 = next(p for p in mastery2["points"] if p["knowledge_point"] == KP)
+        self.assertEqual(point2["evidence_count"], 1, "自评不应重复计入证据")
+
+        wrong = self.req("GET", "/api/quiz/wrong", token=token,
+                         params={"subject_id": SUBJECT}).json()["data"]
+        self.assertTrue(any(w["question_id"] == short["id"] for w in wrong),
+                        "覆盖为答错后该题应进入错题本")
+
+    def test_self_eval_wrong_creates_review_task(self):
+        """自评"答错"要补触发复习安排（此前自评不参与联动）"""
+        token, _ = self.login("rvw_selfeval_wrong")
+        quiz = self.gen_quiz(token)
+        short = next(q for q in quiz if q["type"] == "short_answer")
+
+        with mock.patch("services.quiz_service.call_llm",
+                        side_effect=RuntimeError("model down")):
+            data = self._answer(token, short["id"], "不知道", "rvw-se-w1")
+        self.assertEqual(data["grade_status"], "pending_self_eval")
+
+        self.req("POST", "/api/quiz/self-evaluate", token=token,
+                 json={"attempt_id": data["attempt_id"], "is_correct": False})
+
+        pending = self.req("GET", "/api/quiz/reviews", token=token,
+                           params={"subject_id": SUBJECT,
+                                   "status": "PENDING"}).json()["data"]
+        self.assertTrue(any(r["knowledge_point_name"] == KP for r in pending),
+                        "自评答错后应生成该知识点的待办复习")
+
+    def test_self_eval_correct_cannot_close_review(self):
+        """自评"答对"不能关闭待办复习（自评不证明掌握）"""
+        token, _ = self.login("rvw_selfeval_right")
+        quiz = self.gen_quiz(token)
+        choice = next(q for q in quiz if q["type"] == "single_choice")
+        short = next(q for q in quiz if q["type"] == "short_answer")
+
+        # 先独立答错客观题 → 生成待办复习
+        wrong_option = next(o["id"] for o in choice["options"] if o["id"] != "B")
+        data1 = self._answer(token, choice["id"], wrong_option, "rvw-se-c1")
+        self.assertFalse(data1["is_correct"])
+        pending = self.req("GET", "/api/quiz/reviews", token=token,
+                           params={"subject_id": SUBJECT,
+                                   "status": "PENDING"}).json()["data"]
+        self.assertEqual(len(pending), 1, "独立答错应生成待办复习")
+
+        # 简答题自评"答对"：不得关闭该待办
+        with mock.patch("services.quiz_service.call_llm",
+                        side_effect=RuntimeError("model down")):
+            data2 = self._answer(token, short["id"], "根左右", "rvw-se-c2")
+        self.assertEqual(data2["grade_status"], "pending_self_eval")
+        self.req("POST", "/api/quiz/self-evaluate", token=token,
+                 json={"attempt_id": data2["attempt_id"], "is_correct": True})
+
+        pending2 = self.req("GET", "/api/quiz/reviews", token=token,
+                            params={"subject_id": SUBJECT,
+                                    "status": "PENDING"}).json()["data"]
+        self.assertEqual(len(pending2), 1, "自评答对不该关闭待办复习")
+
+    def test_short_answer_falls_back_to_self_eval_when_ai_unavailable(self):
+        """AI 判分不可用时降级为待自评，不伪造判分"""
+        token, _ = self.login("rvw_selfeval_fb")
+        quiz = self.gen_quiz(token)
+        short = next(q for q in quiz if q["type"] == "short_answer")
+
+        with mock.patch("services.quiz_service.call_llm",
+                        side_effect=RuntimeError("model down")):
+            data = self._answer(token, short["id"], "根左右", "rvw3-fb-1")
+
+        self.assertEqual(data["grade_status"], "pending_self_eval")
+        self.assertIsNone(data["is_correct"])
+        self.assertIsNone(data.get("ai_feedback"))
 
     def test_consolidation_requires_spaced_repetition(self):
         """间隔复现后才认定长期掌握（构造首次答对在 2 天前）"""

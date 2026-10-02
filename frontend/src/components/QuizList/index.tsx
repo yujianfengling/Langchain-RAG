@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Button, Empty, Input, List, Radio, Space, Tag, Typography, message } from 'antd';
+import { Alert, Button, Empty, Input, List, Radio, Space, Tag, Tooltip, Typography, message } from 'antd';
 import { EyeOutlined, SendOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import {
   PublicQuestion, AttemptResult, submitAnswer, revealAnswer, selfEvaluate,
@@ -43,6 +43,28 @@ const typeLabel = (t: string) =>
 
 const typeColor = (t: string) =>
   t === 'single_choice' ? 'cyan' : t === 'judgement' ? 'green' : 'orange';
+
+const FROM_MATERIAL = { color: 'green', label: '你的资料', tip: '题目来自你上传的知识库资料' };
+
+/**
+ * 题目来源标签（2026-10-02）
+ *
+ * 本地资料覆盖不到时，出题会降级到网络资料或 AI 通用知识。
+ * 必须在界面上说清楚，否则学生会把通用题当成"我上传的资料里有这道题"。
+ */
+const SOURCE_META: Record<string, { color: string; label: string; tip: string }> = {
+  knowledge_base: FROM_MATERIAL,
+  note: FROM_MATERIAL,
+  quiz: FROM_MATERIAL,
+  web_search: {
+    color: 'blue', label: '网络资料',
+    tip: '本地资料不足，题目由网络公开资料整理，答案已由 AI 重新核对',
+  },
+  general_knowledge: {
+    color: 'orange', label: 'AI 通用知识',
+    tip: '本地资料不足，题目由 AI 通用知识生成，表述可能与你的教材不同',
+  },
+};
 
 /** 生成幂等令牌：同一次作答重复提交只计一次（刷新/重试安全） */
 const makeToken = (questionId: string) =>
@@ -90,8 +112,12 @@ export const QuizList: React.FC<QuizListProps> = ({
       if (data) {
         patch(q.id, { result: data, submitting: false });
         onAnswered?.(data, q);
-        if (data.grade_status === 'pending_self_eval') {
-          message.info('本题为简答题，已记录作答，请自行对照参考要点评估');
+        if (data.grade_status === 'ai_graded') {
+          message.info(data.ai_feedback
+            ? `AI 评判：${data.ai_feedback}`
+            : 'AI 已完成评判，不认同可自行改判');
+        } else if (data.grade_status === 'pending_self_eval') {
+          message.info('AI 判分不可用，已记录作答，请自行对照参考要点评估');
         } else if (data.is_correct) {
           message.success('回答正确');
         } else {
@@ -128,7 +154,7 @@ export const QuizList: React.FC<QuizListProps> = ({
       patch(q.id, {
         result: { ...(states[q.id].result as AttemptResult), grade_status: 'self_evaluated', is_correct: isCorrect },
       });
-      message.success('自评已记录（自评不等同客观判分）');
+      message.success('已按你的判断记录（自评不等同客观判分）');
     } catch (e: any) {
       patch(q.id, { error: e?.response?.data?.message || '自评失败' });
     }
@@ -147,6 +173,11 @@ export const QuizList: React.FC<QuizListProps> = ({
             <div style={{ width: '100%' }}>
               <div style={{ marginBottom: 8 }}>
                 <Tag color={typeColor(q.type)}>{typeLabel(q.type)}</Tag>
+                {q.source && SOURCE_META[q.source] && (
+                  <Tooltip title={SOURCE_META[q.source].tip}>
+                    <Tag color={SOURCE_META[q.source].color}>{SOURCE_META[q.source].label}</Tag>
+                  </Tooltip>
+                )}
                 <Text strong>
                   {idx + 1}. {q.question}
                 </Text>
@@ -178,7 +209,7 @@ export const QuizList: React.FC<QuizListProps> = ({
                   value={st.text}
                   onChange={(e) => patch(q.id, { text: e.target.value })}
                   disabled={answered || st.submitting}
-                  placeholder="请作答（简答题由后端记录，需自行对照参考要点评估）"
+                  placeholder="请作答（简答题提交后由 AI 评判，你仍可自行改判）"
                   style={{ marginBottom: 8 }}
                 />
               )}
@@ -242,6 +273,11 @@ export const QuizList: React.FC<QuizListProps> = ({
                           {st.result.attempt_kind === 'after_reveal' && '（查看答案后作答，不计入独立掌握证据）'}
                           {st.result.attempt_kind === 'review' && '（复习重做）'}
                         </Text>
+                      ) : st.result?.grade_status === 'ai_graded' ? (
+                        <Text strong>
+                          AI 评判：{st.result.is_correct ? '回答正确' : '回答错误'}
+                          {st.result.attempt_kind === 'after_reveal' && '（查看答案后作答，不计入独立掌握证据）'}
+                        </Text>
                       ) : (
                         <Text strong>
                           {st.result?.grade_status === 'self_evaluated' ? '已自评' : '简答题：待自评'}
@@ -262,9 +298,17 @@ export const QuizList: React.FC<QuizListProps> = ({
                       {st.result?.explanation && (
                         <Text type="secondary">解析：{st.result.explanation}</Text>
                       )}
-                      {st.result?.grade_status === 'pending_self_eval' && (
+                      {st.result?.ai_feedback && (
+                        <Text type="secondary">AI 评判理由：{st.result.ai_feedback}</Text>
+                      )}
+                      {(st.result?.grade_status === 'pending_self_eval'
+                        || st.result?.grade_status === 'ai_graded') && (
                         <Space>
-                          <Text type="secondary">请对照参考要点自评：</Text>
+                          <Text type="secondary">
+                            {st.result?.grade_status === 'ai_graded'
+                              ? '不认同 AI 的评判？可以自行改判：'
+                              : '请对照参考要点自评：'}
+                          </Text>
                           <Button size="small" onClick={() => handleSelfEvaluate(q, true)}>我答对了</Button>
                           <Button size="small" danger onClick={() => handleSelfEvaluate(q, false)}>我答错了</Button>
                         </Space>

@@ -91,6 +91,19 @@ async def _readable_subjects(user_id: str, subjects: list) -> list:
     return out
 
 
+def _schedule_quiz_prewarm(subject_id: str) -> None:
+    """建库 / 重建成功后，在后台适度预热该学科的通用题库。
+
+    预热失败绝不能影响建库结果，因此这里吞掉所有异常（只记日志）。
+    是否预热、预热多少，由 services/quiz_prewarm 依据环境变量决定。
+    """
+    try:
+        from services import quiz_prewarm
+        quiz_prewarm.schedule_prewarm(subject_id)
+    except Exception as e:
+        logger.warning(f"题库预热调度失败（不影响建库结果）: {e}")
+
+
 @router.post("/knowledge/build", response_model=SuccessResponse)
 async def build_knowledge(request: KnowledgeBuildRequest,
                           user_id: str = Depends(require_knowledge_admin)):
@@ -110,6 +123,9 @@ async def build_knowledge(request: KnowledgeBuildRequest,
             subject_id=request.subject_id,
             source_path=request.path,
         )
+
+        # 建库成功后，在后台适度预热该学科的通用题库（不阻塞响应，失败不影响建库）
+        _schedule_quiz_prewarm(request.subject_id)
 
         return SuccessResponse(
             data={
@@ -314,6 +330,9 @@ async def rebuild_knowledge(subject_id: str,
     try:
         # V2.5.2：重建为同步重操作，移出事件循环
         result = await run_in_threadpool(rebuild_subject_knowledge, subject_id=subject_id)
+
+        # 重建同样触发一次预热（进程内同一学科只跑一次）
+        _schedule_quiz_prewarm(subject_id)
 
         return SuccessResponse(
             data={

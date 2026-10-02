@@ -142,6 +142,11 @@ class Phase1LoopTestBase(unittest.TestCase):
                        }),
             mock.patch("services.learning_service.call_llm",
                        return_value=_plan_llm_output()),
+            # 简答题 AI 判分：缺省判为答对（判分理由用于前端展示）
+            mock.patch("services.quiz_service.call_llm",
+                       side_effect=lambda prompt, system_message=None, model=None, **kw:
+                       json.dumps({"is_correct": True, "reason": "要点齐全"},
+                                  ensure_ascii=False)),
         ]
         for p in cls._llm_patchers:
             p.start()
@@ -329,14 +334,16 @@ class TestSelfTestGrading(Phase1LoopTestBase):
         r = self._req("POST", "/api/quiz/answer", token=token, json={
             "question_id": short["id"], "user_answer": "根左右", "client_token": "tok-s-1"})
         data = r.json()["data"]
-        # 简答题不伪造客观判分，标记待自评
-        self.assertEqual(data["grade_status"], "pending_self_eval")
-        self.assertIsNone(data["is_correct"])
+        # 简答题有参考答案时由 AI 判分：记为 ai_graded，与客观题的 graded 区分开
+        self.assertEqual(data["grade_status"], "ai_graded")
+        self.assertTrue(data["is_correct"])
+        self.assertEqual(data["ai_feedback"], "要点齐全")
 
-        # 自评后可查询到自评结果（且明确标记为自评）
+        # 用户仍可用「我答对了 / 我答错了」覆盖 AI 判定
         r = self._req("POST", "/api/quiz/self-evaluate", token=token, json={
-            "attempt_id": data["attempt_id"], "is_correct": True})
+            "attempt_id": data["attempt_id"], "is_correct": False})
         self.assertEqual(r.json()["data"]["grade_status"], "self_evaluated")
+        self.assertFalse(r.json()["data"]["is_correct"])
 
     def test_reveal_downgrades_mastery_evidence(self):
         token, _ = self._register("stu_reveal")

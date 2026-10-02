@@ -21,6 +21,7 @@ from tests.fixtures_isolated import IsolatedDataTestCase
 from services.note_service import (
     NoteServiceError,
     generate_smart_note,
+    generate_quiz,
     _parse_note_json,
     _normalize_quiz,
 )
@@ -139,6 +140,108 @@ class TestGenerateSmartNote(IsolatedDataTestCase):
              mock.patch("services.note_service.call_llm", return_value="完全无法解析"):
             with self.assertRaises(NoteServiceError):
                 generate_smart_note("数据结构", "二叉树")
+
+
+class TestExamplePromptContract(unittest.TestCase):
+    """典型例题规则契约（2026-10-02）
+
+    用户要求：知识库资料里已有例题答案就直接沿用；只有题目没有答案时，
+    由 AI 补出完整解答流程；两者都没有才说明证据不足。
+
+    这里锁定 prompt 里的三条分支，防止以后被改回"没有答案就只说证据不足"。
+    """
+
+    def test_prompt_has_three_branches_for_examples(self):
+        from services.note_service import NOTE_PROMPT
+
+        self.assertIn("例题处理规则", NOTE_PROMPT)
+        # 分支 1：有答案 → 直接沿用
+        self.assertIn("直接沿用原文", NOTE_PROMPT)
+        # 分支 2：只有题目 → AI 补解答流程，并明确标注哪部分是补充的
+        self.assertIn("补出完整", NOTE_PROMPT)
+        self.assertIn("（解答由 AI 补充）", NOTE_PROMPT)
+        # 分支 3：完全没有例题 → 证据不足
+        self.assertIn("当前知识库中没有足够的证据来生成典型例题", NOTE_PROMPT)
+
+    def test_prompt_keeps_fact_boundary_for_other_sections(self):
+        """例题可以补解答，但不等于放开整体事实边界"""
+        from services.note_service import NOTE_PROMPT
+
+        self.assertIn("不得编造知识库中没有的内容", NOTE_PROMPT)
+        self.assertIn("老师说过某句话", NOTE_PROMPT)
+
+
+_WEB_QUIZ_JSON = json.dumps({
+    "quiz": [
+        {"question": "欧姆定律的公式是什么？", "type": "single_choice",
+         "options": ["U=IR", "U=I/R", "I=UR"], "answer": "A",
+         "explanation": "欧姆定律 U=IR。", "knowledge_point": "欧姆定律"},
+    ]
+}, ensure_ascii=False)
+
+_GENERAL_QUIZ_JSON = json.dumps({
+    "quiz": [
+        {"question": "电流的国际单位是安培。", "type": "judgement",
+         "options": ["正确", "错误"], "answer": "正确",
+         "explanation": "国际单位为安培(A)。", "knowledge_point": "电流"},
+    ]
+}, ensure_ascii=False)
+
+
+class TestLayeredQuizFallback(IsolatedDataTestCase):
+    """知识库证据不足时的两级降级出题（2026-10-02）
+
+    用户诉求：教材版本众多，本地知识库覆盖不到时也要有题可做。
+    这里锁定分层顺序 **资料 → 联网 → 通用知识**，以及"绝不冒充你的资料"。
+    """
+
+    def test_web_material_is_used_and_attributed(self):
+        """知识库没证据 + 联网可用 → 用网络素材出题，并带回来源 URL"""
+        with mock.patch("services.note_service.require_kb_ready", return_value=None), \
+             mock.patch("services.note_service.retrieve_and_build_context",
+                        return_value=_mock_context(evidence=False)), \
+             mock.patch("services.web_search_service.is_enabled", return_value=True), \
+             mock.patch("services.web_search_service.search_question_material",
+                        return_value=[{"title": "欧姆定律练习题",
+                                       "url": "https://example.com/ohm",
+                                       "content": "1、电阻R=10Ω，电压U=5V，求电流。解：I=U/R=0.5A。" * 5}]), \
+             mock.patch("services.note_service.call_llm", return_value=_WEB_QUIZ_JSON):
+            res = generate_quiz("物理", "欧姆定律")
+
+        self.assertEqual(res["source"], "web_search")
+        self.assertTrue(res["quiz"])
+        self.assertEqual(len(res["material_sources"]), 1)
+        self.assertEqual(res["material_sources"][0]["url"], "https://example.com/ohm")
+
+    def test_general_knowledge_when_web_unavailable(self):
+        """联网不可用 → 用 AI 通用知识出题，标注来源，不谎称来自资料"""
+        with mock.patch("services.note_service.require_kb_ready", return_value=None), \
+             mock.patch("services.note_service.retrieve_and_build_context",
+                        return_value=_mock_context(evidence=False)), \
+             mock.patch("services.web_search_service.is_enabled", return_value=False), \
+             mock.patch("services.note_service.call_llm", return_value=_GENERAL_QUIZ_JSON):
+            res = generate_quiz("物理", "电流")
+
+        self.assertEqual(res["source"], "general_knowledge")
+        self.assertEqual(res["material_sources"], [])
+        self.assertTrue(res["quiz"])
+
+    def test_knowledge_base_evidence_keeps_priority(self):
+        """有知识库证据时优先用资料，且**不联网**"""
+        llm_out = json.dumps({
+            "quiz": [{"question": "二叉树最多几个子节点？", "type": "single_choice",
+                      "options": ["1 个", "2 个", "3 个"], "answer": "B",
+                      "explanation": "定义决定。", "knowledge_point": "二叉树"}]
+        }, ensure_ascii=False)
+        with mock.patch("services.note_service.require_kb_ready", return_value=None), \
+             mock.patch("services.note_service.retrieve_and_build_context",
+                        return_value=_mock_context(evidence=True)), \
+             mock.patch("services.web_search_service.search_question_material") as web, \
+             mock.patch("services.note_service.call_llm", return_value=llm_out):
+            res = generate_quiz("数据结构", "二叉树")
+
+        self.assertEqual(res["source"], "knowledge_base")
+        web.assert_not_called()
 
 
 if __name__ == "__main__":

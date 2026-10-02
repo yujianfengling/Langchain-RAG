@@ -7,6 +7,7 @@ import {
 import {
   CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, ReloadOutlined,
   ReadOutlined, ExclamationCircleOutlined, SyncOutlined, RocketOutlined,
+  EyeOutlined, EyeInvisibleOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import SubjectSelector from '../components/SubjectSelector';
@@ -19,7 +20,8 @@ import { AUTH_CHANGED_EVENT } from '../components/UserAuth';
 import {
   StudentTask, WrongQuestion, ReviewTask, MasteryPoint, LearningEvent,
   LearningHome, getHome, completeTask, rescheduleTask,
-  getWrongQuestions, getReviews, getMastery, getLearningEvents, retryLearningEvents,
+  getWrongQuestions, getWrongQuestionDetail, getReviews, getMastery,
+  getLearningEvents, retryLearningEvents,
 } from '../api/student';
 
 const { Title, Text, Paragraph } = Typography;
@@ -59,6 +61,12 @@ const StudentPage: React.FC = () => {
   const [home, setHome] = useState<LearningHome | null>(null);
   const [buckets, setBuckets] = useState<{ today: StudentTask[]; overdue: StudentTask[] }>({ today: [], overdue: [] });
   const [wrong, setWrong] = useState<WrongQuestion[]>([]);
+  /** 错题答案默认不下发（answers_included=false），点「查看答案」后才拉取 */
+  const [wrongDetails, setWrongDetails] = useState<Record<string, any>>({});
+  const [revealingId, setRevealingId] = useState<string | null>(null);
+  /** 已展开答案的题目。**默认全部收起**——即使后端已下发（此前查看过），
+   *  也要学生自己点开，避免答案在错题本里一直摊着。 */
+  const [expandedAnswers, setExpandedAnswers] = useState<Record<string, boolean>>({});
   const [reviews, setReviews] = useState<ReviewTask[]>([]);
   const [mastery, setMastery] = useState<MasteryPoint[]>([]);
   const [events, setEvents] = useState<LearningEvent[]>([]);
@@ -107,6 +115,28 @@ const StudentPage: React.FC = () => {
     if (masteryRes.status === 'fulfilled') setMastery((masteryRes.value as any)?.data?.points || []);
     if (evRes.status === 'fulfilled') setEvents((evRes.value as any)?.data || []);
     setLoading(false);
+  }, []);
+
+  /**
+   * 查看某道错题的正确答案与解析。
+   *
+   * 后端会登记"已查看答案"：该题之后的作答记为 after_reveal、不再计入
+   * 独立掌握证据——所以答案默认不随错题列表下发，藏在「查看答案」按钮之后。
+   */
+  const handleRevealWrong = useCallback(async (questionId: string) => {
+    setRevealingId(questionId);
+    try {
+      const res: any = await getWrongQuestionDetail(questionId);
+      const data = res?.data;
+      if (data) {
+        setWrongDetails((prev) => ({ ...prev, [questionId]: data }));
+        setExpandedAnswers((prev) => ({ ...prev, [questionId]: true }));
+      }
+    } catch (e: any) {
+      message.error(e?.response?.data?.message || '查看答案失败，请稍后重试');
+    } finally {
+      setRevealingId(null);
+    }
   }, []);
 
   useEffect(() => {
@@ -345,7 +375,7 @@ const StudentPage: React.FC = () => {
               type="warning"
               showIcon
               style={{ marginTop: 12 }}
-              message={`有 ${home.quiz_stats.pending_self_eval} 道简答题待自评，自评结果会单独标记，不计入客观判分。`}
+              message={`有 ${home.quiz_stats.pending_self_eval} 道简答题未能自动判分（AI 判分不可用），请对照参考要点自评；自评结果会单独标记，不计入客观判分。`}
             />
           )}
         </Card>
@@ -461,32 +491,80 @@ const StudentPage: React.FC = () => {
                 {wrong.length === 0 ? <Empty description="暂无错题" /> : (
                   <List
                     dataSource={wrong}
-                    renderItem={(w) => (
-                      <List.Item>
-                        <div style={{ width: '100%' }}>
-                          <Space size={8} wrap style={{ marginBottom: 6 }}>
-                            {w.knowledge_point && <Tag color="purple">{w.knowledge_point}</Tag>}
-                            <Text type="secondary" style={{ fontSize: 12 }}>
-                              作答 {w.attempt_count} 次 · 最近 {w.last_attempt_at}
-                            </Text>
-                          </Space>
-                          <Paragraph style={{ marginBottom: 6 }}>{w.stem}</Paragraph>
-                          <Descriptions size="small" column={1}
-                                        items={[
-                                          { key: 'u', label: '你的作答', children: w.user_answer_text || w.user_answer || '—' },
-                                          {
-                                            key: 'c', label: '正确答案',
-                                            children: w.correct_option_text
-                                              ? `${w.correct_option_id}（${w.correct_option_text}）`
-                                              : (w.reference_answer || '—'),
-                                          },
-                                          ...(w.explanation
-                                            ? [{ key: 'e', label: '解析', children: w.explanation }]
-                                            : []),
-                                        ]} />
-                        </div>
-                      </List.Item>
-                    )}
+                    renderItem={(w) => {
+                      // 答案默认不下发：只有"本次点了查看答案"或"此前查看过"（answers_included）才有数据。
+                      // 即便已有数据也默认收起（平时隐蔽），展开与否由学生自己控制。
+                      const fetched = wrongDetails[w.question_id];
+                      const known = fetched || (w.answers_included ? w : null);
+                      const expanded = !!expandedAnswers[w.question_id];
+                      const shown = expanded ? known : null;
+                      const correctText = shown
+                        ? (shown.correct_option_text
+                          ? `${shown.correct_option_id}（${shown.correct_option_text}）`
+                          : (shown.reference_answer || '—'))
+                        : null;
+                      return (
+                        <List.Item>
+                          <div style={{ width: '100%' }}>
+                            <Space size={8} wrap style={{ marginBottom: 6 }}>
+                              {w.knowledge_point && <Tag color="purple">{w.knowledge_point}</Tag>}
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                作答 {w.attempt_count} 次 · 最近 {w.last_attempt_at}
+                              </Text>
+                            </Space>
+                            <Paragraph style={{ marginBottom: 6 }}>{w.stem}</Paragraph>
+                            <Descriptions size="small" column={1}
+                                          items={[
+                                            { key: 'u', label: '你的作答', children: w.user_answer_text || w.user_answer || '—' },
+                                            {
+                                              key: 'c',
+                                              label: '正确答案',
+                                              children: correctText
+                                                ?? <Text type="secondary">（点「查看答案」后显示）</Text>,
+                                            },
+                                            ...(shown?.explanation
+                                              ? [{ key: 'e', label: '解析', children: shown.explanation }]
+                                              : []),
+                                          ]} />
+                            {w.ai_feedback && (
+                              <Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 0' }}>
+                                AI 评判理由：{w.ai_feedback}
+                              </Paragraph>
+                            )}
+                            <div style={{ marginTop: 6 }}>
+                              <Space size={8} wrap>
+                                {!known && (
+                                  <Button
+                                    size="small"
+                                    icon={<EyeOutlined />}
+                                    loading={revealingId === w.question_id}
+                                    onClick={() => handleRevealWrong(w.question_id)}
+                                  >
+                                    查看答案
+                                  </Button>
+                                )}
+                                {known && (
+                                  <Button
+                                    size="small"
+                                    icon={expanded ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                                    onClick={() => setExpandedAnswers((prev) => ({
+                                      ...prev, [w.question_id]: !prev[w.question_id],
+                                    }))}
+                                  >
+                                    {expanded ? '收起答案' : '查看答案'}
+                                  </Button>
+                                )}
+                                {shown && (
+                                  <Text type="secondary" style={{ fontSize: 12 }}>
+                                    已查看答案：该题后续作答不计入独立掌握证据
+                                  </Text>
+                                )}
+                              </Space>
+                            </div>
+                          </div>
+                        </List.Item>
+                      );
+                    }}
                   />
                 )}
               </Card>

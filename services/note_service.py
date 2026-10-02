@@ -48,7 +48,7 @@ NOTE_PROMPT = """你是一名教育领域的智能笔记生成助手。请基于
     "sources": []
   }},
   "example": {{
-    "content": "典型例题与解题思路（基于证据，如证据中无例题，则说明证据不足）",
+    "content": "典型例题与完整解答（按下方「例题处理规则」三选一）",
     "sources": []
   }},
   "mistakes": {{
@@ -71,10 +71,17 @@ NOTE_PROMPT = """你是一名教育领域的智能笔记生成助手。请基于
   ]
 }}
 
+## 例题处理规则（example 字段，按证据情况三选一）
+1. 证据中已有例题且带答案或解答：直接沿用原文的题目与解答过程，不要改写、不要另编新题。
+2. 证据中只有题目、没有答案或解答：保留原题，由你补出完整、分步骤的解答流程，
+   并在解答开头标注"（解答由 AI 补充）"，让读者能区分资料原文与补充内容。
+3. 证据中完全没有例题：写"当前知识库中没有足够的证据来生成典型例题"。
+
 ## 硬性规则
 1. concept/example/mistakes/class_tips 必须基于知识库证据，不得编造知识库中没有的内容。
 2. class_tips 尤其禁止虚构"老师说过某句话"——只有证据中确实存在课堂说明时才填写。
 3. 证据不足时，在对应 content 中明确写"当前知识库中没有足够证据"，不要编造。
+   例外：例题的解答流程——题目本身来自证据时，解答可以补充（见上方例题处理规则 2）。
 4. quiz 生成 2-3 道自测题，覆盖 single_choice / judgement / short_answer 至少两种。
 5. 每道 quiz 必须能独立回答，explanation 基于知识库证据。
 """
@@ -204,6 +211,147 @@ def _normalize_quiz(raw: Any, knowledge_point: str) -> List[Dict[str, Any]]:
     return quizzes
 
 
+# ==================== 无知识库证据时的两级降级出题 ====================
+
+WEB_QUIZ_PROMPT = """你是一名教育出题助手。下面是【网络搜索到的资料片段】，请据此为用户整理自测题。
+
+## 知识点主题
+{topic}
+
+## 网络资料（仅作素材，不得整卷照抄）
+{material}
+
+## 输出要求（严格 JSON，不要输出任何其他内容）
+{{
+  "quiz": [
+    {{
+      "question": "题干",
+      "type": "single_choice | judgement | short_answer",
+      "options": ["A...", "B...", "C...", "D..."],
+      "answer": "答案",
+      "explanation": "解析",
+      "knowledge_point": "{topic}"
+    }}
+  ]
+}}
+
+## 规则
+1. 生成 {count} 道题，覆盖 single_choice / judgement / short_answer 至少两种。
+2. 题目必须与"知识点主题"相关；资料里没有依据的内容不要编造。
+3. **答案必须自己重新推导核对**：网页上的答案经常是错的，照抄会误人子弟。
+   某道题的答案无法确定时，换一道能确定的题，不要硬凑。
+4. 不要整段复制网页原文，用自己的话重新组织题干与解析。
+"""
+
+GENERAL_QUIZ_PROMPT = """你是一名教育出题助手。用户的知识库里没有覆盖这个主题的资料，
+请用你自己掌握的知识出一套**通用**自测题。
+
+## 知识点主题
+{topic}
+
+## 输出要求（严格 JSON，不要输出任何其他内容）
+{{
+  "quiz": [
+    {{
+      "question": "题干",
+      "type": "single_choice | judgement | short_answer",
+      "options": ["A...", "B...", "C...", "D..."],
+      "answer": "答案",
+      "explanation": "解析",
+      "knowledge_point": "{topic}"
+    }}
+  ]
+}}
+
+## 规则
+1. 生成 {count} 道题，覆盖 single_choice / judgement / short_answer 至少两种。
+2. 只考各版本教材都会讲的核心内容，避免依赖某一本特定教材的表述、例题编号或页码。
+3. 答案必须准确；拿不准的知识点不要出题。
+4. explanation 要讲清楚原因，不能只重复答案。
+"""
+
+
+def _subject_display_name(subject_id: str) -> str:
+    """取学科显示名（联网查询词里带上它，命中率更高）；失败返回空串"""
+    try:
+        from services import subject_service
+        return str((subject_service.get_subject(subject_id) or {}).get("name") or "").strip()
+    except Exception:
+        return ""
+
+
+def _quiz_from_prompt(prompt: str, topic: str, model: Optional[str]) -> List[Dict[str, Any]]:
+    """让模型按统一结构出题并规范化；解析失败返回空列表（由调用方继续降级）"""
+    answer = call_llm(prompt, system_message="你是智慧教育自测题助手。", model=model)
+    raw = _parse_note_json(answer)
+    if not raw:
+        return []
+    return _normalize_quiz(raw.get("quiz"), topic)
+
+
+def _generate_fallback_quiz(
+    subject_id: str,
+    topic: str,
+    model: Optional[str],
+    count: int,
+) -> Dict[str, Any]:
+    """
+    知识库证据不足时的降级出题（2026-10-02）
+
+    层 2：联网搜索（Tavily）→ 由 LLM 从素材整理题目，并记录素材来源 URL；
+    层 3：AI 通用知识出题（不联网），标注 source=general_knowledge。
+
+    为什么要降级：各校教材版本不同，本地知识库只覆盖学生自己上传的资料。
+    证据不足时直接返回空题目 = 学生"无题可做"，所以给出通用题并**明确标注来源**，
+    既不冒充"你的资料里有这道题"，也不让学生空手。
+
+    任何一层失败都继续往下，最终仍失败才返回空列表。
+    """
+    subject_name = _subject_display_name(subject_id)
+    model_name = _resolved_model_name(model)
+
+    # ---- 层 2：联网搜索素材 → LLM 整理成题 ----
+    try:
+        from services import web_search_service
+        if web_search_service.is_enabled():
+            material = web_search_service.search_question_material(
+                web_search_service.build_query(topic, subject_name))
+            if material:
+                block = "\n\n".join(
+                    f"[{i + 1}] {m['title']}（{m['url']}）\n{m['content']}"
+                    for i, m in enumerate(material))
+                quiz = _quiz_from_prompt(
+                    WEB_QUIZ_PROMPT.format(topic=topic, material=block[:12000], count=count),
+                    topic, model)
+                if quiz:
+                    public = _persist_and_publicize(subject_id, topic, quiz, source="web_search")
+                    logger.info(f"联网出题成功: subject={subject_id}, topic={topic}, n={len(public)}")
+                    return {
+                        "quiz": public, "model": model_name, "context_used": False,
+                        "evidence_count": 0, "source": "web_search",
+                        "material_sources": [{"title": m["title"], "url": m["url"]}
+                                             for m in material],
+                    }
+    except Exception as e:
+        logger.warning(f"联网出题失败（降级为通用知识出题）: {e}")
+
+    # ---- 层 3：AI 通用知识出题 ----
+    try:
+        quiz = _quiz_from_prompt(GENERAL_QUIZ_PROMPT.format(topic=topic, count=count), topic, model)
+        if quiz:
+            public = _persist_and_publicize(subject_id, topic, quiz, source="general_knowledge")
+            logger.info(f"通用知识出题: subject={subject_id}, topic={topic}, n={len(public)}")
+            return {
+                "quiz": public, "model": model_name, "context_used": False,
+                "evidence_count": 0, "source": "general_knowledge", "material_sources": [],
+            }
+    except Exception as e:
+        logger.warning(f"通用知识出题失败: {e}")
+
+    return {"quiz": [], "model": model_name, "context_used": False,
+            "evidence_count": 0, "source": "none", "material_sources": []}
+
+
 def generate_quiz(
     subject_id: str,
     topic: str,
@@ -243,9 +391,10 @@ def generate_quiz(
         context_used = ctx.get("context_used", False)
 
         if not context_used or not context:
-            # 无证据降级：不编造题目
-            logger.info(f"自测题证据不足（subject={subject_id}, topic={topic}）")
-            return {"quiz": [], "model": _resolved_model_name(model), "context_used": False, "evidence_count": 0}
+            # 知识库没有证据：不冒充"你的资料里有这道题"，改走联网 / 通用知识并标注来源
+            logger.info(f"自测题证据不足，尝试联网/通用知识出题"
+                        f"（subject={subject_id}, topic={topic}）")
+            return _generate_fallback_quiz(subject_id, topic, model, count)
 
         prompt = f"""你是一名教育自测题生成助手。请基于【知识库证据】生成自测题。
 
@@ -282,6 +431,10 @@ def generate_quiz(
                                    error_type="structured_output_error")
 
         quiz = _normalize_quiz(raw.get("quiz"), topic)
+        if not quiz:
+            # 有证据却没出出题来（模型没按结构输出）→ 同样降级，别让学生无题可做
+            logger.info(f"基于证据出题为空，降级出题（subject={subject_id}, topic={topic}）")
+            return _generate_fallback_quiz(subject_id, topic, model, count)
         # 阶段一：题目入库并返回服务端题目 ID（测验模式提交前不返回标准答案）
         public_quiz = _persist_and_publicize(subject_id, topic, quiz, source="quiz")
         return {
@@ -289,6 +442,8 @@ def generate_quiz(
             "model": _resolved_model_name(model),
             "context_used": True,
             "evidence_count": len(sources),
+            "source": "knowledge_base",
+            "material_sources": [],
         }
 
     except KBError:
