@@ -200,12 +200,23 @@ async function requireBackendIsolated() {
     record('管理员账号可通过界面登录/注册', true, how);
     await gotoMenu('设置');
     await waitText(/教师身份/, 10000);
+    // 直接"等这段文案出现"，而不是"取一次全文再正则匹配"——后者会因渲染时机误报：
+    // 实测按钮确实存在、也点得动，但一次性取到的 innerText 里还没有它，于是验收假红。
+    const hasIssueEntry = await waitText(/生成一个教师邀请码/, 10000);
     const card = await text();
     record('管理员在「设置 → 教师身份」看到签发入口',
-      /生成一个教师邀请码/.test(card), (card.match(/一次性[^\n]*/) || [''])[0].slice(0, 60));
+      hasIssueEntry, (card.match(/一次性[^\n]*/) || [''])[0].slice(0, 60));
 
     const issueBtn = btn("生成一个教师邀请码").first();
-    const enabled = await issueBtn.isEnabled();
+    // policy 是异步拉取的，而按钮 disabled={!policy?.can_issue}——
+    // 在 policy 到达前 isEnabled() 必然返回 false，会误报"权限被收紧"。
+    // 所以轮询等它变为可用，而不是取一次快照。
+    let enabled = false;
+    for (let i = 0; i < 20; i += 1) {
+      enabled = await issueBtn.isEnabled();
+      if (enabled) break;
+      await page.waitForTimeout(300);
+    }
     record('管理员签发按钮可用（未被权限收紧误伤）', enabled);
     await issueBtn.click();
     const okAlert = await waitText(/教师邀请码：/, 20000);
@@ -441,7 +452,30 @@ async function requireBackendIsolated() {
   // ================================================================
   // 4) 两名学生：入班 → 作答 → 错题本 / 复习
   // ================================================================
+  /** 关掉页面上所有可见弹窗。
+   *
+   *  为什么需要：两个学生共用同一个 page，如果上一个学生的作答弹窗没关掉，
+   *  下一个学生进来时页面上就有**两层遮罩**——后面的点击会被 .ant-modal-wrap
+   *  拦截（实测学生B 因此 30 秒超时）。所以每个学生流程开始前先清场。
+   */
+  const closeAllModals = async () => {
+    for (let i = 0; i < 5; i += 1) {
+      const wraps = page.locator('.ant-modal-wrap:visible');
+      if ((await wraps.count()) === 0) return;
+      const closeBtn = page.locator('.ant-modal-content:visible')
+        .getByRole('button', { name: /关\s*闭|取\s*消|知\s*道\s*了/ }).last();
+      if (await closeBtn.count()) {
+        // force: 正是为了绕过"被另一层遮罩拦截"的检查
+        await closeBtn.click({ timeout: 3000, force: true }).catch(() => {});
+      } else {
+        await page.keyboard.press('Escape').catch(() => {});
+      }
+      await page.waitForTimeout(400);
+    }
+  };
+
   const studentRun = async (name, label) => {
+    await closeAllModals();
     try {
       await doLogout();
       await page.goto(BASE, { waitUntil: 'networkidle' });
@@ -529,8 +563,11 @@ async function requireBackendIsolated() {
         await doneBtn.click();
         await waitText(/已标记完成|完成/, 20000);
       }
-      const closeBtn = btn('关闭', page.locator('.ant-modal-content')).last();
-      if (await closeBtn.count()) await closeBtn.click();
+      // 关闭作答弹窗。交给 closeAllModals 统一处理：
+      // "标记完成"会弹出确认框，与作答弹窗叠在一起，直接点"关闭"会被上层
+      // 遮罩拦截（实测 locator.click 30 秒超时，而作答其实已经全部完成）。
+      // closeAllModals 用 force + Esc 逐层收，稳定得多。
+      await closeAllModals();
       await page.waitForTimeout(2000);
 
       // 错题本 / 复习 / 掌握度：只看当前标签页的内容区，避免把标签名本身当成内容
