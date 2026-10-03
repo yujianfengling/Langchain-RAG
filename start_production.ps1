@@ -24,6 +24,9 @@
 #>
 param(
     [int]$Port = 8000,
+    # 分角色部署：student=学生端, teacher=教师端。留空则两端共用同一入口。
+    [ValidateSet('', 'student', 'teacher')]
+    [string]$Role = '',
     [switch]$SkipBuild,
     [switch]$Open
 )
@@ -116,4 +119,7 @@ if ($Open) { Start-Process "http://localhost:$Port" }
 
 $env:PYTHONIOENCODING = "utf-8"
 $env:PYTHONUTF8 = "1"
+# 分角色部署：让根路径直接跳到对应入口（学生端 /teacher 访问不到，教师端同理）
+if ($Role) { $env:APP_ROLE = $Role } else { Remove-Item Env:\APP_ROLE -ErrorAction SilentlyContinue }
+if ($Role) { Write-Host "  角色     : $Role（根路径将跳转到 /$Role）" -ForegroundColor Green }
 & $PY -m uvicorn api.app:app --host 0.0.0.0 --port $Port --log-level info

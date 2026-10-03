@@ -167,17 +167,30 @@ from config.path_config import get_data_dir  # noqa: E402
 _VECTOR_STORE_DIR = str(get_data_dir() / "vector_store")
 
 
+# 部署角色（2026-10-02）：同一套前端要拆成"学生端 / 教师端"两个入口时使用。
+# 例：APP_ROLE=student 的进程只把根路径送到 /student；教师端另起一个进程、另一个端口。
+# 注意这只是**入口分离**，真正的权限始终由登录身份决定（见 api/deps.py）。
+_APP_ROLE = (os.getenv("APP_ROLE") or "").strip().lower()
+if _APP_ROLE not in ("student", "teacher"):
+    _APP_ROLE = ""
+
+
 @app.get("/")
 async def root():
     """
     根路径。
 
-    - **已构建前端（有 frontend/dist）**：返回平台首页，用户访问域名就能看到界面；
+    - **分角色部署**（APP_ROLE=student/teacher）：直接跳到对应入口，
+      于是"学生端"和"教师端"可以是两个进程、两个端口、两个地址；
+    - **已构建前端（有 frontend/dist）**：返回平台首页；
     - **开发模式（无 dist）**：返回服务信息 JSON，便于确认后端是否起来。
 
     此前这里恒定返回 JSON，导致即使托管了前端、访问根路径也看不到平台。
     """
     dist_index = Path(__file__).resolve().parent.parent / "frontend" / "dist" / "index.html"
+    if _APP_ROLE and dist_index.is_file():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url=f"/{_APP_ROLE}", status_code=307)
     if dist_index.is_file():
         from fastapi.responses import FileResponse
         return FileResponse(str(dist_index))
@@ -185,6 +198,7 @@ async def root():
         "service": "智慧教育RAG系统",
         "version": APP_VERSION,
         "status": "running",
+        "app_role": _APP_ROLE or None,
     }
 
 
