@@ -100,7 +100,7 @@ async function requireBackendIsolated(base, purpose) {
 
     // 4) 登录后学生页展示统计与页签
     await page.waitForTimeout(1200);
-    for (const tab of ['今日任务', '逾期', '复习安排', '错题本', '掌握度', '联动记录']) {
+    for (const tab of ['今日任务', '逾期', '复习安排', '错题本', '掌握度']) {
       const n = await page.locator(`.ant-tabs-tab:has-text("${tab}")`).count();
       record(`学生页包含页签「${tab}」`, n > 0);
     }

@@ -184,15 +184,9 @@ async function requireBackendIsolated(base, purpose) {
     record('掌握度口径说明可见', /只由独立作答证据计算/.test(masteryText), '');
     await page.screenshot({ path: path.join(OUT, 'real-04-mastery.png'), fullPage: true });
 
-    // 13) 联动记录：事件全部成功
-    await page.click('.ant-tabs-tab:has-text("联动记录")');
-    await page.waitForTimeout(1000);
-    const eventsText = await page.locator('.ant-tabs-tabpane-active').innerText();
-    record('联动事件可追溯', /quiz_attempt_recorded|quiz_question_generated/.test(eventsText),
-           eventsText.split('\n').slice(0, 3).join(' / '));
-    const hasFailed = /FAILED/.test(eventsText);
-    record('无失败联动事件', !hasFailed);
-    await page.screenshot({ path: path.join(OUT, 'real-05-events.png'), fullPage: true });
+    // 13) 联动记录（2026-10-02 起学生界面不再展示该页签）
+    // 事件流水与失败重试的能力仍在后端（/api/student/learning-events），
+    // 由后端测试覆盖；这里不再有可点的界面，故移除该步验收。
   } catch (e) {
     record('脚本执行', false, String(e && e.message ? e.message : e));
     await page.screenshot({ path: path.join(OUT, 'real-error.png'), fullPage: true }).catch(() => {});

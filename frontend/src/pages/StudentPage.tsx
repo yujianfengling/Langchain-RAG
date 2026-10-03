@@ -6,7 +6,7 @@ import {
 } from 'antd';
 import {
   CalendarOutlined, CheckCircleOutlined, ClockCircleOutlined, ReloadOutlined,
-  ReadOutlined, ExclamationCircleOutlined, SyncOutlined, RocketOutlined,
+  ReadOutlined, ExclamationCircleOutlined, RocketOutlined,
   EyeOutlined, EyeInvisibleOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -18,10 +18,9 @@ import PlanBudgetPanel from '../components/PlanBudgetPanel';
 import { isLoggedIn } from '../api/auth';
 import { AUTH_CHANGED_EVENT } from '../components/UserAuth';
 import {
-  StudentTask, WrongQuestion, ReviewTask, MasteryPoint, LearningEvent,
+  StudentTask, WrongQuestion, ReviewTask, MasteryPoint,
   LearningHome, getHome, completeTask, rescheduleTask,
   getWrongQuestions, getWrongQuestionDetail, getReviews, getMastery,
-  getLearningEvents, retryLearningEvents,
 } from '../api/student';
 
 const { Title, Text, Paragraph } = Typography;
@@ -69,7 +68,6 @@ const StudentPage: React.FC = () => {
   const [expandedAnswers, setExpandedAnswers] = useState<Record<string, boolean>>({});
   const [reviews, setReviews] = useState<ReviewTask[]>([]);
   const [mastery, setMastery] = useState<MasteryPoint[]>([]);
-  const [events, setEvents] = useState<LearningEvent[]>([]);
   const [busyTask, setBusyTask] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('today');
 
@@ -99,10 +97,9 @@ const StudentPage: React.FC = () => {
       getWrongQuestions(subject),
       getReviews({ subject_id: subject, status: 'PENDING' }),
       subject ? getMastery(subject) : Promise.resolve({ data: { summary: null, points: [] } } as any),
-      getLearningEvents({ limit: 30 }),
     ]);
 
-    const [homeRes, wrongRes, revRes, masteryRes, evRes] = results;
+    const [homeRes, wrongRes, revRes, masteryRes] = results;
     if (homeRes.status === 'fulfilled') {
       const data = (homeRes.value as any)?.data;
       setHome(data || null);
@@ -113,7 +110,6 @@ const StudentPage: React.FC = () => {
     if (wrongRes.status === 'fulfilled') setWrong((wrongRes.value as any)?.data || []);
     if (revRes.status === 'fulfilled') setReviews((revRes.value as any)?.data || []);
     if (masteryRes.status === 'fulfilled') setMastery((masteryRes.value as any)?.data?.points || []);
-    if (evRes.status === 'fulfilled') setEvents((evRes.value as any)?.data || []);
     setLoading(false);
   }, []);
 
@@ -652,50 +648,6 @@ const StudentPage: React.FC = () => {
             key: 'memory',
             label: '学习记忆',
             children: <LearningMemoryPanel subjectId={subjectId} />,
-          },
-          {
-            key: 'events',
-            label: '联动记录',
-            children: (
-              <Card
-                size="small"
-                title="学习联动记录（作答 → 画像 → 错题 → 复习 → 计划）"
-                extra={
-                  <Button size="small" icon={<SyncOutlined />} onClick={async () => {
-                    try {
-                      const res: any = await retryLearningEvents();
-                      message.success(`已重试：成功 ${res?.data?.succeeded ?? 0}，仍失败 ${res?.data?.failed ?? 0}`);
-                      await loadAll(subjectId);
-                    } catch {
-                      message.error('重试失败');
-                    }
-                  }}>
-                    重试失败事件
-                  </Button>
-                }
-              >
-                {events.length === 0 ? <Empty description="暂无联动记录" /> : (
-                  <List
-                    dataSource={events}
-                    renderItem={(e) => (
-                      <List.Item>
-                        <Space size={8} wrap>
-                          <Tag color={e.status === 'DONE' ? 'success' : e.status === 'FAILED' ? 'error' : 'processing'}>
-                            {e.status}
-                          </Tag>
-                          <Text code>{e.event_type}</Text>
-                          <Text type="secondary" style={{ fontSize: 12 }}>{e.created_at}</Text>
-                          {e.attempts > 1 && <Text type="secondary" style={{ fontSize: 12 }}>尝试 {e.attempts} 次</Text>}
-                          {e.last_error && (
-                            <Text type="danger" style={{ fontSize: 12 }}>{e.last_error}</Text>
-                          )}
-                        </Space>
-                      </List.Item>
-                    )}
-                  />
-                )}
-              </Card>
-            ),
           },
         ]}
       />
