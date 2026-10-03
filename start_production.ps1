@@ -28,6 +28,7 @@ param(
     [ValidateSet('', 'student', 'teacher')]
     [string]$Role = '',
     [switch]$SkipBuild,
+    [switch]$Rebuild,
     [switch]$Open
 )
 
@@ -39,6 +40,28 @@ function Step($m) { Write-Host ""; Write-Host "=== $m ===" -ForegroundColor Cyan
 function OK($m)   { Write-Host "  [OK] $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "  [!]  $m" -ForegroundColor Yellow }
 function Fail($m) { Write-Host "  [X]  $m" -ForegroundColor Red }
+
+# 判断是否需要重建前端：dist 不存在，或源码/配置比 dist 新。
+# 目的是别让人每次启动都白等一次 15 秒的 tsc+vite。
+function Test-NeedBuild {
+    $distIndex = Join-Path $ROOT "frontend\dist\index.html"
+    if (-not (Test-Path $distIndex)) { return $true }
+    $distTime = (Get-Item $distIndex).LastWriteTime
+    $fe = Join-Path $ROOT "frontend"
+    $watch = @()
+    $srcDir = Join-Path $fe "src"
+    if (Test-Path $srcDir) {
+        $watch += Get-ChildItem $srcDir -Recurse -File -ErrorAction SilentlyContinue
+    }
+    foreach ($f in @("package.json", "vite.config.ts", "index.html", "tsconfig.json")) {
+        $fp = Join-Path $fe $f
+        if (Test-Path $fp) { $watch += (Get-Item $fp) }
+    }
+    foreach ($item in $watch) {
+        if ($item.LastWriteTime -gt $distTime) { return $true }
+    }
+    return $false
+}
 
 Write-Host "==========================================================" -ForegroundColor White
 Write-Host "  智慧教育 RAG 系统 - 生产模式启动" -ForegroundColor White
@@ -67,8 +90,10 @@ Step "2/4 前端构建产物"
 
 $DIST = Join-Path $ROOT "frontend\dist\index.html"
 if ($SkipBuild) {
-    if (Test-Path $DIST) { OK "已跳过构建（使用现有 dist）" }
+    if (Test-Path $DIST) { OK "已跳过构建（-SkipBuild）" }
     else { Fail "dist 不存在，无法跳过构建"; exit 1 }
+} elseif ((-not $Rebuild) -and (-not (Test-NeedBuild))) {
+    OK "前端没有改动，跳过构建（要强制重建加 -Rebuild）"
 } else {
     $NPM = Get-Command npm -ErrorAction SilentlyContinue
     if (-not $NPM) { Fail "未找到 npm，无法构建前端（装 Node.js 18+，或用 -SkipBuild）"; exit 1 }

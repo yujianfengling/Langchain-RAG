@@ -1,9 +1,15 @@
 @echo off
-rem 双击即可：生产模式启动（前端构建产物由后端直接托管，只启一个进程）
-rem 底层调用同目录的 start_production.ps1；用 -ExecutionPolicy Bypass 绕过脚本执行策略限制。
+rem ============================================================
+rem  FULL PLATFORM - student and teacher share ONE address.
+rem  Default port 8000, no APP_ROLE.
+rem
+rem  Want separate addresses? Use start_student.bat / start_teacher.bat
+rem
+rem  Options:  -Port 8080   -SkipBuild   -Rebuild   -Open
+rem ============================================================
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start_production.ps1" %*
 if errorlevel 1 (
     echo.
-    echo [启动失败] 请查看上方错误信息。
+    echo [FAILED] See the message above.
     pause
 )
