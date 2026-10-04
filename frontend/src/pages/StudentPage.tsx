@@ -571,7 +571,7 @@ const StudentPage: React.FC = () => {
             label: '掌握度',
             children: (
               <Card size="small"
-                    title="知识点掌握度（只由独立作答证据计算；无证据显示待评估）">
+                    title="知识点掌握度（当前掌握=每题最新有效作答；历史错误用于复习与趋势）">
                 {!subjectId ? (
                   <Alert type="info" showIcon message="请先在上方选择学科，再查看该学科的掌握度。" />
                 ) : mastery.length === 0 ? (
@@ -586,7 +586,7 @@ const StudentPage: React.FC = () => {
                        否则最右侧列会被裁掉且滚不过去（实测 390px 下表格 379px / 容器 316px）。
                        这里用最小宽度而不是 max-content——后者会把表格撑到 1554px，
                        连电脑端也出现横向滚动条（实测），反而更糟。 */
-                    scroll={{ x: 700 }}
+                    scroll={{ x: 920 }}
                     className="app-table-scroll"
                     columns={[
                       { title: '知识点', dataIndex: 'knowledge_point' },
@@ -601,19 +601,61 @@ const StudentPage: React.FC = () => {
                         ),
                       },
                       {
-                        title: '掌握估计',
+                        /* 当前掌握：只看每题的**最新一次有效作答**。
+                           无有效作答（或后端旧版本未下发 latest_view）时显示文字，
+                           绝不显示 0% —— 0% 会被误读成"完全不会"。 */
+                        title: '当前掌握（最新有效作答）',
+                        width: 200,
+                        render: (_: any, r: MasteryPoint) => {
+                          const lv = r.latest_view?.latest_mastery_level;
+                          if (lv == null) {
+                            return <Text type="secondary">暂无有效作答</Text>;
+                          }
+                          const pct = Math.round(lv * 100);
+                          const color = lv >= 0.7 ? '#059669' : lv >= 0.4 ? '#d97706' : '#dc2626';
+                          return (
+                            <Space size={8}>
+                              <Progress percent={pct} size="small" strokeColor={color}
+                                        style={{ width: 80 }} showInfo={false} />
+                              <Text style={{ color }}>{pct}%</Text>
+                            </Space>
+                          );
+                        },
+                      },
+                      {
+                        /* 历史：全部作答（含已被后续作答覆盖的），用于复习与趋势，
+                           明确不计入"当前掌握"。 */
+                        title: '历史（用于复习与趋势）',
+                        width: 165,
+                        render: (_: any, r: MasteryPoint) => {
+                          const v = r.latest_view;
+                          if (!v || v.history_attempt_count == null) {
+                            return <Text type="secondary">—</Text>;
+                          }
+                          return (
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              作答 {v.history_attempt_count} 次 · 答错{' '}
+                              <Text type="danger">{v.history_wrong_count ?? 0}</Text> 次
+                            </Text>
+                          );
+                        },
+                      },
+                      {
+                        /* 旧口径（累计所有证据）保留为"参考"，避免与当前掌握自相矛盾：
+                           两列各自标明口径，界面上不再出现来源不明的"掌握度"。 */
+                        title: '累计估计（旧口径·参考）',
                         width: 190,
                         render: (_: any, r: MasteryPoint) => (
                           <Space size={8}>
                             <Progress percent={masteryPercent(r)} size="small"
-                                      strokeColor={masteryColor(r)} style={{ width: 90 }} showInfo={false} />
+                                      strokeColor={masteryColor(r)} style={{ width: 70 }} showInfo={false} />
                             <Text style={{ color: masteryColor(r) }}>{masteryText(r)}</Text>
                           </Space>
                         ),
                       },
                       {
-                        title: '证据（对/错）',
-                        width: 120,
+                        title: '累计证据（对/错）',
+                        width: 130,
                         render: (_: any, r: MasteryPoint) =>
                           `${r.independent_correct_count} / ${r.independent_wrong_count}`,
                       },
@@ -624,7 +666,7 @@ const StudentPage: React.FC = () => {
                         render: (n: number) => <Text type="secondary">{n} 次</Text>,
                       },
                       {
-                        title: '计算依据',
+                        title: '累计计算依据',
                         dataIndex: 'reason',
                         render: (t: string) => <Text type="secondary" style={{ fontSize: 12 }}>{t || '—'}</Text>,
                       },
@@ -633,8 +675,9 @@ const StudentPage: React.FC = () => {
                 )}
                 <Divider style={{ margin: '12px 0 8px' }} />
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  口径说明：阅读/完成任务只记「学习行为」，不改变掌握度；只有独立作答与复习重做计入证据；
-                  「查看答案后作答」会被标记且不计入独立证据。
+                  当前掌握按每题最新有效作答计算；历史错误用于复习与趋势，不直接计入当前掌握。
+                  另有「累计估计（旧口径·参考）」按全部证据累加，仅作对照。
+                  阅读/完成任务只记「学习行为」，不改变掌握度；「查看答案后作答」会被标记且不计入独立证据。
                 </Text>
               </Card>
             ),

@@ -15,6 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
+const { launchBrowser } = require('./e2e_launch');
 
 const BASE = process.argv[2] || 'http://localhost:3000';
 const OUT = path.join(__dirname, '_screenshots');
@@ -56,7 +57,7 @@ async function requireBackendIsolated(base, purpose) {
 (async () => {
   await requireBackendIsolated(BASE, "端到端浏览检查");
   fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const browser = await launchBrowser({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
 

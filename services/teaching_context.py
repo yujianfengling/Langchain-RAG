@@ -218,6 +218,19 @@ def build_teaching_context(user_id: Optional[str], subject_id: Optional[str],
         result["reasons"].append("无用户/学科信息，使用普通教学方式")
         return result
 
+    # 隐私保护（2026-10-03，见交付报告"风险 A"）：`/api/chat`、`/api/chat/stream`
+    # 在**没有令牌**时会回退到共享的 legacy 账号（api/deps.LEGACY_USER ←
+    # auth_service.LEGACY_USERNAME）。若此时仍注入"该账号"的掌握度/记忆/错题/任务，
+    # 等于把一个账号的学情泄露给未登录访问者。因此对 legacy 账号**不做个人化**：
+    # 问答照常，只是提示词里不带任何个人学习状态。
+    try:
+        from services.auth_service import LEGACY_USERNAME
+        if user_id == LEGACY_USERNAME:
+            result["reasons"].append("未登录（legacy 共享账号）→ 不注入个人学习状态")
+            return result
+    except Exception as e:      # 常量导入失败不应影响教学上下文
+        logger.debug(f"legacy 账号判断失败，按普通用户处理: {e}")
+
     prefs = _collect_preferences(user_id)
     memory = _collect_memory(user_id, subject_id)
     point = _match_knowledge_point(subject_id, question, user_id)

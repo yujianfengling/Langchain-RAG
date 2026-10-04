@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Empty, Input, List, Radio, Space, Tag, Tooltip, Typography, message } from 'antd';
 import { EyeOutlined, SendOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import {
@@ -66,14 +66,27 @@ const SOURCE_META: Record<string, { color: string; label: string; tip: string }>
   },
 };
 
-/** 生成幂等令牌：同一次作答重复提交只计一次（刷新/重试安全） */
-const makeToken = (questionId: string) =>
-  `att-${questionId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+/** 生成幂等令牌：同一次作答重复提交只计一次（刷新/重试安全）
+ *
+ * 修复（2026-10-03）：此前每次调用都带 `Date.now()` + 随机串，于是"重试/双击"
+ * 必然生成新令牌，后端 `client_token` 幂等**永不命中** → 同一题被重复计数
+ * （作答数/趋势虚高）。现在按题目缓存令牌，**只有提交成功后**才轮换：
+ *   - 双击 / 失败重试：同一令牌 → 后端返回既有结果，不重复计分；
+ *   - 学生有意重做：成功后轮换令牌 → 记为一次新的作答（保留重做语义）。
+ */
+const makeToken = (questionId: string, cache: Record<string, string>) => {
+  if (!cache[questionId]) {
+    cache[questionId] = `att-${questionId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+  return cache[questionId];
+};
 
 export const QuizList: React.FC<QuizListProps> = ({
   quizzes, subjectId, sourceTaskId, conversationId, onAnswered, compact,
 }) => {
   const [states, setStates] = useState<Record<string, QState>>({});
+  // 幂等令牌缓存（见 makeToken 注释）：按题目保存，成功后删除
+  const tokenCache = useRef<Record<string, string>>({});
   const [loggedIn, setLoggedIn] = useState<boolean>(isLoggedIn());
 
   useEffect(() => {
@@ -104,13 +117,14 @@ export const QuizList: React.FC<QuizListProps> = ({
         question_id: q.id,
         user_answer: answer,
         subject_id: subjectId,
-        client_token: makeToken(q.id),
+        client_token: makeToken(q.id, tokenCache.current),
         source_task_id: sourceTaskId,
         conversation_id: conversationId,
       });
       const data = (res as any)?.data as AttemptResult | undefined;
       if (data) {
         patch(q.id, { result: data, submitting: false });
+      delete tokenCache.current[q.id];   // 成功后轮换：重做算新的一次作答
         onAnswered?.(data, q);
         if (data.grade_status === 'ai_graded') {
           message.info(data.ai_feedback

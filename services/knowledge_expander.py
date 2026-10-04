@@ -29,11 +29,25 @@ try:
 except ImportError:
     LLM_AVAILABLE = False
 
-try:
-    from rag import add_documents, split_text, get_embedding_model
-    RAG_AVAILABLE = True
-except ImportError:
-    RAG_AVAILABLE = False
+# 启动优化（2026-10-03）：不在导入期拉 rag；用模块级瘦包装函数保持可 patch。
+RAG_AVAILABLE = None
+_rag = None
+
+
+def _load_rag() -> bool:
+    """惰性导入 rag 模块（只尝试一次）"""
+    global _rag, RAG_AVAILABLE
+    if RAG_AVAILABLE is False:
+        return False
+    if _rag is None:
+        try:
+            from services.rag_loader import load_rag
+            _rag = load_rag()
+            RAG_AVAILABLE = True
+        except ImportError:
+            RAG_AVAILABLE = False
+            return False
+    return True
 
 # 知识提取数据库
 #
@@ -339,7 +353,7 @@ def add_validated_knowledge_to_kb(
         finally:
             conn.close()
 
-        if not RAG_AVAILABLE:
+        if not _load_rag():
             logger.warning("RAG模块不可用，无法添加到知识库")
             return False
 
@@ -474,3 +488,39 @@ __all__ = [
     "get_pending_knowledge",
     "get_knowledge_extraction_stats",
 ]
+
+
+def add_documents(*args, **kwargs):
+    """惰性转发到 `rag.add_documents`（启动优化 2026-10-03）
+
+    背景：模块级 `from rag import ...` 会在进程启动时把 rag（torch/transformers，
+    实测 7.5s）拉进启动路径。这里把导入放进函数体，**保留模块级名字**以便
+    `mock.patch("rag.add_documents")` 之类的既有用法继续生效。
+    """
+    from services.rag_loader import load_rag
+    _impl = getattr(load_rag(), "add_documents")
+    return _impl(*args, **kwargs)
+
+
+def split_text(*args, **kwargs):
+    """惰性转发到 `rag.split_text`（启动优化 2026-10-03）
+
+    背景：模块级 `from rag import ...` 会在进程启动时把 rag（torch/transformers，
+    实测 7.5s）拉进启动路径。这里把导入放进函数体，**保留模块级名字**以便
+    `mock.patch("rag.split_text")` 之类的既有用法继续生效。
+    """
+    from services.rag_loader import load_rag
+    _impl = getattr(load_rag(), "split_text")
+    return _impl(*args, **kwargs)
+
+
+def get_embedding_model(*args, **kwargs):
+    """惰性转发到 `rag.get_embedding_model`（启动优化 2026-10-03）
+
+    背景：模块级 `from rag import ...` 会在进程启动时把 rag（torch/transformers，
+    实测 7.5s）拉进启动路径。这里把导入放进函数体，**保留模块级名字**以便
+    `mock.patch("rag.get_embedding_model")` 之类的既有用法继续生效。
+    """
+    from services.rag_loader import load_rag
+    _impl = getattr(load_rag(), "get_embedding_model")
+    return _impl(*args, **kwargs)

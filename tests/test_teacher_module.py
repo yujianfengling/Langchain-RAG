@@ -412,6 +412,87 @@ class TestAssignmentFlow(TeacherBase):
         self.assertTrue(stats["wrong_questions"])
         self.assertIn("quiz_attempts", " ".join(stats["sources"]))
 
+    def test_analytics_counts_short_answer_and_self_eval(self):
+        """B1 回归（2026-10-03）：学情必须计入"简答题 AI 判分"与"学生自评"
+
+        此前 `class_analytics.class_overview` 只统计 `grade_status == 'graded'`
+        （客观题自动判分），把 `ai_graded`（简答题 AI 判分）与 `self_evaluated`
+        （学生自评）**整类排除** → 教师会看到"有作答、但薄弱知识点为空"。
+
+        用"插入前后差值"断言，不依赖样本量阈值。
+        """
+        from datetime import datetime
+        from services import class_analytics, quiz_service
+        course = self.make_course()
+        klass = self.make_class(course)
+        self.join(klass, self.student_a)
+        assignment = self._make_assignment(course, klass, questions=1)
+        self._publish(assignment)
+        qid = assignment["question_ids"][0]
+
+        def wrong_total():
+            st = class_analytics.class_overview(self.teacher_a, klass["id"])
+            return sum(k["wrong_count"] for k in st["knowledge_points"]), st["subject_id"]
+
+        before, subject_id = wrong_total()
+        q = quiz_service.get_question_public(qid) or {}
+        conn = quiz_service._get_db()
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for i, status in enumerate(("ai_graded", "self_evaluated"), start=1):
+                conn.execute(
+                    """INSERT INTO quiz_attempts
+                       (id, user_id, subject_id, question_id, knowledge_point_id, knowledge_point_name,
+                        attempt_no, attempt_kind, user_answer, user_answer_text, correct_option_id,
+                        is_correct, grade_status, ai_feedback, used_hint, revealed_answer, duration_sec,
+                        source_task_id, conversation_id, client_token, created_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (f"b1-fixture-{i}", self.student_a, subject_id, qid,
+                     q.get("knowledge_point_id"), q.get("knowledge_point_name") or "二叉树遍历",
+                     i, "independent", "任意答案", None, None,
+                     0, status, None, 0, 0, None, None, None, f"b1-token-{i}", now))
+            conn.commit()
+        finally:
+            conn.close()
+
+        after, _ = wrong_total()
+        self.assertGreater(after, before,
+                           "简答题 AI 判分 / 学生自评的错答没有被计入学情（B1 回归）")
+
+    def test_kp_detail_is_class_scoped_and_latest_only(self):
+        """B2 回归（2026-10-03）：知识点下钻必须**按本班过滤** + **每题只算最新一次**
+
+        此前下钻 SQL 既没有 `user_id IN (本班学生)`（一门课多个班时会把别班学生的
+        作答统计进来），也没有"每题最新一次作答"去重（同一学生连错 3 次算 3 个错误），
+        与班级总览的口径矛盾。
+        """
+        from services import class_analytics, quiz_service
+        course = self.make_course()
+        klass_a = self.make_class(course)
+        klass_b = self.make_class(course)          # 同一门课的另一个班
+        self.join(klass_a, self.student_a)
+        self.join(klass_b, self.student_b)
+        assignment = self._make_assignment(course, klass_a, questions=1)
+        self._publish(assignment)
+        qid = assignment["question_ids"][0]
+        q = quiz_service.get_question_public(qid) or {}
+        kp_id = q.get("knowledge_point_id")
+        self.assertTrue(kp_id, "题目必须带知识点，才能验证下钻")
+
+        # A 班学生：同一题连错 3 次（只有最新一次算数）
+        for i in range(3):
+            quiz_service.submit_attempt(self.student_a, qid, "B", client_token=f"b2-a{i}")
+        # B 班学生：连错 5 次（绝不能被 A 班的下钻统计进来）
+        for i in range(5):
+            quiz_service.submit_attempt(self.student_b, qid, "B", client_token=f"b2-b{i}")
+
+        detail = class_analytics.knowledge_point_detail(self.teacher_a, klass_a["id"], kp_id)
+        row = next((x for x in detail["questions"] if x["question_id"] == qid), None)
+        self.assertIsNotNone(row, "下钻应包含该题")
+        self.assertEqual(row["wrong_count"], 1,
+                         "每题只应算最新一次作答（B2 去重）；5 次来自别班、3 次应折成 1")
+        self.assertEqual(row["attempt_count"], 1, "attempt_count 也应按最新口径")
+
     def test_analytics_requires_teacher(self):
         from services import class_analytics
         from services.teaching_data import TeachingError

@@ -135,6 +135,24 @@ def _tool_get_learning_state(user_id: str, subject_id: str, **_) -> Dict[str, An
     """读取学习状态：掌握度分布、错题、待办任务、待复习、约束与预算。只读。"""
     from services import learning_service, mastery_service, quiz_service, review_service
     from services import plan_adjustment
+    from services import learning_memory
+
+    # 学习记忆（2026-10-03 补齐，见交付报告"Agent 缺口 ②"）：
+    # 此前本工具只读掌握度/错题/复习/预算，**不读 learning_memory**，
+    # 于是同一系统出现两条口径——学生在"学习记忆"里设置的偏好、系统从真实错题
+    # 推断出的记忆，普通问答会用到（teaching_context），Agent 却看不到。
+    # 这里用同一函数、同一 user_id/subject_id 取"真正参与教学的记忆"，
+    # 只带 key/value/类型，避免把整份记录塞给模型。
+    try:
+        _memory = learning_memory.get_effective_memory(user_id, subject_id)
+        memory_items = [
+            {"type": it.get("memory_type"), "key": it.get("key"),
+             "value": it.get("value"), "scope": it.get("scope")}
+            for it in (_memory.get("items") or [])[:6]
+        ]
+    except Exception as e:      # 记忆读取失败不应影响 Agent 主流程
+        logger.debug(f"Agent 读取学习记忆失败: {e}")
+        memory_items = []
 
     summary = mastery_service.summarize_mastery(user_id, subject_id)
     points = mastery_service.list_mastery(user_id, subject_id)
@@ -158,6 +176,8 @@ def _tool_get_learning_state(user_id: str, subject_id: str, **_) -> Dict[str, An
         "consolidated_points": [p["knowledge_point"] for p in advanced[:5]],
         "no_evidence_points": [p["knowledge_point"] for p in points
                                if p["mastery_level"] is None][:8],
+        # 学习记忆（偏好 + 由真实记录推断的记忆；与普通问答同一口径）
+        "memory": memory_items,
         "wrong_count": len(wrong),
         "wrong_points": [{"knowledge_point": w.get("knowledge_point"),
                           "attempt_count": w.get("attempt_count")} for w in wrong[:5]],

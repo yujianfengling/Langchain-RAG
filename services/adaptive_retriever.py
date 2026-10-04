@@ -13,11 +13,25 @@
 from typing import List, Dict, Any, Optional
 from utils.logger import logger
 
-try:
-    from rag import retrieve_context, build_context, rerank_documents
-    RAG_AVAILABLE = True
-except ImportError:
-    RAG_AVAILABLE = False
+# 启动优化（2026-10-03）：不在导入期拉 rag；用模块级瘦包装函数保持可 patch。
+RAG_AVAILABLE = None
+_rag = None
+
+
+def _load_rag() -> bool:
+    """惰性导入 rag 模块（只尝试一次）"""
+    global _rag, RAG_AVAILABLE
+    if RAG_AVAILABLE is False:
+        return False
+    if _rag is None:
+        try:
+            from services.rag_loader import load_rag
+            _rag = load_rag()
+            RAG_AVAILABLE = True
+        except ImportError:
+            RAG_AVAILABLE = False
+            return False
+    return True
 
 from services.user_profiler import (
     get_or_create_profile,
@@ -71,7 +85,7 @@ def retrieve_with_user_context(
             "adaptive_params": dict,
         }
     """
-    if not RAG_AVAILABLE:
+    if not _load_rag():
         return {"context": "", "sources": [], "context_used": False, "documents": [], "user_level": 0.5, "adaptive_params": {}}
 
     try:
@@ -194,3 +208,39 @@ __all__ = [
     "get_personalized_system_prompt",
     "get_learning_context_for_chat",
 ]
+
+
+def retrieve_context(*args, **kwargs):
+    """惰性转发到 `rag.retrieve_context`（启动优化 2026-10-03）
+
+    背景：模块级 `from rag import ...` 会在进程启动时把 rag（torch/transformers，
+    实测 7.5s）拉进启动路径。这里把导入放进函数体，**保留模块级名字**以便
+    `mock.patch("rag.retrieve_context")` 之类的既有用法继续生效。
+    """
+    from services.rag_loader import load_rag
+    _impl = getattr(load_rag(), "retrieve_context")
+    return _impl(*args, **kwargs)
+
+
+def build_context(*args, **kwargs):
+    """惰性转发到 `rag.build_context`（启动优化 2026-10-03）
+
+    背景：模块级 `from rag import ...` 会在进程启动时把 rag（torch/transformers，
+    实测 7.5s）拉进启动路径。这里把导入放进函数体，**保留模块级名字**以便
+    `mock.patch("rag.build_context")` 之类的既有用法继续生效。
+    """
+    from services.rag_loader import load_rag
+    _impl = getattr(load_rag(), "build_context")
+    return _impl(*args, **kwargs)
+
+
+def rerank_documents(*args, **kwargs):
+    """惰性转发到 `rag.rerank_documents`（启动优化 2026-10-03）
+
+    背景：模块级 `from rag import ...` 会在进程启动时把 rag（torch/transformers，
+    实测 7.5s）拉进启动路径。这里把导入放进函数体，**保留模块级名字**以便
+    `mock.patch("rag.rerank_documents")` 之类的既有用法继续生效。
+    """
+    from services.rag_loader import load_rag
+    _impl = getattr(load_rag(), "rerank_documents")
+    return _impl(*args, **kwargs)

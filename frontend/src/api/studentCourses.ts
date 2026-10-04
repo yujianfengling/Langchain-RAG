@@ -32,6 +32,10 @@ export interface AssignmentQuestion {
   stem?: string;
   options?: QuestionOption[];
   knowledge_point_name?: string;
+  /** 依据来源与渠道（2026-10-04 起后端分别下发） */
+  source?: string | null;
+  channel?: string | null;
+  channel_label?: string | null;
 }
 
 export interface StudentAssignment {

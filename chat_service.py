@@ -34,12 +34,27 @@ except ImportError as e:
     _LLM_IMPORT_ERROR = str(e)
 
 # 导入RAG上下文构建（用于Prompt构造）
-try:
-    from rag import build_context
-    RAG_AVAILABLE = True
-except ImportError as e:
-    RAG_AVAILABLE = False
-    _RAG_IMPORT_ERROR = str(e)
+# 启动优化（2026-10-03）：不在导入期拉 rag；用模块级瘦包装函数保持可 patch。
+RAG_AVAILABLE = None
+_RAG_IMPORT_ERROR = ""
+_rag = None
+
+
+def _load_rag() -> bool:
+    """惰性导入 rag 模块（只尝试一次）"""
+    global _rag, RAG_AVAILABLE, _RAG_IMPORT_ERROR
+    if RAG_AVAILABLE is False:
+        return False
+    if _rag is None:
+        try:
+            from services.rag_loader import load_rag
+            _rag = load_rag()
+            RAG_AVAILABLE = True
+        except ImportError as e:
+            RAG_AVAILABLE = False
+            _RAG_IMPORT_ERROR = str(e)
+            return False
+    return True
 
 # 导入提示词模板
 try:
@@ -63,7 +78,22 @@ except ImportError:
 from utils.logger import logger
 
 # 默认配置
-_DEFAULT_TOP_K = 5
+def _default_top_k() -> int:
+    """检索条数：读 .env 的 RAG_TOP_K，失败回落 5。
+
+    修复（2026-10-03）：此前这里硬编码 5，导致 env.example 承诺的 `RAG_TOP_K`
+    永远无效（AGENTS.md 第 4 节点名的历史坑）。config.rag_config 默认值同为 5，
+    因此未配置时**行为不变**。
+    """
+    try:
+        from config import settings as _settings
+        value = int(getattr(_settings.rag, "top_k", 5) or 5)
+        return value if value > 0 else 5
+    except Exception:
+        return 5
+
+
+_DEFAULT_TOP_K = 5      # 保底常量
 _DEFAULT_SYSTEM_MESSAGE = "你是一名智慧教育助手。"
 
 # 结构化学习模式（V2.5.1）：对应 message_type
@@ -177,7 +207,7 @@ def chat_with_ai(
         return response
 
     # 依赖检查
-    if not RAG_AVAILABLE:
+    if not _load_rag():
         response["error"] = f"RAG模块不可用: {_RAG_IMPORT_ERROR}"
         response["latency"] = time.time() - start_time
         return response
@@ -294,7 +324,7 @@ def chat_with_ai(
 
         # 1. RAG检索（通过ai_service公共接口）
         try:
-            context_docs = get_rag_context(question, subject_id, _DEFAULT_TOP_K,
+            context_docs = get_rag_context(question, subject_id, _default_top_k(),
                                            viewer_user_id=user_id)
             context_used = len(context_docs) > 0
         except AIServiceError as e:
@@ -455,7 +485,7 @@ def chat_stream(
     if not LLM_AVAILABLE:
         yield {"type": "error", "message": f"LLM模块不可用: {_LLM_IMPORT_ERROR}"}
         return
-    if not RAG_AVAILABLE:
+    if not _load_rag():
         yield {"type": "error", "message": f"RAG模块不可用: {_RAG_IMPORT_ERROR}"}
         return
     if not PROMPTS_AVAILABLE:
@@ -529,7 +559,7 @@ def chat_stream(
         # 3. RAG检索（V2.5.4：记录 rag_start/rag_end）
         rag_start = time.time()
         try:
-            context_docs = get_rag_context(question, subject_id, _DEFAULT_TOP_K,
+            context_docs = get_rag_context(question, subject_id, _default_top_k(),
                                            viewer_user_id=user_id)
             context_used = len(context_docs) > 0
         except AIServiceError as e:
@@ -1046,10 +1076,10 @@ def check_chat_service_status() -> Dict[str, Any]:
     ai_status = check_ai_service_status()
 
     status = {
-        "rag_available": RAG_AVAILABLE,
+        "rag_available": _load_rag(),
         "llm_available": LLM_AVAILABLE,
         "prompts_available": PROMPTS_AVAILABLE,
-        "default_top_k": _DEFAULT_TOP_K,
+        "default_top_k": _default_top_k(),
         "ai_service": ai_status,
     }
 
@@ -1102,3 +1132,15 @@ __all__ = [
     "check_chat_service_status",
     "quick_chat",
 ]
+
+
+def build_context(*args, **kwargs):
+    """惰性转发到 `rag.build_context`（启动优化 2026-10-03）
+
+    背景：模块级 `from rag import ...` 会在进程启动时把 rag（torch/transformers，
+    实测 7.5s）拉进启动路径。这里把导入放进函数体，**保留模块级名字**以便
+    `mock.patch("rag.build_context")` 之类的既有用法继续生效。
+    """
+    from services.rag_loader import load_rag
+    _impl = getattr(load_rag(), "build_context")
+    return _impl(*args, **kwargs)

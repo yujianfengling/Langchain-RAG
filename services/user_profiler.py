@@ -202,6 +202,11 @@ def get_user_interactions(user_id, subject_id=None, interaction_type=None, limit
 
 # ==================== 反馈管理 ====================
 
+# 纠错反馈转成学习记忆时使用的 key（2026-10-03）
+# 同一 key 后写覆盖先写 → 始终以最新纠错为准；学生可在「学习记忆」里删除
+KEY_CORRECTION_NOTE = "correction_note"
+
+
 def submit_feedback(user_id, interaction_id=None, feedback_type="rating", feedback_score=None, feedback_detail=None, correction_text=None):
     """
     提交反馈。
@@ -234,6 +239,23 @@ def submit_feedback(user_id, interaction_id=None, feedback_type="rating", feedba
             conn.execute("UPDATE user_interactions SET feedback_score = ? WHERE id = ? AND user_id = ?", (feedback_score, interaction_id, user_id))
         conn.commit()
         logger.info(f"收到用户反馈: {fid}, 类型: {feedback_type}, 分数: {feedback_score}")
+
+        # 反馈修正闭环（2026-10-03 修复，见交付报告"纠错文本不生效"）：
+        # 此前 `correction_text` 只写库、**全仓没有任何读取处** → 学生提交的纠错
+        # 对后续回答毫无影响。现在把它转成一条**学生显式偏好**写进 learning_memory：
+        #   - 普通问答（teaching_context）与 Agent（get_learning_state）都会读到；
+        #   - 走既有"生效中/过期/覆盖/可删除"规则，学生可在「学习记忆」里核对与撤销；
+        #   - 同一 key 后写覆盖先写 → 始终以最新纠错为准。
+        if correction_text and correction_text.strip():
+            try:
+                from services import learning_memory
+                learning_memory.set_memory(
+                    user_id, KEY_CORRECTION_NOTE, correction_text.strip(),
+                    memory_type=learning_memory.MEMORY_PREFERENCE,
+                    scope=learning_memory.SCOPE_GLOBAL)
+            except Exception as e:
+                # 记忆写入失败不应影响反馈本身，但必须留日志（不静默降级）
+                logger.warning(f"纠错文本写入学习记忆失败（反馈已保存）: {e}")
         return fid
     except Exception as e:
         logger.error(f"提交反馈失败: {e}", exc_info=True)

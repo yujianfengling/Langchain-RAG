@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
+const { launchBrowser } = require('./e2e_launch');
 
 const BASE = process.argv[2] || 'http://localhost:3000';
 const SUBJECT_NAME = process.argv[3] || '离散数学';
@@ -61,7 +62,7 @@ async function requireBackendIsolated(base, purpose) {
 (async () => {
   await requireBackendIsolated(BASE, "真实模型全流程验收");
   fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const browser = await launchBrowser({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
   const pageErrors = [];

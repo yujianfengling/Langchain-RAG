@@ -18,8 +18,10 @@
 import base64
 import json
 import os
+import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -55,6 +57,33 @@ def base_url() -> str:
 def backend_mode() -> str:
     """语音后端选择：local / mimo / auto（默认 auto）"""
     return (os.environ.get("SPEECH_BACKEND") or "auto").strip().lower()
+
+
+def _port_open(timeout: float = 0.35) -> bool:
+    """极短超时的本机端口探测
+
+    为什么需要：Windows 上本机 TCP 连接被拒可能耗时约 2 s（实测
+    `socket.create_connection(("127.0.0.1", 8100))` = 2.05 s，与 urllib/代理无关）。
+    健康检查每次都走这条失败路径，会让 `/api/health` 多花 2 s。
+    这里先用极短超时探一次，连不上立即按"未启动"返回。
+
+    返回 True 时仍会走正常的 HTTP 请求（监听中的 loopback 连接是毫秒级）。
+    """
+    try:
+        parsed = urllib.parse.urlparse(base_url())
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 80
+    except Exception:
+        return True          # 解析不了就不拦，交给 _http 原逻辑
+    s = socket.socket()
+    s.settimeout(timeout)
+    try:
+        s.connect((host, port))
+        return True
+    except Exception:
+        return False
+    finally:
+        s.close()
 
 
 def _http(method: str, path: str, body: Optional[dict] = None,
@@ -116,6 +145,18 @@ def health(force: bool = False) -> Dict[str, Any]:
         "running": False, "asr": {"ready": False},
         "vram": {"available": False}, "reason": "",
     }
+    # 启动性能修复（2026-10-03，实测驱动）：端口没开就立刻返回，
+    # 避免 Windows 上约 2 s 的"连接被拒"等待（文案与 _http 的失败分支一致）。
+    if not _port_open():
+        reason = f"本地语音服务未启动或无法连接（{base_url()}）：连接被拒绝"
+        # 与 _http 的失败分支保持一致：必须上报降级，否则能力状态会停留在"未调用"
+        try:
+            capability_status.safe_report(capability_status.CAP_SPEECH, False, reason=reason)
+        except Exception:
+            pass
+        result["reason"] = reason
+        _HEALTH_CACHE.update(ts=now, data=result)
+        return result
     try:
         data = _http("GET", "/health", timeout=HEALTH_TIMEOUT)
         result["running"] = True

@@ -157,6 +157,14 @@ def _init_db() -> None:
             source_task_id TEXT,
             conversation_id TEXT,
             client_token TEXT,
+            -- 教师改判（2026-10-04）：is_correct/grade_status 保存**生效判定**；
+            -- 原判定与教师判定分别另存，三者都保留、可追溯
+            orig_is_correct INTEGER,
+            orig_grade_status TEXT,
+            teacher_is_correct INTEGER,
+            teacher_id TEXT,
+            teacher_reason TEXT,
+            teacher_graded_at TEXT,
             created_at TEXT NOT NULL,
             UNIQUE(user_id, client_token)
         );
@@ -479,8 +487,15 @@ _MASTERY_COLUMNS = {
 
 # 表名 → 阶段一新增列定义（供 ensure_columns 与 migrate_legacy 共用，避免两处漂移）
 # quiz_attempts：AI 判分简答题的评判理由（刷新后仍可查看）
+#   + 教师改判（2026-10-04）：原判定 / 教师判定 / 理由 / 改判人 / 改判时间
 _ATTEMPT_COLUMNS = {
     "ai_feedback": "TEXT",
+    "orig_is_correct": "INTEGER",
+    "orig_grade_status": "TEXT",
+    "teacher_is_correct": "INTEGER",
+    "teacher_id": "TEXT",
+    "teacher_reason": "TEXT",
+    "teacher_graded_at": "TEXT",
 }
 
 _COLUMN_SETS = {

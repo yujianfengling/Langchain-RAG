@@ -158,7 +158,11 @@ def generate_questions(user_id: str, course_id: str, *, assignment_id: Optional[
     kp_name = kps[0] if kps else (course["title"] or "课程练习")
     public = quiz_service.persist_questions(
         subject_id=course["subject_id"], knowledge_point_name=kp_name,
-        questions=items, source="teacher_assignment")
+        questions=items,
+        # 修复（2026-10-04）：`source` 表示**题目依据来源**，不是渠道。
+        # 本路径上面已强制校验课程资料命中（context 非空），因此依据是课程知识库；
+        # "教师作业"作为**渠道**由返回载荷的 channel 表达，不再污染 source。
+        source="knowledge_base")
     question_ids = [q["id"] for q in public if q.get("id")]
 
     if assignment_id:
@@ -176,6 +180,9 @@ def generate_questions(user_id: str, course_id: str, *, assignment_id: Optional[
     return {"questions": public, "question_ids": question_ids,
             "requested": count, "generated": len(question_ids),
             "knowledge_point": kp_name,
+            # 渠道 vs 依据（2026-10-04 分离）：渠道=教师作业；依据=课程知识库（上面已校验命中）
+            "channel": "teacher_assignment", "channel_label": "教师作业",
+            "source": "knowledge_base", "source_label": "课程知识库",
             "evidence": rag.get("sources") or [],
             "model": f"{model_info.get('provider')}:{model_info.get('model')}"}
 
@@ -312,14 +319,21 @@ def close_assignment(user_id: str, assignment_id: str) -> Dict[str, Any]:
 # ==================== 题目与作答 ====================
 
 def _assignment_questions_public(assignment_id: str) -> List[Dict[str, Any]]:
-    """题目（不含标准答案；教师端也不需要下发答案，避免误泄露）"""
+    """题目（不含标准答案；教师端也不需要下发答案，避免误泄露）
+
+    修复（2026-10-04）：这里补上 **渠道** 字段，与 **依据来源** 分开表达：
+      - `source` / `source_label`：题目**依据**（课程知识库 / 笔记 / 联网资料 / AI 通用知识）；
+      - `channel` / `channel_label`：题目**渠道**（教师作业 / 学生自测）。
+    此前出题时把渠道写进了 `source`（"teacher_assignment"），既覆盖了真实依据，
+    又让前端只能显示一个固定标签（且该键在来源标签表里并不存在）。
+    """
     from services import quiz_service
     out = []
     assignment = td.get_assignment(assignment_id) or {}
     for qid in assignment.get("question_ids") or []:
         q = quiz_service.get_question_public(qid)
         if q:
-            out.append(q)
+            out.append({**q, "channel": "teacher_assignment", "channel_label": "教师作业"})
     return out
 
 
@@ -384,7 +398,13 @@ def list_student_assignments(user_id: str, course_id: Optional[str] = None,
             continue
         klass = td.get_class(a["class_id"]) or {}
         course = td.get_course(a["course_id"]) or {}
-        attempts = _student_attempt_map(user_id, a.get("question_ids") or [])
+        # 修复 B4（2026-10-03）：`td.list_assignments_for_classes` 的返回**不含
+        # question_ids**，于是 `_student_attempt_map(user_id, [])` 恒为空 →
+        # 学生端作业列表"已作答 X / N"永远是 0（见交付报告 B4）。
+        # 同类隐患此前只在 `_publish_stats` 修过；这里按需回查一次，与详情接口同口径。
+        detail = td.get_assignment(a["id"]) or {}
+        qids = detail.get("question_ids") or (a.get("question_ids") or [])
+        attempts = _student_attempt_map(user_id, qids)
         out.append({
             "id": a["id"],
             "title": a["title"],
@@ -398,7 +418,7 @@ def list_student_assignments(user_id: str, course_id: Optional[str] = None,
             "knowledge_points": a.get("knowledge_points") or [],
             "questions": _assignment_questions_public(a["id"]),
             "submitted": len(attempts),
-            "question_count": len(a.get("question_ids") or []),
+            "question_count": len(qids),
             "results": attempts,
             "published_at": a.get("published_at"),
         })

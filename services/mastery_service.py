@@ -548,6 +548,76 @@ def mark_recheck_scheduled(user_id: str, subject_id: str,
         conn.close()
 
 
+def compute_latest_evidence_mastery(user_id: str, subject_id: str,
+                                    knowledge_point_name: str) -> Dict[str, Any]:
+    """读取侧口径（2026-10-04，Design C）：掌握度 = **每题最新一次有效作答**。
+
+    只读、不写库、不改 schema。复用已验证正确的"按 (attempt_no, rowid) 取每题最新"选择
+    逻辑；「单向从严」保持不变（学生自评答对不采信）。返回最新证据视图 + 历史累计，
+    供界面并列展示"当前掌握 / 历史（用于复习与趋势）"。
+    """
+    empty = {"latest_mastery_level": None, "latest_evidence_count": 0,
+             "history_attempt_count": 0, "history_wrong_count": 0,
+             "history_correct_count": 0, "basis": "每题最新一次有效作答（读取侧计算）"}
+    if not user_id or not subject_id or not knowledge_point_name:
+        return dict(empty)
+
+    from services import learning_data as _ld
+    conn = _ld._get_db()
+    try:
+        rows = conn.execute(
+            """SELECT rowid AS _rowid, question_id, attempt_no, attempt_kind,
+                      is_correct, grade_status
+               FROM quiz_attempts
+               WHERE user_id=? AND subject_id=? AND is_correct IS NOT NULL
+                 AND knowledge_point_name=?
+               ORDER BY attempt_no ASC, rowid ASC""",
+            (user_id, subject_id, knowledge_point_name)).fetchall()
+    finally:
+        conn.close()
+
+    latest: Dict[str, Any] = {}
+    history_attempt = history_wrong = history_correct = 0
+    for r in rows:
+        history_attempt += 1
+        if r["is_correct"]:
+            history_correct += 1
+        else:
+            history_wrong += 1
+        key = r["question_id"] or "row_%d" % history_attempt
+        prev = latest.get(key)
+        if prev is None or ((r["attempt_no"] or 0, r["_rowid"] or 0)
+                            >= (prev["attempt_no"] or 0, prev["_rowid"] or 0)):
+            latest[key] = r
+
+    ind_correct = ind_wrong = rev_correct = rev_wrong = 0
+    for r in latest.values():
+        if r["grade_status"] == GRADE_SELF_EVALUATED and r["is_correct"]:
+            continue          # 单向从严：自评答对不采信（防刷分）
+        kind = r["attempt_kind"] or "independent"
+        if kind in MASTERY_RULES["independent_kinds"]:
+            if r["is_correct"]:
+                ind_correct += 1
+            else:
+                ind_wrong += 1
+        elif kind in MASTERY_RULES["review_kinds"]:
+            if r["is_correct"]:
+                rev_correct += 1
+            else:
+                rev_wrong += 1
+
+    return {
+        "latest_mastery_level": _compute_level(ind_correct, ind_wrong, rev_correct, rev_wrong),
+        "latest_evidence_count": ind_correct + ind_wrong,
+        "latest_independent_correct": ind_correct,
+        "latest_independent_wrong": ind_wrong,
+        "history_attempt_count": history_attempt,
+        "history_wrong_count": history_wrong,
+        "history_correct_count": history_correct,
+        "basis": "每题最新一次有效作答（读取侧计算，不写库）",
+    }
+
+
 def get_mastery(user_id: str, subject_id: str, knowledge_point_name: str) -> Dict[str, Any]:
     """获取单个知识点的掌握信息（无证据时明确返回待评估）"""
     conn = _get_db()
@@ -556,7 +626,11 @@ def get_mastery(user_id: str, subject_id: str, knowledge_point_name: str) -> Dic
             "SELECT * FROM knowledge_mastery WHERE user_id=? AND subject_id=? AND knowledge_point=?",
             (user_id, subject_id, knowledge_point_name)).fetchone()
         if not row:
+            _empty_view = compute_latest_evidence_mastery(
+                user_id, subject_id, knowledge_point_name) \
+                if "compute_latest_evidence_mastery" in globals() else {}
             return {
+                "latest_view": _empty_view,
                 "knowledge_point": knowledge_point_name,
                 "knowledge_point_id": ensure_knowledge_point(subject_id, knowledge_point_name,
                                                               source="mastery"),
@@ -569,7 +643,16 @@ def get_mastery(user_id: str, subject_id: str, knowledge_point_name: str) -> Dic
                 "reason": "尚无独立作答证据，待评估",
                 "updated_at": None,
             }
-        return _row_to_mastery(row)
+        out = _row_to_mastery(row)
+        try:
+            out["latest_view"] = compute_latest_evidence_mastery(
+                user_id, subject_id, knowledge_point_name)
+        except Exception as e:      # 读取侧失败不影响既有字段
+            logger.debug(f"读取侧掌握度视图计算失败: {e}")
+            out["latest_view"] = {"latest_mastery_level": None,
+                                  "error": str(e)[:120],
+                                  "basis": "每题最新一次有效作答（读取侧计算）"}
+        return out
     finally:
         conn.close()
 
@@ -641,7 +724,21 @@ def list_mastery(user_id: str, subject_id: str) -> List[Dict[str, Any]]:
             "SELECT * FROM knowledge_mastery WHERE user_id=? AND subject_id=? "
             "ORDER BY updated_at DESC",
             (user_id, subject_id)).fetchall()
-        return [_row_to_mastery(r) for r in rows]
+        # 并列附带读取侧最新证据视图（Design C）：界面据此区分
+        # 「当前掌握（每题最新有效作答）」与「历史（用于复习与趋势）」。
+        # 逐点一次查询；失败不影响既有字段。
+        out = []
+        for r in rows:
+            item = _row_to_mastery(r)
+            try:
+                item["latest_view"] = compute_latest_evidence_mastery(
+                    user_id, subject_id, r["knowledge_point"])
+            except Exception as e:
+                logger.debug(f"读取侧掌握度视图计算失败: {e}")
+                item["latest_view"] = {"latest_mastery_level": None,
+                                       "basis": "每题最新一次有效作答（读取侧计算）"}
+            out.append(item)
+        return out
     finally:
         conn.close()
 

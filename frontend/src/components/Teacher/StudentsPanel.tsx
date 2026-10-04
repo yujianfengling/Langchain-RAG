@@ -12,6 +12,7 @@ import {
   describeTeacherError, getClassOverview, getStudents, getStudentOverview,
 } from '../../api/teacher';
 import { ErrorAlert, formatTime } from './common';
+import StudentAttemptsDrawer from './StudentAttemptsDrawer';
 
 const { Text, Title } = Typography;
 
@@ -52,6 +53,8 @@ const StudentsPanel: React.FC<StudentsPanelProps> = ({ onBack }) => {
   const [detail, setDetail] = useState<StudentOverview | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  // 作答明细 / 教师改判（2026-10-04）：教师此前看不到单个学生的逐题作答，也无法改判
+  const [attemptsFor, setAttemptsFor] = useState<{ id: string; name: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -129,14 +132,26 @@ const StudentsPanel: React.FC<StudentsPanelProps> = ({ onBack }) => {
     {
       title: '操作',
       render: (_: unknown, r: StudentSummary) => (
-        <Button
-          type="link"
-          size="small"
-          onClick={() => openStudent(r.user_id, undefined,
-            r.display_name || r.username || r.user_id)}
-        >
-          查看画像
-        </Button>
+        <Space size={0}>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => openStudent(r.user_id, undefined,
+              r.display_name || r.username || r.user_id)}
+          >
+            查看画像
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => setAttemptsFor({
+              id: r.user_id,
+              name: r.display_name || r.username || r.user_id,
+            })}
+          >
+            作答明细/改判
+          </Button>
+        </Space>
       ),
     },
   ];
@@ -291,6 +306,14 @@ const StudentsPanel: React.FC<StudentsPanelProps> = ({ onBack }) => {
           )}
         </Card>
       )}
+
+      <StudentAttemptsDrawer
+        open={!!attemptsFor}
+        studentId={attemptsFor?.id || ''}
+        studentName={attemptsFor?.name}
+        onClose={() => setAttemptsFor(null)}
+        onRegraded={load}
+      />
     </div>
   );
 };

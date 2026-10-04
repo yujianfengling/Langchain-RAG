@@ -10,6 +10,8 @@
 """
 
 import os
+import threading
+import time
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -151,13 +153,124 @@ except Exception as e:
     logger.warning(f"LLM模块导入失败: {e}")
 
 # RAG模块
-_rag_available = False
+# 启动优化（2026-10-03）：不在模块导入期 `from rag import ...`（会连带
+# torch/transformers，实测拖慢启动约 7 秒）。改为首次真正需要时惰性导入一次；
+# /health **不再**触发它（见下面的 _rag_state_for_health），
+# 否则等于把 7.5s 从启动挪到第一次健康检查，反而更慢（已实测）。
+_rag_available = None      # None = 尚未探测；True/False = 探测结果
 _check_rag_health = None
-try:
-    from rag import check_rag_health as _check_rag_health
-    _rag_available = True
-except Exception as e:
-    logger.warning(f"RAG模块导入失败: {e}")
+_rag_import_error = None
+
+
+def _load_rag_health_checker() -> bool:
+    """惰性导入 rag 的健康检查函数（只尝试一次，结果缓存）"""
+    global _rag_available, _check_rag_health, _rag_import_error
+    if _rag_available is False:
+        return False
+    if _check_rag_health is None:
+        try:
+            from services.rag_loader import load_rag
+            _check_rag_health = getattr(load_rag(), "check_rag_health")
+            _rag_available = True
+        except Exception as e:      # pragma: no cover - 依赖缺失环境
+            _rag_import_error = str(e)
+            _rag_available = False
+            logger.warning(f"RAG模块导入失败: {e}")
+    return bool(_rag_available)
+
+
+# ---- 延迟预热（2026-10-03 第 4 轮） ----
+# 状态：disabled / pending（等待延迟）/ loading / ready / failed
+_RAG_WARM: dict = {"state": "pending", "error": "", "delay_s": None}
+
+
+def _warm_embedding_model() -> bool:
+    """预热**本地 Embedding 模型**（首次检索的真正大头，实测冷启动 13.3s 中的 ~10s）
+
+    背景（2026-10-04 实测）：只导入 rag 不够。冷启动时"首次知识库提问"要 13.29s，
+    其中大部分是加载本地 Embedding（bge 系列，约 10s）；预热完成后同类提问只要 1.78s。
+    因此延迟预热除了导入 rag，还要把 Embedding 也加载好，否则负责人打开系统后
+    第一次提问仍要等十几秒——"health 返回快"并不能证明系统已就绪。
+    """
+    try:
+        from services.rag_loader import load_rag
+        rag = load_rag()
+        getter = getattr(rag, "get_embedding_model", None) or getattr(rag, "embedding_model", None)
+        if getter is None:
+            _RAG_WARM["embedding"] = "unsupported"
+            return False
+        if callable(getter):
+            getter()
+        _RAG_WARM["embedding"] = "ready"
+        return True
+    except Exception as e:      # 预热失败不影响正常请求（首次提问会自行加载）
+        _RAG_WARM["embedding"] = f"failed: {type(e).__name__}: {str(e)[:120]}"
+        logger.warning(f"[warmup] Embedding 预热失败（不影响请求，首次提问会自行加载）: {e}")
+        return False
+
+
+def _warm_rag_background() -> None:
+    """后台预热：导入 rag + 加载本地 Embedding（不做检索、不碰向量库）
+
+    修复（2026-10-03）：原先一次性尝试。若此刻正好有请求在导入 rag，
+    Python 3.14 的跨线程模块锁死锁检测会让本线程失败（实测
+    `deadlock detected by _ModuleLock('rag.rag_service')`），预热就永久停在 failed。
+    现在：导入已由 services/rag_loader 的进程级锁串行化，这里再加**有限重试**
+    （幂等、无副作用）——请求线程一旦完成导入，重试会立即复用。
+    """
+    _RAG_WARM["state"] = "loading"
+    for attempt in range(1, 4):
+        ok = _load_rag_health_checker()
+        if ok:
+            _RAG_WARM["attempts"] = attempt
+            _RAG_WARM["error"] = ""
+            # 导入成功后继续把 Embedding 加载好，让"第一次提问"不再等十几秒
+            _warm_embedding_model()
+            _RAG_WARM["state"] = "ready"
+            logger.info(f"[warmup] rag 延迟预热完成：state=ready（第 {attempt} 次尝试）"
+                        f"，embedding={_RAG_WARM.get('embedding')}")
+            return
+        _RAG_WARM["attempts"] = attempt
+        _RAG_WARM["error"] = _rag_import_error or ""
+        logger.warning(f"[warmup] rag 预热第 {attempt} 次未成功：{_RAG_WARM['error'][:200]}")
+        time.sleep(1.0 * attempt)
+    _RAG_WARM["state"] = "failed"
+    logger.warning(f"[warmup] rag 延迟预热失败：{_RAG_WARM['error'][:200]}")
+
+
+def _rag_state_for_health() -> bool:
+    """给 /health 的**轻量**判断：不导入 rag（用向量库目录粗判）
+
+    预热完成后按真实探测结果返回；未完成时不假装"已就绪"，也不误报失败。
+    """
+    state = _RAG_WARM.get("state")
+    if state == "ready":
+        return True
+    if state == "failed":
+        return False
+    return os.path.exists(_VECTOR_STORE_DIR)
+
+
+@app.on_event("startup")
+def _start_rag_warmup() -> None:
+    """启动后**延迟**预热 rag（默认 15 秒；RAG_WARMUP_DELAY_SECONDS=0 关闭）
+
+    为什么延迟而不是立即（同机 A/B 实测）：
+        立即预热线程：startup 日志 1.14s → 7.63s，首次 /api/health 3.78s → 9.89s（更差）
+        延迟预热    ：启动窗口与首次健康检查都不受影响，学生提问时 rag 已就绪
+    """
+    try:
+        delay = float(os.getenv("RAG_WARMUP_DELAY_SECONDS", "15") or 15)
+    except ValueError:
+        delay = 15.0
+    _RAG_WARM["delay_s"] = delay
+    if delay <= 0:
+        _RAG_WARM["state"] = "disabled"
+        logger.info("[warmup] RAG_WARMUP_DELAY_SECONDS=0，跳过 rag 预热")
+        return
+    timer = threading.Timer(delay, _warm_rag_background)
+    timer.daemon = True
+    timer.start()
 
 # Vector Store目录
 # 向量库目录：统一由数据根目录推导（支持 EDU_DATA_DIR 隔离），
@@ -249,17 +362,9 @@ async def health_check():
             logger.warning(f"Health check - LLM check error: {e}")
             services["llm"] = False
     
-    # 检查RAG服务（使用模块级导入）
-    if _rag_available and _check_rag_health is not None:
-        try:
-            rag_health = _check_rag_health()
-            services["rag"] = rag_health.get("status") == "ok"
-        except Exception as e:
-            logger.warning(f"Health check - RAG check error: {e}")
-            services["rag"] = False
-    else:
-        # 回退：检查向量存储目录是否存在
-        services["rag"] = os.path.exists(_VECTOR_STORE_DIR)
+    # 检查RAG服务（启动优化 2026-10-03）：此处**不**导入 rag，避免把 7.5s
+    # 的导入代价挪到第一次健康检查上（实测那样反而更慢）。
+    services["rag"] = _rag_state_for_health()
     
     # 整体状态：只要配置正常就返回ok
     overall_status = "ok" if services["config"] else "degraded"
@@ -272,6 +377,8 @@ async def health_check():
             "services": services,
             "data_scope": _data_scope(),
             "capabilities": _capabilities(),
+            # 启动优化：rag 延迟预热状态（pending/loading/ready/failed/disabled）
+            "rag_warmup": dict(_RAG_WARM),
         },
         "message": "ok",
     }
@@ -360,7 +467,9 @@ async def health_ready():
     不返回本地绝对路径、异常堆栈与任何密钥。
     """
     try:
-        from rag import get_rag_readiness
+        # 走同一把进程级锁（services/rag_loader），避免与延迟预热线程并发导入 rag
+        from services.rag_loader import load_rag
+        get_rag_readiness = getattr(load_rag(), "get_rag_readiness")
         from services import capability_status, usage_ledger
         readiness = dict(get_rag_readiness())
         # 运行态外部能力（LLM / 联网 / 视觉 / 语音）：反映**真实调用结果**，

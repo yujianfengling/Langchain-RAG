@@ -123,10 +123,6 @@ class AudioServiceTest(unittest.TestCase):
         return mock.patch("services.audio_service._get_audio_config",
                           return_value=_config())
 
-    def _patch_tts(self):
-        return mock.patch("services.audio_service._get_audio_config",
-                          return_value=_tts_config())
-
     # ===== WAV / 格式检测 =====
 
     def test_validate_wav_header_valid(self):

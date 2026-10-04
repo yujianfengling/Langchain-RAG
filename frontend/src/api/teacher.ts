@@ -473,6 +473,12 @@ export interface AssignmentQuestion {
   options?: { id: string; text: string }[];
   knowledge_point?: string | null;
   knowledge_point_id?: string | null;
+  /** 题目**依据来源**：knowledge_base / note / quiz / web_search / general_knowledge（2026-10-04） */
+  source?: string | null;
+  source_label?: string | null;
+  /** 题目**渠道**：teacher_assignment（教师作业）等；与"依据来源"分开表达 */
+  channel?: string | null;
+  channel_label?: string | null;
 }
 
 export interface PublishStats {
@@ -518,6 +524,13 @@ export const createAssignment = async (
 ): Promise<ApiResponse<Assignment>> => apiClient.post(`/teacher/courses/${courseId}/assignments`, data);
 
 export interface GenerateQuestionsResult {
+  /** 渠道（教师作业等）；与「依据」分开下发，2026-10-04 */
+  channel?: string | null;
+  channel_label?: string | null;
+  /** 依据来源：knowledge_base / note / quiz / web_search / general_knowledge */
+  source?: string | null;
+  source_label?: string | null;
+
   questions: AssignmentQuestion[];
   question_ids: string[];
   requested: number;
@@ -761,3 +774,65 @@ export const getStudentOverview = async (
 /** 我名下学生的整体汇总 */
 export const getClassOverview = async (): Promise<ApiResponse<ClassOverview>> =>
   apiClient.get('/teacher/class/overview');
+
+/** ==================== 单学生作答明细与教师改判（2026-10-04） ==================== */
+
+/** 一条作答记录：原判定 / 教师判定 / 生效判定 三者并列 */
+export interface StudentAttempt {
+  attempt_id: string;
+  question_id: string;
+  stem?: string | null;
+  question_type?: string | null;
+  knowledge_point_name?: string | null;
+  user_answer?: string | null;
+  user_answer_text?: string | null;
+  attempt_no: number;
+  attempt_kind: string;
+  created_at: string;
+  /** 生效判定：学情 / 错题本 / 掌握度都按它计算（教师改判后即为教师结论） */
+  effective_is_correct: boolean | null;
+  effective_grade_status: string;
+  /** 原判定：首次改判前的结论（未改判为 null），改判后仍保留可追溯 */
+  original: { is_correct: boolean | null; grade_status: string | null } | null;
+  /** 教师判定与留痕 */
+  teacher: {
+    is_correct: boolean;
+    reason: string | null;
+    teacher_id: string | null;
+    graded_at: string | null;
+  } | null;
+  ai_feedback?: string | null;
+  used_hint: boolean;
+  revealed_answer: boolean;
+  duration_sec?: number | null;
+}
+
+export interface StudentAttemptsResult {
+  class: { id: string; name?: string };
+  subject_id: string;
+  student: { user_id: string; display_name: string };
+  member?: { joined_at?: string | null; status?: string | null };
+  summary: {
+    attempt_count: number; graded_count: number; correct_count: number;
+    wrong_count: number; ungraded_count: number; regraded_count: number;
+    range_days: number;
+  };
+  attempts: StudentAttempt[];
+  sources?: string[];
+}
+
+/** 单学生作答明细（教师级入口：后端自动解析该学生在你名下班级） */
+export const listStudentAttempts = async (
+  studentId: string, days = 30, limit = 200,
+): Promise<ApiResponse<StudentAttemptsResult>> =>
+  apiClient.get(`/teacher/students/${encodeURIComponent(studentId)}/attempts`, {
+    params: { days, limit },
+  });
+
+/** 教师改判：保留原判定，写入教师判定与理由，并同步掌握度 / 错题本 / 复习 */
+export const regradeAttempt = async (
+  attemptId: string, isCorrect: boolean, reason: string,
+): Promise<ApiResponse<{ attempt: StudentAttempt; linkage: Record<string, unknown> }>> =>
+  apiClient.post(`/teacher/attempts/${encodeURIComponent(attemptId)}/regrade`, {
+    is_correct: isCorrect, reason,
+  });

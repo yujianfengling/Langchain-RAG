@@ -104,7 +104,15 @@ def class_overview(user_id: str, class_id: str, days: int = 30,
         conn.close()
 
     attempt_rows = [dict(r) for r in attempts]
-    graded = [a for a in attempt_rows if a.get("grade_status") == "graded"
+    # 修复 B1（2026-10-03）：此前只把 `grade_status == "graded"`（客观题自动判分）
+    # 计入统计，把**简答题 AI 判分**（ai_graded）与**学生自评**（self_evaluated）
+    # 整类排除 → 教师会看到"有作答、但薄弱知识点为空"的自相矛盾页面。
+    # 掌握度口径（`mastery_service.rebuild_point_from_attempts`）本来就是
+    # "所有 is_correct 非空的作答都算证据"，这里与之对齐；
+    # `pending_self_eval` 没有结论（is_correct 为 None），仍然不计入。
+    # 2026-10-04：教师改判（teacher_regraded）同样是**有结论的有效证据**，一并计入。
+    counted_statuses = ("graded", "ai_graded", "self_evaluated", "teacher_regraded")
+    graded = [a for a in attempt_rows if a.get("grade_status") in counted_statuses
               and a.get("is_correct") is not None]
     answered_students = {a["user_id"] for a in attempt_rows}
 
@@ -351,31 +359,50 @@ def knowledge_point_detail(user_id: str, class_id: str, knowledge_point_id: str,
         raise TeachingError("该知识点在选定时间范围内没有作答记录", "not_found")
 
     from services import quiz_service
-    conn = quiz_service._get_db()
-    try:
-        rows = conn.execute(
-            """SELECT question_id, COUNT(*) AS c,
-                      SUM(CASE WHEN is_correct=0 THEN 1 ELSE 0 END) AS wrong
-               FROM quiz_attempts
-               WHERE subject_id=? AND knowledge_point_id=?
-                 AND date(created_at) BETWEEN ? AND ? AND grade_status='graded'
-               GROUP BY question_id HAVING wrong > 0
-               ORDER BY wrong DESC LIMIT 20""",
-            (overview["subject_id"], knowledge_point_id,
-             overview["range"]["start"], overview["range"]["end"])).fetchall()
-    finally:
-        conn.close()
+
+    # 修复 B2（2026-10-03）：下钻此前既**没有按本班学生过滤**（同一门课有多个班时，
+    # A 班的下钻会把 B 班学生的作答统计进来），也**没有"每题最新一次作答"去重**
+    # （同一学生连错 3 次会被算成 3 个错误样本），与 class_overview 的口径都矛盾。
+    # 现在与总览**完全同口径**：本班在班学生 + 计入的判分状态 + is_correct 非空
+    # + 每个 (学生, 题目) 只取时间上最后一次作答。
+    student_ids = [m["user_id"] for m in td.list_members(class_id, status="active")]
+    rows = []
+    if student_ids:
+        marks = ",".join("?" for _ in student_ids)
+        conn = quiz_service._get_db()
+        try:
+            rows = conn.execute(
+                f"""SELECT user_id, question_id, is_correct, created_at
+                    FROM quiz_attempts
+                    WHERE user_id IN ({marks}) AND subject_id=? AND knowledge_point_id=?
+                      AND date(created_at) BETWEEN ? AND ?
+                      AND is_correct IS NOT NULL
+                      AND grade_status IN ('graded', 'ai_graded', 'self_evaluated', 'teacher_regraded')""",
+                [*student_ids, overview["subject_id"], knowledge_point_id,
+                 overview["range"]["start"], overview["range"]["end"]]).fetchall()
+        finally:
+            conn.close()
+
+    latest = _latest_attempts_per_question([dict(r) for r in rows])
+    agg: Dict[str, Dict[str, int]] = {}
+    for a in latest:
+        slot = agg.setdefault(a["question_id"], {"c": 0, "wrong": 0})
+        slot["c"] += 1
+        if not a["is_correct"]:
+            slot["wrong"] += 1
+    ordered = sorted(((qid, v) for qid, v in agg.items() if v["wrong"] > 0),
+                     key=lambda kv: -kv[1]["wrong"])[:20]
 
     questions = []
-    for r in rows:
-        q = quiz_service.get_question_public(r["question_id"]) or {}
+    for qid, v in ordered:
+        q = quiz_service.get_question_public(qid) or {}
         questions.append({
-            "question_id": r["question_id"],
+            "question_id": qid,
             "stem": q.get("stem"),
             "options": q.get("options"),
             "knowledge_point_name": q.get("knowledge_point_name"),
-            "attempt_count": r["c"],
-            "wrong_count": r["wrong"],
+            "attempt_count": v["c"],
+            "wrong_count": v["wrong"],
         })
 
     materials = _related_materials(overview["course_id"], kp.get("knowledge_point") or "")

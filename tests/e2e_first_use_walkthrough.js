@@ -23,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { chromium } = require('playwright');
+const { launchBrowser } = require('./e2e_launch');
 
 const BASE = process.argv[2] || 'http://localhost:3000';
 const API = process.argv[3] || 'http://127.0.0.1:8000';
@@ -82,7 +83,7 @@ async function requireBackendIsolated() {
   // 而"能不能在自己机器上验收"本身也是交付能力的一部分。
   let browser;
   try {
-    browser = await chromium.launch({ channel: 'chrome', headless: true });
+    browser = await launchBrowser({ headless: true });
   } catch (e) {
     console.log('[提示] 未找到系统 Chrome，回退到 playwright 自带 chromium');
     browser = await chromium.launch({ headless: true });

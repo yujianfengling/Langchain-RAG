@@ -383,6 +383,80 @@ async def class_members(class_id: str, user_id: str = Depends(require_current_us
         return _err(e)
 
 
+@router.get("/teacher/classes/{class_id}/students/{student_id}/attempts")
+async def student_attempts(class_id: str, student_id: str,
+                           days: int = 30, limit: int = 200,
+                           user_id: str = Depends(require_current_user)):
+    """**单学生作答明细**（含原判定 / 教师判定 / 生效判定三者并列）
+
+    教师此前只能看到班级聚合，看不到某个学生逐题怎么答的、AI 判了什么。
+    """
+    from services import teacher_grading
+    try:
+        return SuccessResponse(
+            data=teacher_grading.list_student_attempts(
+                user_id, class_id, student_id, days=days, limit=limit),
+            message="获取作答明细成功")
+    except TeachingError as e:
+        return _err(e)
+
+
+class RegradeRequest(BaseModel):
+    is_correct: bool
+    reason: str = Field(..., description="改判理由（必填，会随记录保留）")
+
+
+@router.post("/teacher/classes/{class_id}/attempts/{attempt_id}/regrade")
+async def regrade_attempt(class_id: str, attempt_id: str, request: RegradeRequest,
+                          user_id: str = Depends(require_current_user)):
+    """**教师改判**：保留原判定，写入教师判定/理由/人/时间，并同步掌握度与复习
+
+    - 生效判定写入 `is_correct`/`grade_status`，因此学情、错题本、掌握度自动跟随；
+    - 原判定固化到 `orig_*`（首次改判时写入，此后不覆盖）；
+    - 改判为"错"→ 确保该知识点有待复习；改判为"对"→ 关闭待复习任务。
+    """
+    from services import teacher_grading
+    try:
+        return SuccessResponse(
+            data=teacher_grading.regrade_attempt(
+                user_id, class_id, attempt_id, request.is_correct, request.reason),
+            message="改判成功")
+    except TeachingError as e:
+        return _err(e)
+
+
+@router.get("/teacher/students/{student_id}/attempts")
+async def student_attempts_for_teacher(student_id: str, days: int = 30, limit: int = 200,
+                                       user_id: str = Depends(require_current_user)):
+    """**单学生作答明细**（教师级入口：自动解析该学生所在、且属于本教师的班级）
+
+    与班级版 `/teacher/classes/{class_id}/students/{student_id}/attempts` 等价，
+    只是免去前端再选班级；权限校验一致（非本教师班级的学生一律拒绝）。
+    """
+    from services import teacher_grading
+    try:
+        return SuccessResponse(
+            data=teacher_grading.list_student_attempts_for_teacher(
+                user_id, student_id, days=days, limit=limit),
+            message="获取作答明细成功")
+    except TeachingError as e:
+        return _err(e)
+
+
+@router.post("/teacher/attempts/{attempt_id}/regrade")
+async def regrade_attempt_for_teacher(attempt_id: str, request: RegradeRequest,
+                                      user_id: str = Depends(require_current_user)):
+    """**教师改判**（教师级入口）：保留原判定，写入教师判定/理由/人/时间，并同步掌握度与复习"""
+    from services import teacher_grading
+    try:
+        return SuccessResponse(
+            data=teacher_grading.regrade_attempt_for_teacher(
+                user_id, attempt_id, request.is_correct, request.reason),
+            message="改判成功")
+    except TeachingError as e:
+        return _err(e)
+
+
 @router.post("/teacher/classes/{class_id}/reset-code")
 async def reset_code(class_id: str, user_id: str = Depends(require_current_user)):
     """重置邀请码（旧码立即失效）"""

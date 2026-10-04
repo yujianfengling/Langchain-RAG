@@ -21,6 +21,24 @@ import {
 const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
 
+/**
+ * 题目**依据来源**标签（2026-10-04）
+ *
+ * 与 `QuizList` 的来源口径一致。注意与**渠道**区分：
+ *   - 依据来源：knowledge_base / note / quiz（课程资料）、web_search（网络资料）、
+ *     general_knowledge（AI 通用知识）；
+ *   - 渠道：channel === 'teacher_assignment' 表示"教师布置的作业"。
+ * 此前教师作业出题把渠道写进了 source（写死 teacher_assignment），界面因此既显示不出
+ * 真实依据，也分不清渠道；现在两者分别展示。
+ */
+const QUESTION_SOURCE_META: Record<string, { color: string; label: string; tip: string }> = {
+  knowledge_base: { color: 'green', label: '课程知识库', tip: '题目依据课程资料命制' },
+  note: { color: 'green', label: '课程知识库', tip: '题目依据课程笔记命制' },
+  quiz: { color: 'green', label: '课程知识库', tip: '题目依据课程资料命制' },
+  web_search: { color: 'blue', label: '网络资料', tip: '本地资料不足，题目由网络公开资料整理，答案已由 AI 重新核对' },
+  general_knowledge: { color: 'orange', label: 'AI 通用知识', tip: '本地资料不足，题目由 AI 通用知识生成，表述可能与你的教材不同' },
+};
+
 export interface AssignmentsPanelProps {
   courseId: string;
   courseTitle?: string;
@@ -60,6 +78,13 @@ const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({ courseId, courseTit
     questions: AssignmentQuestion[];
     /** 出题时挂到的草稿作业；为空表示只预览、没写入任何作业 */
     assignmentId?: string;
+    /** 渠道与依据来源（2026-10-04 起后端分开下发）：渠道=教师作业；依据=课程知识库等 */
+    channel?: string | null;
+    channel_label?: string | null;
+    source?: string | null;
+    source_label?: string | null;
+    /** 命制素材（真实引用的课程资料） */
+    evidence?: { file_name?: string; page?: number | null; type?: string }[];
   } | null>(null);
   const [genForm] = Form.useForm<{
     assignment_id?: string; knowledge_points?: string[]; count: number;
@@ -169,7 +194,12 @@ const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({ courseId, courseTit
         requested: d.requested, generated: d.generated,
         knowledge_point: d.knowledge_point, model: d.model,
         questions: d.questions || [],
-        assignmentId: values.assignment_id,
+                // 渠道与依据来源必须一起映射：否则渠道有 '教师作业' 兜底仍显示，
+        // 而「依据」永远不出现（实测 2026-10-04：界面只见渠道、不见依据）。
+        channel: d.channel, channel_label: d.channel_label,
+        source: d.source, source_label: d.source_label,
+        evidence: (d.evidence || []) as unknown as { file_name?: string }[],
+assignmentId: values.assignment_id,
       } : null);
       if (d && d.generated < d.requested) {
         message.warning(`请求 ${d.requested} 道，实际生成 ${d.generated} 道（资料可能不足）`);
@@ -538,6 +568,27 @@ const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({ courseId, courseTit
             <Text type="secondary" style={{ fontSize: 12 }}>
               知识点：{genResult.knowledge_point} · 模型：{genResult.model}
             </Text>
+            {/* 渠道与依据分开显示（2026-10-04）：新生成题目的 per-question source 可能尚未回填，
+                这里直接展示本次生成的渠道/依据与命制素材 */}
+            <div style={{ marginTop: 6 }}>
+              <Space size={6} wrap>
+                <Tag color="geekblue">渠道：{genResult.channel_label || '教师作业'}</Tag>
+                {genResult.source && (
+                  <Tag color={(QUESTION_SOURCE_META[genResult.source] || {}).color || 'green'}>
+                    依据：{(QUESTION_SOURCE_META[genResult.source] || {}).label || genResult.source}
+                  </Tag>
+                )}
+                {(genResult.evidence || []).length > 0 && (
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    命制素材：
+                    {(genResult.evidence || [])
+                      .map((e: { file_name?: string }) => e.file_name)
+                      .filter(Boolean)
+                      .join('、')}
+                  </Text>
+                )}
+              </Space>
+            </div>
             <List
               size="small"
               style={{ marginTop: 8 }}
@@ -550,6 +601,18 @@ const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({ courseId, courseTit
                         {questionTypeLabel(q.type || q.question_type)}
                       </Tag>
                       <Text strong>{i + 1}. {questionStem(q)}</Text>
+                      {/* 依据来源：题目是按什么命制的（课程知识库 / 网络资料 / AI 通用知识） */}
+                      {q.source && QUESTION_SOURCE_META[q.source] && (
+                        <Tooltip title={QUESTION_SOURCE_META[q.source].tip}>
+                          <Tag color={QUESTION_SOURCE_META[q.source].color}>
+                            依据：{QUESTION_SOURCE_META[q.source].label}
+                          </Tag>
+                        </Tooltip>
+                      )}
+                      {/* 渠道：题目从哪里来的（教师作业 / 学生自测），与"依据"分开表达 */}
+                      {q.channel === 'teacher_assignment' && (
+                        <Tag color="geekblue">渠道：教师作业</Tag>
+                      )}
                     </Space>
                     {Array.isArray(q.options) && q.options.length > 0 && (
                       <div style={{ marginTop: 4, paddingLeft: 8 }}>
@@ -603,6 +666,18 @@ const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({ courseId, courseTit
                         {questionTypeLabel(q.type || q.question_type)}
                       </Tag>
                       <Text strong>{i + 1}. {questionStem(q)}</Text>
+                      {/* 依据来源：题目是按什么命制的（课程知识库 / 网络资料 / AI 通用知识） */}
+                      {q.source && QUESTION_SOURCE_META[q.source] && (
+                        <Tooltip title={QUESTION_SOURCE_META[q.source].tip}>
+                          <Tag color={QUESTION_SOURCE_META[q.source].color}>
+                            依据：{QUESTION_SOURCE_META[q.source].label}
+                          </Tag>
+                        </Tooltip>
+                      )}
+                      {/* 渠道：题目从哪里来的（教师作业 / 学生自测），与"依据"分开表达 */}
+                      {q.channel === 'teacher_assignment' && (
+                        <Tag color="geekblue">渠道：教师作业</Tag>
+                      )}
                     </Space>
                     {Array.isArray(q.options) && q.options.length > 0 && (
                       <div style={{ marginTop: 4, paddingLeft: 8 }}>

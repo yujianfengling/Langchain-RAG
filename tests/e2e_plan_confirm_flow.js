@@ -21,6 +21,7 @@
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
+const { launchBrowser } = require('./e2e_launch');
 
 const FRONTEND = process.argv[2] || 'http://localhost:3000';
 const API = process.argv[3] || 'http://127.0.0.1:8000';
@@ -161,7 +162,7 @@ async function taskDates(token, seed) {
 
   const browser = await chromium.launch().catch(async () => {
     // 回退到系统 Chrome（与既有 e2e 脚本一致）
-    return chromium.launch({ channel: 'chrome' });
+    return launchBrowser({});
   });
   const ctx = await browser.newContext({ viewport: { width: 1366, height: 900 } });
   await ctx.addInitScript(t => { localStorage.setItem('edu_user_token', t); },
@@ -186,9 +187,13 @@ async function taskDates(token, seed) {
 
   // ---------- 2. 打开「计划与时间」并定位本次种子的记录 ----------
   record('能打开「计划与时间」页签', await openTab(page, '计划与时间'));
-  await page.waitForTimeout(2000);
 
+  // 修复（2026-10-03）：原实现固定 `waitForTimeout(2000)` 后立刻断言，
+  // 列表渲染稍慢就误报"未找到记录"——而紧接着的步骤（找到「确认应用」按钮、
+  // 弹框列出 4 项任务、应用后日期真的改变）恰恰证明记录已经渲染。
+  // 属**时序竞态**，改为显式等待记录出现（最多 15s），再断言。
   const card = page.locator('.ant-list-item', { hasText: SEED.marker }).first();
+  await card.waitFor({ state: 'attached', timeout: 15000 }).catch(() => {});
   const cardVisible = await card.count() > 0;
   record('界面展示"较大调整"记录', cardVisible, cardVisible ? '' : `未找到含 ${SEED.marker} 的记录`);
 

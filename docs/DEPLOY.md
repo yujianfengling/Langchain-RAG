@@ -190,10 +190,33 @@ ADMIN_USERS=管理员的登录名
 |---|---|---|
 | 联网补题 | `TAVILY_API_KEY` | 知识库资料不足时从网上找素材，再由本地模型重新出题核对 |
 | 图片识别（扫描版课件） | `DASHSCOPE_API_KEY` + `VISION_MODE=vision` | 没配时，图片/扫描件里的正文**进不了知识库** |
-| 语音（朗读、听写） | 独立的 speech_stack 服务 + `SPEECH_STACK_DIR` | **本文档未覆盖**，属额外组件 |
+| 语音输入（录音转文字） | 本地 speech_service（见下） | 只做"录音 → 文字"；**讲题朗读已取消**，系统不再朗读回答 |
 
-> 语音当前**未在本机部署验证过**，且需要单独一套服务。不装它，
-> 文字问答、AI 出题、学习闭环（错题本/复习/掌握度）都正常。
+### 语音输入（ASR）怎么开
+
+讲题朗读（TTS）已从项目中**完全移除**，语音只用于把学生说的话转成文字：
+录音 → 转写 → 文字进入输入框 → **学生确认后**才发送。
+不装它，文字问答、AI 出题、学习闭环（错题本/复习/掌握度）都正常。
+
+1. 装轻量依赖（**不需要 PyTorch**）：
+   `python -m pip install sherpa-onnx onnxruntime soundfile`
+2. 在 `.env` 选轻量引擎与缓存目录（**缓存目录必须是纯英文路径**）：
+   `SPEECH_ASR_ENGINE=sensevoice`、`SPEECH_MODEL_CACHE_DIR=D:/speech_models`
+3. 另开一个终端启动语音服务（独立进程，默认端口 8100）：
+   `python -m speech_service.server`
+4. 主后端指向它：`SPEECH_BACKEND=local`、`LOCAL_SPEECH_URL=http://127.0.0.1:8100`
+5. 验证：`curl http://127.0.0.1:8100/health` 看 `engines.asr.state` 是否为 `ready`；
+   或打开「设置 → 语音」看"本地语音识别"标签是否为绿色。
+
+说明：
+
+- ASR 模型**首次真正录音时**才自动下载（压缩包约 156 MB，落地约 229 MB）；
+  启动后端、打开网页、健康检查都**不会**触发下载。
+- 离线机房：`SPEECH_MODEL_OFFLINE=1`（缺模型时只提示"尚未下载"，不联网）。
+- 已有模型目录：`SPEECH_ASR_MODEL_DIR=<目录>`（命中则完全不下载）。
+- 语音服务没启动时，设置页会明确提示"本地语音识别未就绪"，**文字问答不受影响**。
+- 旧的 `speech_stack`（FunASR 全量 + CosyVoice）不再是必需组件；如已安装，
+  仍可用 `SPEECH_ASR_ENGINE=funasr` 走旧路径。
 
 ---
 

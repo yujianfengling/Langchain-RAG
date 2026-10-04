@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { List, Avatar, Typography, Space, Spin, Button, Tag, Alert } from 'antd';
+import React, { useEffect, useMemo, useState } from 'react';
+import { List, Avatar, Typography, Space, Spin, Button, Tag, Alert, Popconfirm, message } from 'antd';
 import {
   UserOutlined, RobotOutlined,
   LoadingOutlined, CheckCircleOutlined, CloseCircleOutlined,
@@ -11,6 +11,7 @@ import StructuredMessage from '../StructuredMessage';
 import FeedbackButtons from '../FeedbackButtons';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
+import { applyAdjustment, listAdjustments, PlanAdjustment } from '../../api/planAgent';
 
 const { Text } = Typography;
 
@@ -62,11 +63,104 @@ const agentStatusIcon = (status: string) => {
   return <MinusCircleOutlined />;
 };
 
+/** Agent 建议的计划调整：**在会话内直接确认应用**
+ *
+ * 背景（2026-10-03 补齐，见交付报告"Agent 缺口 ①"）：Agent 跑完
+ * `propose_adjustment` 只会在步骤摘要里显示"已生成调整建议"，学生必须先切到
+ * 「计划预算」页签才能确认；也就是"提议 → 确认"这段 UI 链路在对话里是断的。
+ * 这里复用既有的 `GET /plan/adjustments`（取最新 PROPOSED）与
+ * `POST /plan/adjustments/{id}/apply`（重大调整由服务端强制 confirm），
+ * 不新增后端接口、不改流式契约。
+ */
+const AgentAdjustmentAction: React.FC<{ subjectId?: string }> = ({ subjectId }) => {
+  const [adjustment, setAdjustment] = useState<PlanAdjustment | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const load = async () => {
+    if (!subjectId) return;
+    setLoading(true);
+    try {
+      const res: any = await listAdjustments(subjectId, 'PROPOSED');
+      const list: PlanAdjustment[] = res?.data || [];
+      setAdjustment(list.length ? list[list.length - 1] : null);
+    } catch {
+      setAdjustment(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subjectId]);
+
+  const apply = async () => {
+    if (!adjustment) return;
+    setApplying(true);
+    try {
+      // confirm=true：重大调整的强制确认由服务端校验（未确认会返回 confirmation_required）
+      await applyAdjustment(adjustment.id, true);
+      message.success('已应用到学习计划');
+      setAdjustment(null);
+    } catch (e: any) {
+      message.error(e?.message || '应用失败，请稍后重试');
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div style={{ marginTop: 8 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>正在读取待确认的调整建议…</Text>
+      </div>
+    );
+  }
+  if (!adjustment) {
+    return (
+      <div style={{ marginTop: 8 }}>
+        <Text type="secondary" style={{ fontSize: 11 }}>当前没有待确认的计划调整</Text>
+      </div>
+    );
+  }
+  const changeCount = (adjustment.changes || []).length;
+  const brief = adjustment.summary || adjustment.reason || '助手建议调整学习计划';
+  return (
+    <div style={{ marginTop: 8 }}>
+      <Space size={8} wrap>
+        <Text style={{ fontSize: 12 }}>
+          待确认：{brief}（{changeCount} 处改动{adjustment.major ? '，重大调整' : ''}）
+        </Text>
+        <Popconfirm
+          title="应用这次计划调整？"
+          description={
+            <div style={{ maxWidth: 320 }}>
+              <div>{brief}</div>
+              <div style={{ marginTop: 4 }}>
+                共 {changeCount} 处改动；应用后会写入你的学习计划（可在计划页撤销）。
+              </div>
+            </div>
+          }
+          okText="确认应用"
+          cancelText="取消"
+          onConfirm={apply}
+        >
+          <Button size="small" type="primary" loading={applying}>确认应用</Button>
+        </Popconfirm>
+        <Button size="small" onClick={load} loading={loading}>刷新</Button>
+      </Space>
+    </div>
+  );
+};
+
 /** 学习助手执行过程（只展示工具调用与结果摘要，不展示模型思维过程） */
 const AgentProgress: React.FC<{
   steps: ChatMessage['agent_steps'];
   run?: ChatMessage['agent_run'];
-}> = ({ steps, run }) => (
+  subjectId?: string;
+}> = ({ steps, run, subjectId }) => (
   <div style={{ minWidth: 320 }}>
     <Space size={8} style={{ marginBottom: 6 }}>
       <Text strong style={{ fontSize: 13 }}>学习助手执行过程</Text>
@@ -105,6 +199,10 @@ const AgentProgress: React.FC<{
     {run?.error && (
       <Alert type="warning" showIcon style={{ marginTop: 8 }}
              message={run.error.includes(';') ? '部分步骤未完成（仍可手动操作）' : run.error} />
+    )}
+    {/* 助手提出了计划调整 → 会话内即可确认应用（不必切页签） */}
+    {(steps || []).some((s) => s.tool === 'propose_adjustment' && s.status === 'done') && (
+      <AgentAdjustmentAction subjectId={subjectId} />
     )}
     <div style={{ marginTop: 6 }}>
       <Text type="secondary" style={{ fontSize: 11 }}>
@@ -179,7 +277,7 @@ const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo(
                 sourceTaskId={sourceTaskId}
               />
             ) : msg.agent_steps || msg.agent_run ? (
-              <AgentProgress steps={msg.agent_steps} run={msg.agent_run} />
+              <AgentProgress steps={msg.agent_steps} run={msg.agent_run} subjectId={subjectId} />
             ) : msg.content ? (
               <div
                 className="markdown-body"

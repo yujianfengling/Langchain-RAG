@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert, Badge, Button, Card, Descriptions, Empty, Input, List, Modal, Radio,
   Space, Spin, Tag, Typography, message,
@@ -132,6 +132,18 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
     }
   };
 
+  // 幂等令牌缓存（2026-10-03 修复）：此前 token 里带 `Date.now()`，每次点击都不同，
+  // 后端 client_token 幂等永不命中 → 同一题重复提交会被重复计数。
+  // 现在按 (作业, 题目) 缓存，成功后轮换（重做仍是新的一次作答）。
+  const tokenCache = useRef<Record<string, string>>({});
+  const assignmentToken = (aid: string, qid: string) => {
+    const key = `${aid}_${qid}`;
+    if (!tokenCache.current[key]) {
+      tokenCache.current[key] = `asg_${aid}_${qid}_${Date.now()}`;
+    }
+    return tokenCache.current[key];
+  };
+
   const submitOne = async (q: AssignmentQuestion) => {
     const picked = answers[q.id];
     if (!picked) {
@@ -143,12 +155,13 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
       const res: any = await submitAnswer({
         question_id: q.id,
         user_answer: picked,
-        client_token: `asg_${openAssignment?.id}_${q.id}_${Date.now()}`,
+        client_token: assignmentToken(String(openAssignment?.id), q.id),
         source_task_id: openAssignment?.my_tasks?.[0]?.id,
         subject_id: openAssignment?.subject_id,
       });
       const data = res?.data || {};
       setResults((prev) => ({ ...prev, [q.id]: data }));
+      delete tokenCache.current[`${openAssignment?.id}_${q.id}`];   // 成功后轮换
       message[data.is_correct ? 'success' : 'warning'](
         data.is_correct ? '回答正确' : `回答错误，正确答案：${data.correct_option_id || '见解析'}`);
     } catch (e) {

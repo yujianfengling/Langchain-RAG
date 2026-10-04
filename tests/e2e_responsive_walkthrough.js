@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { chromium } = require('playwright');
+const { launchBrowser } = require('./e2e_launch');
 
 const BASE = process.argv[2] || 'http://localhost:3000';
 const API = process.argv[3] || 'http://127.0.0.1:8000';
@@ -134,7 +135,7 @@ async function bootstrapData(page) {
 (async () => {
   await requireBackendIsolated();
   fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const browser = await launchBrowser({ headless: true });
 
   // ---------- 数据准备（用 API，避免把准备过程混进"界面操作"结论里）----------
   const prep = await bootstrapData();

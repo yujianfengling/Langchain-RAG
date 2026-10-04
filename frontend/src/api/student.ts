@@ -118,11 +118,30 @@ export interface ReviewTask {
   completed_at?: string | null;
 }
 
+/**
+ * 读取侧「最新有效作答」视图（Design C）：
+ * 当前掌握 = 每题**最新一次有效作答**；历史错误另计，用于复习与趋势。
+ * 与 `mastery_level`（累计证据口径）并列下发，界面必须分别标注，不能混用。
+ */
+export interface MasteryLatestView {
+  /** 无有效作答时为 null —— 必须显示"暂无有效作答"，不得显示 0 */
+  latest_mastery_level: number | null;
+  latest_evidence_count?: number;
+  latest_independent_correct?: number;
+  latest_independent_wrong?: number;
+  /** 历史累计（用于复习与趋势，不计入当前掌握） */
+  history_attempt_count?: number;
+  history_wrong_count?: number;
+  history_correct_count?: number;
+  basis?: string;
+  error?: string;
+}
+
 export interface MasteryPoint {
   knowledge_point: string;
   knowledge_point_id?: string | null;
   mastery_status: 'pending' | 'estimated' | string;
-  /** 待评估时为 null —— 前端必须显示"待评估"而不是 0 */
+  /** 累计证据口径；待评估时为 null —— 前端必须显示"待评估"而不是 0 */
   mastery_level: number | null;
   evidence_count: number;
   independent_correct_count: number;
@@ -131,6 +150,8 @@ export interface MasteryPoint {
   reason?: string | null;
   last_evidence_at?: string | null;
   last_behavior_at?: string | null;
+  /** 读取侧最新证据视图；后端未提供（旧版本）时为 undefined */
+  latest_view?: MasteryLatestView | null;
 }
 
 export interface LearningHome {

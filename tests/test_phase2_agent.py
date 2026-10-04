@@ -290,6 +290,63 @@ class TestLearningMemory(Phase2Base):
         self.assertIsNotNone(weak[0]["expires_at"], "推断必须有有效期")
         self.assertTrue(weak[0]["evidence"], "推断必须有依据")
 
+    def test_correction_text_becomes_effective_memory(self):
+        """纠错反馈必须真正生效（此前 `correction_text` 只写库、全仓无人读取）"""
+        from services import agent_runtime, learning_memory
+        from services.user_profiler import FEEDBACK_TYPES
+        token, uid = self.login("mem_correction")
+        fb_type = "correction" if "correction" in FEEDBACK_TYPES else "rating"
+
+        # 1) 学生提交纠错文本（走真实接口）
+        resp = self.req("POST", "/api/agent/feedback", token=token,
+                        json={"feedback_type": fb_type,
+                              "correction_text": "答案里的遍历顺序写反了"})
+        self.assertIn(resp.status_code, (200, 201), resp.text)
+
+        # 2) 应转成"学生显式偏好"进入学习记忆
+        keys = [m["key"] for m in learning_memory.list_memory(uid)]
+        self.assertIn("correction_note", keys, "纠错文本没有进入学习记忆")
+
+        # 3) 普通问答与 Agent 都能读到（同一口径）
+        effective = learning_memory.get_effective_memory(uid, SUBJECT)
+        values = [m["value"] for m in effective["items"] if m["key"] == "correction_note"]
+        self.assertTrue(any("遍历顺序写反了" in v for v in values), values)
+        state = agent_runtime._tool_get_learning_state(uid, SUBJECT)
+        self.assertIn("correction_note", [m["key"] for m in state["memory"]])
+
+        # 4) 后写覆盖先写：始终以最新纠错为准
+        self.req("POST", "/api/agent/feedback", token=token,
+                 json={"feedback_type": fb_type,
+                       "correction_text": "已改正：先序是根左右"})
+        effective2 = learning_memory.get_effective_memory(uid, SUBJECT)
+        vals2 = [m["value"] for m in effective2["items"] if m["key"] == "correction_note"]
+        self.assertEqual(len(vals2), 1, "同一 key 只应有一条生效记忆")
+        self.assertIn("先序是根左右", vals2[0])
+
+    def test_agent_learning_state_includes_memory(self):
+        """Agent 必须读取学习记忆（与普通问答同口径）——补齐审计缺口 ②
+
+        此前 `agent_runtime._tool_get_learning_state` 只读掌握度/错题/复习/预算，
+        **不读 `learning_memory`**：学生在"学习记忆"里写的偏好，普通问答
+        （teaching_context）用得到，Agent 却看不到——同一系统两条口径。
+        """
+        from services import agent_runtime
+        token, uid = self.login("mem_agent")
+        resp = self.req("POST", "/api/memory", token=token,
+                        json={"key": "解释风格", "value": "多用图示", "scope": "global"})
+        self.assertIn(resp.status_code, (200, 201), resp.text)
+
+        state = agent_runtime._tool_get_learning_state(uid, SUBJECT)
+        self.assertIn("memory", state, "Agent 学习状态缺少 memory 字段")
+        keys = [m["key"] for m in state["memory"]]
+        self.assertIn("解释风格", keys, "Agent 必须能看到学生的学习记忆")
+
+        # 隔离：另一个学生的状态里不得出现
+        _, uid_b = self.login("mem_agent_b")
+        state_b = agent_runtime._tool_get_learning_state(uid_b, SUBJECT)
+        self.assertNotIn("解释风格", [m["key"] for m in state_b.get("memory", [])],
+                         "学习记忆串号了（必须按 user_id 隔离）")
+
     def test_correct_answer_revokes_inference(self):
         """答对后推断被撤销（不让一次错误永久留存）"""
         token, _ = self.login("mem_revoke")

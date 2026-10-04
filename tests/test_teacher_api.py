@@ -393,6 +393,17 @@ class TestAssignmentApi(TeacherApiBase):
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertIn("is_correct", resp.json().get("data", resp.json()))
 
+        # 6b) B4 回归（2026-10-03）：学生作业**列表**接口必须带出题量与已作答题数。
+        #     此前 `td.list_assignments_for_classes` 的返回不含 question_ids，
+        #     导致 `_student_attempt_map(user_id, [])` 恒为空 →
+        #     学生端"已作答 X / N"永远显示 0（详情接口正常，所以只有列表口径是错的）。
+        listed = self.client.get("/api/student/assignments",
+                                 headers=self.h(self.t_student)).json()["data"]["assignments"]
+        row = next(a for a in listed if a["id"] == assignment["id"])
+        self.assertEqual(row["question_count"], 2, "列表必须带出题量（B4）")
+        self.assertEqual(row["submitted"], 1, "列表必须带出已作答题数（B4）")
+        self.assertEqual(len(row["results"]), 1, "列表必须带出作答结果（B4）")
+
         # 7) 标记完成（还有一题没答 → 先被拒绝）
         resp = self.client.post(f"/api/student/assignments/{assignment['id']}/complete",
                                 headers=self.h(self.t_student))

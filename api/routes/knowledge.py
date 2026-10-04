@@ -20,18 +20,63 @@ from api.deps import (
 )
 from api.schemas.response_schema import SuccessResponse
 from api.exceptions import KnowledgeBaseNotFoundError, RAGServiceError, ValidationError
-from services.knowledge_service import (
-    build_subject_knowledge,
-    delete_subject_knowledge,
-    list_knowledge_bases,
-    get_knowledge_base_stats,
-    upload_file_to_subject,
-    get_subject_documents,
-    delete_subject_document,
-    rebuild_subject_knowledge,
-    KnowledgeServiceError,
-    MAX_FILE_SIZE_BYTES,
-)
+# 启动优化（2026-10-03）：这里原本是模块级 `from services.knowledge_service import (...)`，
+# 它会在进程启动时拉起 services.knowledge_service → rag（torch/transformers，实测 7.5s）。
+# 改为**模块级瘦包装函数**：名字仍在模块命名空间里（
+# `mock.patch("api.routes.knowledge.list_knowledge_bases")` 之类的既有用法照常生效），
+# 但真正的导入发生在首次调用。
+
+
+def build_subject_knowledge(*args, **kwargs):
+    """惰性转发到 services.knowledge_service.build_subject_knowledge（启动优化 2026-10-03）"""
+    from services.knowledge_service import build_subject_knowledge as _impl
+    return _impl(*args, **kwargs)
+
+def delete_subject_knowledge(*args, **kwargs):
+    """惰性转发到 services.knowledge_service.delete_subject_knowledge（启动优化 2026-10-03）"""
+    from services.knowledge_service import delete_subject_knowledge as _impl
+    return _impl(*args, **kwargs)
+
+def list_knowledge_bases(*args, **kwargs):
+    """惰性转发到 services.knowledge_service.list_knowledge_bases（启动优化 2026-10-03）"""
+    from services.knowledge_service import list_knowledge_bases as _impl
+    return _impl(*args, **kwargs)
+
+def get_knowledge_base_stats(*args, **kwargs):
+    """惰性转发到 services.knowledge_service.get_knowledge_base_stats（启动优化 2026-10-03）"""
+    from services.knowledge_service import get_knowledge_base_stats as _impl
+    return _impl(*args, **kwargs)
+
+def upload_file_to_subject(*args, **kwargs):
+    """惰性转发到 services.knowledge_service.upload_file_to_subject（启动优化 2026-10-03）"""
+    from services.knowledge_service import upload_file_to_subject as _impl
+    return _impl(*args, **kwargs)
+
+def get_subject_documents(*args, **kwargs):
+    """惰性转发到 services.knowledge_service.get_subject_documents（启动优化 2026-10-03）"""
+    from services.knowledge_service import get_subject_documents as _impl
+    return _impl(*args, **kwargs)
+
+def delete_subject_document(*args, **kwargs):
+    """惰性转发到 services.knowledge_service.delete_subject_document（启动优化 2026-10-03）"""
+    from services.knowledge_service import delete_subject_document as _impl
+    return _impl(*args, **kwargs)
+
+def rebuild_subject_knowledge(*args, **kwargs):
+    """惰性转发到 services.knowledge_service.rebuild_subject_knowledge（启动优化 2026-10-03）"""
+    from services.knowledge_service import rebuild_subject_knowledge as _impl
+    return _impl(*args, **kwargs)
+
+def _kb_exc():
+    """惰性取 KnowledgeServiceError（在 except 子句里使用，导入放在函数体）"""
+    from services.knowledge_service import KnowledgeServiceError
+    return KnowledgeServiceError
+
+
+def _max_file_bytes() -> int:
+    """惰性取上传大小上限（避免启动期导入 knowledge_service）"""
+    from services.knowledge_service import MAX_FILE_SIZE_BYTES
+    return MAX_FILE_SIZE_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +95,7 @@ async def list_knowledge(user_id: str = Depends(require_current_user)):
         # 课程资料边界：课程学科只对本课程教师/在班学生可见
         subjects = await _readable_subjects(user_id, subjects)
         return KnowledgeListResponse(subjects=subjects)
-    except KnowledgeServiceError as e:
+    except _kb_exc() as e:
         raise RAGServiceError(str(e))
 
 
@@ -135,7 +180,7 @@ async def build_knowledge(request: KnowledgeBuildRequest,
             },
             message=f"知识库 {request.subject_id} 构建成功",
         )
-    except KnowledgeServiceError as e:
+    except _kb_exc() as e:
         # 区分不同类型的错误：
         # 路径/参数类问题属于调用方输入错误 → 400（ValidationError）
         # 其余（解析、索引、embedding 等）→ 500（RAGServiceError）
@@ -165,7 +210,7 @@ async def delete_knowledge(subject_id: str,
             },
             message=f"知识库 {subject_id} 已删除",
         )
-    except KnowledgeServiceError as e:
+    except _kb_exc() as e:
         error_msg = str(e)
         if "不存在" in error_msg:
             raise KnowledgeBaseNotFoundError(subject_id)
@@ -195,7 +240,7 @@ async def get_stats(subject_id: str,
                 "total_size_mb": stats["total_size_mb"],
             },
         )
-    except KnowledgeServiceError as e:
+    except _kb_exc() as e:
         error_msg = str(e)
         if "不存在" in error_msg:
             raise KnowledgeBaseNotFoundError(subject_id)
@@ -236,10 +281,10 @@ async def upload_file(
         file_content = await file.read()
 
         # 4. 文件大小预检查（避免调用 service 层的额外开销）
-        if len(file_content) > MAX_FILE_SIZE_BYTES:
+        if len(file_content) > _max_file_bytes():
             size_mb = round(len(file_content) / (1024 * 1024), 2)
             raise ValidationError(
-                f"文件大小 {size_mb}MB 超过限制（最大 {MAX_FILE_SIZE_BYTES // (1024*1024)}MB）"
+                f"文件大小 {size_mb}MB 超过限制（最大 {_max_file_bytes() // (1024*1024)}MB）"
             )
 
         # 5. 调用 service 层处理
@@ -258,7 +303,7 @@ async def upload_file(
             status=result["status"],
             message=result["message"],
         )
-    except (ValidationError, KnowledgeServiceError) as e:
+    except (ValidationError, _kb_exc()) as e:
         raise ValidationError(str(e))
 
 
@@ -284,7 +329,7 @@ async def get_documents(subject_id: str,
             subject_id=subject_id,
             documents=documents,
         )
-    except KnowledgeServiceError as e:
+    except _kb_exc() as e:
         raise RAGServiceError(str(e))
 
 
@@ -311,7 +356,7 @@ async def delete_document(subject_id: str, filename: str,
             },
             message=result["message"],
         )
-    except KnowledgeServiceError as e:
+    except _kb_exc() as e:
         error_msg = str(e)
         if "不存在" in error_msg:
             raise KnowledgeBaseNotFoundError(subject_id)
@@ -342,7 +387,7 @@ async def rebuild_knowledge(subject_id: str,
             },
             message=result["message"],
         )
-    except KnowledgeServiceError as e:
+    except _kb_exc() as e:
         error_msg = str(e)
         if "不存在" in error_msg:
             raise KnowledgeBaseNotFoundError(subject_id)
@@ -505,7 +550,7 @@ async def get_document_file(subject_id: str, filename: str,
             media_type=_guess_mime_type(file_path.suffix),
             content_disposition_type="inline",  # 内联显示（PDF在浏览器中直接查看）
         )
-    except KnowledgeServiceError as e:
+    except _kb_exc() as e:
         raise ValidationError(str(e))
 
 

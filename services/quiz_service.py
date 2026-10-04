@@ -647,11 +647,29 @@ def self_evaluate(attempt_id: str, user_id: str, is_correct: bool) -> Dict[str, 
         # 允许覆盖：pending_self_eval（无判分依据）或 ai_graded（AI 已判，用户不认同）
         if row["grade_status"] not in (GRADE_PENDING_SELF, GRADE_AI_GRADED):
             raise QuizServiceError("该作答已有判分结果，无需自评", "invalid_request")
-        conn.execute(
-            "UPDATE quiz_attempts SET is_correct=?, grade_status=? WHERE id=?",
-            (1 if is_correct else 0, "self_evaluated", attempt_id))
+        # 修复风险 B（2026-10-03）：自评"答对"**不得覆盖 AI 已判的结论**。
+        #
+        # 此前这里无条件 `UPDATE is_correct/grade_status`，等于把"AI 判错"的证据
+        # **从库中抹掉**——之后任何一次重算（例如同一知识点又一次自评答错触发
+        # `rebuild_point_from_attempts`）都会让这条错证据消失，既与 AGENTS.md 第 8 节
+        # "自评答对…撤不掉那条错误证据"的声明不符，也留下刷分路径
+        # （自评答对抹掉记录 + 另一次自评答错触发重算）。
+        #
+        # 现在：AI 已判过（ai_graded）且学生声称"答对" → 保留 AI 的 is_correct/grade_status，
+        # 只把学生的声明写进 ai_feedback 留痕（可审计）；其余情况（pending_self_eval
+        # 本就没有判分依据、以及自评"答错"）照旧写入自评结果。
+        protect_ai_verdict = bool(is_correct) and row["grade_status"] == GRADE_AI_GRADED
+        if protect_ai_verdict:
+            conn.execute(
+                "UPDATE quiz_attempts SET ai_feedback = COALESCE(ai_feedback, '') || ? WHERE id=?",
+                ("；学生自评：答对（不采信，保留 AI 判定）", attempt_id))
+        else:
+            conn.execute(
+                "UPDATE quiz_attempts SET is_correct=?, grade_status=? WHERE id=?",
+                (1 if is_correct else 0, "self_evaluated", attempt_id))
         conn.commit()
-        logger.info(f"简答题自评完成: attempt={attempt_id}, is_correct={is_correct}")
+        logger.info(f"简答题自评完成: attempt={attempt_id}, is_correct={is_correct}, "
+                    f"保留AI判定={protect_ai_verdict}")
         snapshot = dict(row)
     finally:
         conn.close()

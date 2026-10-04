@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
+const { launchBrowser } = require('./e2e_launch');
 
 const BASE = process.argv[2] || 'http://localhost:3000';
 const SUBJECT_NAME = process.argv[3] || '离散数学';
@@ -63,7 +64,7 @@ async function requireBackendIsolated(base, purpose) {
 (async () => {
   await requireBackendIsolated(BASE, "Agent 全流程验收");
   fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const browser = await launchBrowser({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   const pageErrors = [];
@@ -101,6 +102,77 @@ async function requireBackendIsolated(base, purpose) {
     await page.click('.ant-modal-footer button.ant-btn-primary');
     await page.waitForSelector('.ant-modal-content', { state: 'detached', timeout: 15000 });
     record('注册并登录', true, USERNAME);
+
+    // 1.5) 让本脚本**自足**：新建一门与 SUBJECT_NAME 同名的课程，并把当前账号加入其班级
+    //
+    // 修复（2026-10-03）：原脚本注册**全新账号**后，立刻要求学科下拉里存在
+    // SUBJECT_NAME，而新账号默认没有任何学科 → 在空数据目录里必然等到超时失败
+    // （实测：`.ant-select-item-option` 8s 超时，下拉显示"暂无学科数据"）。
+    // 这里用教师白名单账号（后端 TEACHER_USERS 里需包含，默认 e2e_teacher）
+    // 建课建班，再用刚注册的学生账号加入，脚本即可独立运行。
+    {
+      const stuToken = await page.evaluate(() => localStorage.getItem('edu_user_token') || '');
+      const prep = async (method, url, body, token) => {
+        const headers = { 'Content-Type': 'application/json' };
+        if (token) headers['X-User-Token'] = token;
+        const r = await page.request[method](`${BASE}${url}`, { headers, data: body });
+        let j = null;
+        try { j = await r.json(); } catch (e) { /* 非 JSON 响应 */ }
+        return { status: r.status(), data: (j && j.data) || null };
+      };
+      const tUser = process.env.E2E_TEACHER || 'e2e_teacher';
+      const tPass = process.env.E2E_TEACHER_PASSWORD || 'test-pass-123';
+      await prep('post', '/api/auth/register', { username: tUser, password: tPass });
+      const tLogin = await prep('post', '/api/auth/login', { username: tUser, password: tPass });
+      const tToken = tLogin.data && tLogin.data.token;
+      const course = tToken
+        ? (await prep('post', '/api/teacher/courses',
+            { title: SUBJECT_NAME, description: 'Agent 验收自备课程' }, tToken)).data
+        : null;
+      const klass = course
+        ? (await prep('post', `/api/teacher/courses/${course.id}/classes`,
+            { name: 'Agent 验收班' }, tToken)).data
+        : null;
+
+      // 关键：Agent 的 generate_note / create_plan 要求**先构建该课程的知识库**
+      // （后端真实护栏："请先构建该课程的知识库"）。自足前置必须一并上传资料并建库，
+      // 否则 Agent 运行会以 FAILED 结束（实测如此），后续"生成自测题"也就无从出现。
+      let kb = null;
+      if (course && tToken) {
+        const handout = [
+          '离散数学演示讲义（Agent 验收用，内容可人工核对）',
+          '',
+          '一、集合的基本概念',
+          '集合是确定的一堆对象的整体；元素与集合之间只有"属于"与"不属于"两种关系。',
+          '常用数集记号：N 自然数、Z 整数、Q 有理数、R 实数。',
+          '',
+          '二、集合的运算',
+          '并集 A∪B、交集 A∩B、差集 A−B。德摩根律：(A∪B)^c = A^c ∩ B^c。',
+          '',
+          '三、本讲义专用校验码',
+          'AGENT-CHECK-731  （只出现在本讲义中，用于确认资料确实进入了知识库）',
+        ].join('\n');
+        await page.request.post(
+          `${BASE}/api/teacher/courses/${course.id}/materials?visibility=students`,
+          { headers: { 'X-User-Token': tToken },
+            multipart: { file: { name: 'agent_demo_handout.txt',
+                                 mimeType: 'text/plain',
+                                 buffer: Buffer.from(handout, 'utf-8') } } });
+        const rb = await prep('post', `/api/teacher/courses/${course.id}/knowledge/rebuild`, null, tToken);
+        kb = rb.status === 200;
+      }
+
+      let joined = false;
+      if (klass && klass.join_code && stuToken) {
+        joined = (await prep('post', '/api/student/courses/join',
+          { code: klass.join_code }, stuToken)).status === 200;
+      }
+      record('准备可选的学科（脚本自足）', !!(course && klass && joined && kb),
+        `teacher=${tUser} course=${SUBJECT_NAME} join_code=${klass ? klass.join_code : '-'} `
+        + `joined=${joined} knowledge_built=${kb}`);
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.waitForTimeout(1500);
+    }
 
     // 2) 学生页选择学科（验证学生入口可用）
     await page.click('.ant-select-selector');

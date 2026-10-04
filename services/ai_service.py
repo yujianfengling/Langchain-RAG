@@ -16,12 +16,30 @@ from typing import List, Dict, Any, Optional
 from utils.logger import logger
 
 # 导入RAG模块
-try:
-    from rag import retrieve_context, build_context
-    RAG_AVAILABLE = True
-except ImportError as e:
-    RAG_AVAILABLE = False
-    RAG_IMPORT_ERROR = str(e)
+# 启动优化（2026-10-03）：不在**导入期**拉 rag（torch/transformers，实测 7.5s）。
+# 保留 `RAG_AVAILABLE` 的既有语义（首次真正用到检索时才探测），
+# 并在下面用**模块级瘦包装函数**提供 retrieve_context / build_context，
+# 这样 `mock.patch("services.ai_service.retrieve_context")` 依旧有效。
+RAG_AVAILABLE = None          # None = 尚未探测；True/False = 探测结果
+RAG_IMPORT_ERROR = ""
+_rag = None
+
+
+def _load_rag() -> bool:
+    """惰性导入 rag 模块（只尝试一次，结果缓存）"""
+    global _rag, RAG_AVAILABLE, RAG_IMPORT_ERROR
+    if RAG_AVAILABLE is False:
+        return False
+    if _rag is None:
+        try:
+            from services.rag_loader import load_rag
+            _rag = load_rag()
+            RAG_AVAILABLE = True
+        except ImportError as e:
+            RAG_AVAILABLE = False
+            RAG_IMPORT_ERROR = str(e)
+            return False
+    return True
 
 # 导入LLM模块
 try:
@@ -62,7 +80,7 @@ def get_rag_context(
     Raises:
         AIServiceError: RAG检索失败时抛出（不再静默返回空列表）
     """
-    if not RAG_AVAILABLE:
+    if not _load_rag():
         error_msg = f"RAG模块不可用: {RAG_IMPORT_ERROR if not RAG_AVAILABLE else ''}"
         logger.error(error_msg)
         raise AIServiceError(error_msg)
@@ -337,11 +355,11 @@ def check_ai_service_status() -> Dict[str, Any]:
         状态信息字典
     """
     status = {
-        "rag_available": RAG_AVAILABLE,
+        "rag_available": _load_rag(),
         "llm_available": LLM_AVAILABLE,
     }
     
-    if not RAG_AVAILABLE:
+    if not _load_rag():
         status["rag_import_error"] = RAG_IMPORT_ERROR
     
     if not LLM_AVAILABLE:
@@ -366,3 +384,27 @@ __all__ = [
     "retrieve_for_teaching",
     "check_ai_service_status",
 ]
+
+
+def retrieve_context(*args, **kwargs):
+    """惰性转发到 `rag.retrieve_context`（启动优化 2026-10-03）
+
+    背景：模块级 `from rag import ...` 会在进程启动时把 rag（torch/transformers，
+    实测 7.5s）拉进启动路径。这里把导入放进函数体，**保留模块级名字**以便
+    `mock.patch("rag.retrieve_context")` 之类的既有用法继续生效。
+    """
+    from services.rag_loader import load_rag
+    _impl = getattr(load_rag(), "retrieve_context")
+    return _impl(*args, **kwargs)
+
+
+def build_context(*args, **kwargs):
+    """惰性转发到 `rag.build_context`（启动优化 2026-10-03）
+
+    背景：模块级 `from rag import ...` 会在进程启动时把 rag（torch/transformers，
+    实测 7.5s）拉进启动路径。这里把导入放进函数体，**保留模块级名字**以便
+    `mock.patch("rag.build_context")` 之类的既有用法继续生效。
+    """
+    from services.rag_loader import load_rag
+    _impl = getattr(load_rag(), "build_context")
+    return _impl(*args, **kwargs)

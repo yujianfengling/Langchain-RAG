@@ -13,6 +13,7 @@
 
 const path = require('path');
 const { chromium } = require('playwright');
+const { launchBrowser } = require('./e2e_launch');
 
 const BASE = process.argv[2] || 'http://localhost:3000';
 const USERNAME = `md_${Date.now().toString(36)}`;
@@ -62,7 +63,7 @@ async function requireBackendIsolated(base, purpose) {
 (async () => {
   await requireBackendIsolated(BASE, "默认模型验收");
   require('fs').mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const browser = await launchBrowser({ headless: true });
   // 全新上下文：没有任何 localStorage 残留（模拟新用户）
   const context = await browser.newContext({ viewport: { width: 1440, height: 950 } });
   const page = await context.newPage();

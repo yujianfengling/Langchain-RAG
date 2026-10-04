@@ -61,8 +61,21 @@ def make_sse_response(*texts, done=True):
     return _post
 
 
+KEY_STUB = "test-key-for-stream"      # 假密钥：不需要真实凭证
+KEY_STUB_PATCH = "services.model_service.get_model_api_key"
+
+
 class TestProviderStreaming(unittest.TestCase):
     """Provider 层真流式（MiMo / DeepSeek 共用 OpenAICompatibleProvider）"""
+
+    def setUp(self):
+        # 补全 Mock（2026-10-03）：provider 在 requests.post **之前**就校验密钥
+        # （services/model_service.py:354 `if not self.api_key: raise ModelAPIError(...)`），
+        # 因此只 mock requests.post 会让用例在"未配置密钥"的环境下直接失败。
+        # 这里把密钥读取固定为假值，用例验证的仍是"SSE 流式解析"本身。
+        self._key_patch = mock.patch(KEY_STUB_PATCH, return_value=KEY_STUB)
+        self._key_patch.start()
+        self.addCleanup(self._key_patch.stop)
 
     def test_mimo_streams_real_chunks(self):
         from services.model_service import get_model_provider

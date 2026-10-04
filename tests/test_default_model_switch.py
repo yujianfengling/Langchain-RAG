@@ -231,6 +231,13 @@ class TestOutgoingRequestUsesDefaultModel(IsolatedDataTestCase):
                                     return_value=None)
         self._kb_patch.start()
         self.addCleanup(self._kb_patch.stop)
+        # 补全 Mock（2026-10-03）：provider 发请求前会校验密钥并直接拒绝
+        # （services/model_service.py:163-164 / 354-355），不固定假密钥就测不到
+        # "模型选择"这一被验证的行为本身。假密钥，不需要真实凭证。
+        self._key_patch = mock.patch("services.model_service.get_model_api_key",
+                                     return_value="test-key-for-model-switch")
+        self._key_patch.start()
+        self.addCleanup(self._key_patch.stop)
 
     def test_note_and_quiz_use_default_model(self):
         from services import note_service
@@ -252,11 +259,9 @@ class TestOutgoingRequestUsesDefaultModel(IsolatedDataTestCase):
         self.assertEqual(self.sent[0]["model"], "deepseek-chat", self.sent[0])
         self.assertIn("api.deepseek.com", self.sent[0]["url"])
 
-    @unittest.skipUnless(
-        os.getenv("DASHSCOPE_API_KEY"),
-        "需要 DASHSCOPE_API_KEY（qwen）才能验证「显式指定其它提供方」："
-        "没有 key 时 provider 在发请求前就直接拒绝，测不到模型选择逻辑本身")
     def test_explicit_model_overrides_default(self):
+        # 2026-10-03：原先因"没有 key 就测不到"被 skipUnless 跳过；
+        # 现在 setUp 已固定假密钥，本用例可真正执行（断言未变）。
         """显式指定其它模型时，请求必须打到对应提供方（不静默替换）"""
         from services import note_service
         note_service.generate_smart_note(subject_id=SUBJECT, topic=KP, model="qwen")
@@ -355,8 +360,13 @@ class TestVisionAndSpeechAreSeparate(unittest.TestCase):
         # mimo_speech_status() 现在**不再做真实探测**（audio_service.py 的 probe 分支）。
         # 旧断言要求"会员到期/凭证被拒"——那是探测仍在时的文案，已经过时。
         # 改为断言"不伪装成功 + 原因说明真实情况"，不再对某个提供方的具体文案上锁。
-        self.assertTrue("未探测" in cap["reason"] or "本地" in cap["reason"],
-                        f"原因未说明真实情况: {cap['reason']}")
+        # 2026-10-03：本机通常未配置 MIMO_API_KEY，此时 mimo_speech_status() 会在
+        # 探测分支之前就返回"未配置 MiMo API Key（MIMO_API_KEY）"——这也是**真实原因**。
+        # 断言覆盖三种真实情况（不伪装成功即可），不锁死某个提供方的具体文案。
+        self.assertTrue(
+            "未探测" in cap["reason"] or "本地" in cap["reason"]
+            or "未配置 MiMo API Key" in cap["reason"],
+            f"原因未说明真实情况: {cap['reason']}")
 
     def test_speech_capability_prefers_local_and_reports_reason(self):
         """
@@ -412,11 +422,16 @@ class TestVisionAndSpeechAreSeparate(unittest.TestCase):
             headers = {"X-User-Token": token}
 
             # 朗读相关端点已整体移除 → 404（前端也不再有调用）
+            # 注意（2026-10-03）：有 frontend/dist 时后端会注册 SPA catch-all 路由，
+            # 未知路径会由它匹配成 405（Method Not Allowed）而不是 404。两者都表示
+            # "该端点不可用"，因此这里同时接受 404/405（意图不变：朗读端点已移除）。
             for path, body in (("/api/audio/tts", {"text": "你好"}),
                                ("/api/audio/speech", {"text": "你好"})):
                 r = client.post(path, json=body, headers=headers)
-                self.assertEqual(r.status_code, 404, f"{path} 应已移除：{r.text}")
-            self.assertEqual(client.get("/api/audio/voices", headers=headers).status_code, 404)
+                self.assertIn(r.status_code, (404, 405),
+                              f"{path} 应已移除或不可用：{r.status_code} {r.text}")
+            self.assertIn(client.get("/api/audio/voices", headers=headers).status_code,
+                          (404, 405))
 
             # 未登录 → 语音识别接口仍要求身份
             anon = client.post("/api/audio/transcribe", files={"file": ("a.wav", b"RIFF", "audio/wav")})

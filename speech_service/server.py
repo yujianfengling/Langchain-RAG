@@ -96,6 +96,10 @@ def _init_engines():
             config.ASR_ENGINE, model=config.ASR_MODEL, vad_model=config.ASR_VAD_MODEL,
             punc_model=config.ASR_PUNC_MODEL, model_dir=config.ASR_MODEL_DIR,
             model_key=config.ASR_MODEL_KEY, num_threads=config.NUM_THREADS,
+            # 2026-10-03 修复：这两个值此前只从 env 读进 config、从未传给引擎，
+            # 而引擎内部的 "or os.getenv(...)" 回落分支又因默认值非空而不可达，
+            # 结果是 SPEECH_ASR_LANGUAGE / SPEECH_ASR_USE_ITN 恒无效。现在显式传入。
+            language=config.ASR_LANGUAGE, use_itn=config.ASR_USE_ITN,
             allow_download=False)
     return STATE["asr"]
 
