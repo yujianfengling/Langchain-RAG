@@ -1,5 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Input, Button, Typography, Space, Spin, Select, Tag, message, Tooltip, List } from 'antd';
+import {
+  Input, Button, Typography, Space, Spin, Tag, Dropdown, Segmented, Alert, message, Tooltip, List,
+} from 'antd';
+import type { MenuProps } from 'antd';
+import { useNavigate } from 'react-router-dom';
 import {
   SendOutlined, RobotOutlined, StopOutlined, AudioOutlined,
 } from '@ant-design/icons';
@@ -10,6 +14,9 @@ import { getReadyStatus } from '../../api/health';
 import { getModelStatus } from '../../api/models';
 import { playSendSound, playReceiveSound } from '../../utils/sound';
 import { getConversationMessages, createConversation, ConversationMessage } from '../../api/conversations';
+import { getReviews } from '../../api/student';
+import type { AttemptResult, PublicQuestion } from '../../api/student';
+import { getKnowledgeStats } from '../../api/knowledge';
 import { transcribeAudio } from '../../api/audio';
 import { createRecorder } from '../../utils/recorder';
 import ChatMessageItem from './ChatMessageItem';
@@ -28,6 +35,10 @@ export interface ChatPreset {
   input?: string;
   /** 来源任务：作答会关联到该任务 */
   taskId?: string;
+  /** 应用预设后直接发送（从"去复习/去自测"进来时不需要学生再点一次） */
+  autoStart?: boolean;
+  /** 复习上下文：用于作答后给出"本次复习结果 + 下次复习时间"的结束反馈 */
+  review?: { id?: string; knowledgePoint: string };
 }
 
 interface ChatBoxProps {
@@ -36,34 +47,32 @@ interface ChatBoxProps {
   conversationId?: string;
   onConversationCreated?: (id: string) => void;
   onSubjectChange?: (subjectId: string) => void;
+  /** 当前学科是否为"教师课程资料"（用于区分课程资料与个人资料知识库） */
+  isCourseSubject?: boolean;
   /** 带上下文跳转的预设（应用后由父组件清理） */
   preset?: ChatPreset;
   /** 预设已应用，父组件可清理以免重复应用 */
   onPresetConsumed?: () => void;
 }
 
-// 学习模式选项（V2.5.1：教学辅助整合进 Chat，不跳转独立页面）
-const MODE_OPTIONS: { label: string; value: ChatMode }[] = [
-  { label: '普通问答', value: 'chat' },
+/**
+ * 默认只暴露三个学生一眼能懂的动作（2026-10-05 简化）：
+ * 「普通问答 / 题目解析 / 学习建议」不再各自占一个模式按钮——直接对话，
+ * 由助手按问题判断怎么回答。
+ */
+const PRIMARY_MODES: { label: string; value: ChatMode }[] = [
+  { label: '对话', value: 'chat' },
+  { label: '练习', value: 'quiz' },
+  { label: '学习安排', value: 'agent' },
+];
+
+/** 低频/辅助功能收进「更多」——入口收敛，能力不删除 */
+const MORE_MODES: { label: string; value: ChatMode }[] = [
   { label: '智能笔记', value: 'smart_note' },
   { label: '知识总结', value: 'summary' },
   { label: '题目解析', value: 'explanation' },
-  { label: '自测', value: 'quiz' },
   { label: '学习建议', value: 'advice' },
-  // 阶段二：受约束的学习 Agent（读取真实学习记录 → 给安排 → 可停止）
-  { label: '学习助手', value: 'agent' },
 ];
-
-// 各学习模式颜色（统一 Slate 灰，保持整体低调统一）
-const MODE_COLORS: Record<ChatMode, string> = {
-  chat: '#475569',
-  smart_note: '#475569',
-  summary: '#475569',
-  explanation: '#475569',
-  quiz: '#475569',
-  advice: '#475569',
-  agent: '#475569',
-};
 
 // 各学习模式动态 Placeholder（V2.5.1 统一交互）
 const MODE_PLACEHOLDERS: Record<ChatMode, string> = {
@@ -80,8 +89,9 @@ const ENTER_HINT = ' · Enter发送，Shift+Enter换行';
 
 const ChatBox: React.FC<ChatBoxProps> = ({
   subjectId, subjects, conversationId, onConversationCreated,
-  preset, onPresetConsumed,
+  isCourseSubject, preset, onPresetConsumed,
 }) => {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [loading, setLoading] = useState(false);
@@ -98,8 +108,19 @@ const ChatBox: React.FC<ChatBoxProps> = ({
     { value: 'qwen', label: '通义千问' },
   ]);
   const [retrievalTag, setRetrievalTag] = useState<{ color: string; text: string } | null>(null);
+  // 当前知识库范围（真实建库状态，供学生确认"回答依据来自哪里"）
+  const [kbScope, setKbScope] = useState<
+    { available: boolean; documentCount: number } | null>(null);
   // 来源学习任务（从计划/复习跳转进入时携带，作答会关联到该任务）
   const [sourceTaskId, setSourceTaskId] = useState<string | undefined>(undefined);
+  // 预设是否要求"应用后自动发送"（首页"去复习/去自测"直达练习）
+  const [autoStart, setAutoStart] = useState(false);
+  // 复习上下文与结束反馈（从首页"去复习"进入时设置）
+  const [reviewContext, setReviewContext] = useState<{ id?: string; knowledgePoint: string } | null>(null);
+  const [reviewResult, setReviewResult] = useState<{
+    correct: boolean | null; closed: boolean; nextDue: string | null;
+    answered: number; total: number;
+  } | null>(null);
   // 学习助手（阶段二）：运行中的中止控制器与当前步骤
   const agentAbortRef = useRef<AbortController | null>(null);
   const [agentRunning, setAgentRunning] = useState(false);
@@ -131,6 +152,10 @@ const ChatBox: React.FC<ChatBoxProps> = ({
     if (preset.mode) setMode(preset.mode);
     if (preset.input) setInputValue(preset.input);
     if (preset.taskId) setSourceTaskId(preset.taskId);
+    // autoStart：从"去复习/去自测"进来时直接开始，学生不必自己组织提示词
+    setAutoStart(!!preset.autoStart);
+    setReviewContext(preset.review || null);
+    setReviewResult(null);
     onPresetConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset]);
@@ -345,27 +370,63 @@ const ChatBox: React.FC<ChatBoxProps> = ({
       const key = `${file}|${page}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      result.push({ id: result.length + 1, file_name: file, page: s.page, type: s.type });
+      result.push({
+        id: result.length + 1, file_name: file, page: s.page, type: s.type,
+        // 依据片段与诊断字段必须一起透传，否则"查看原文"会丢
+        snippet: s.snippet, section: s.section, score: s.score,
+        retrieval_type: s.retrieval_type,
+      });
       if (result.length >= 5) break;
     }
     return result;
   }, []);
 
-  // 将 /health/ready 状态映射为顶部标签
+  /**
+   * 将 /health/ready 状态映射为顶部标签。
+   *
+   * 修复（2026-10-05）：此前没有处理 `vector_only`（向量可用、BM25 缺失），
+   * 它落进最后的 else → 显示"知识库检索服务不可用"的**假告警**。
+   * 这里按每种模式如实映射，并在完全就绪时不显示标签（少占注意力）。
+   */
   const applyRetrievalTag = (ready: any) => {
     const rm = ready?.retrieval_mode;
-    const faissOk = ready?.faiss?.available;
-    const bm25Ok = ready?.bm25?.available;
-    if (rm === 'hybrid_ready' || (rm === 'not_loaded' && faissOk && bm25Ok)) {
-      setRetrievalTag({ color: 'success', text: '混合检索已就绪' });
-    } else if (rm === 'loading') {
-      setRetrievalTag({ color: 'processing', text: '向量检索组件正在加载' });
+    const hasIndex = !!ready?.faiss?.available || !!ready?.bm25?.available;
+    if (rm === 'hybrid_ready') {
+      setRetrievalTag(null);
+    } else if (rm === 'vector_only') {
+      setRetrievalTag({ color: 'warning', text: '仅向量检索（关键词索引缺失，可正常使用）' });
     } else if (rm === 'bm25_degraded') {
-      setRetrievalTag({ color: 'warning', text: '向量检索暂不可用，当前仅使用关键词检索，回答质量可能下降' });
+      setRetrievalTag({ color: 'warning', text: '仅关键词检索（向量检索不可用）' });
+    } else if (rm === 'loading' || (rm === 'not_loaded' && hasIndex)) {
+      setRetrievalTag({ color: 'processing', text: '检索组件正在加载' });
+    } else if (rm === 'not_loaded') {
+      setRetrievalTag({ color: 'warning', text: '该课程还没有可检索的资料' });
     } else {
       setRetrievalTag({ color: 'error', text: '知识库检索服务不可用' });
     }
   };
+
+  // 加载当前学科的知识库范围（失败保持未知，不阻塞聊天）
+  useEffect(() => {
+    let alive = true;
+    if (!subjectId) { setKbScope(null); return () => { alive = false; }; }
+    setKbScope(null);
+    (async () => {
+      try {
+        const res: any = await getKnowledgeStats(subjectId);
+        const st = res?.stats || res?.data?.stats || {};
+        if (alive) setKbScope({
+          available: !!st.has_knowledge_base,
+          documentCount: Number(st.document_count || 0),
+        });
+      } catch {
+        // 读不到统计（例如该课程还没有知识库）→ 明确显示"暂无可检索资料"，
+        // 不一直停在"读取中…"让学生以为还在加载。
+        if (alive) setKbScope({ available: false, documentCount: 0 });
+      }
+    })();
+    return () => { alive = false; };
+  }, [subjectId]);
 
   // 加载检索服务状态（失败不阻塞聊天）
   useEffect(() => {
@@ -614,6 +675,8 @@ const ChatBox: React.FC<ChatBoxProps> = ({
               ...aiMessage,
               content: finalContent,
               sources: mode === 'chat' ? normalizeSources(ev.sources) : undefined,
+              context_used: ev.context_used,
+              cited_source_ids: ev.cited_source_ids,
               model: ev.model,
               provider: ev.provider,
               latency: elapsed,
@@ -662,6 +725,19 @@ const ChatBox: React.FC<ChatBoxProps> = ({
     abortRef.current = controller;
   };
 
+  /**
+   * 预设要求自动开始：等 mode / 学科 / 输入都就位后自动发送一次。
+   * 这样从首页点"去复习"进来就是"题目已出好"，学生不用理解模式、也不用组织提示词。
+   */
+  useEffect(() => {
+    if (!autoStart) return;
+    if (!subjectId || !inputValue.trim()) return;
+    setAutoStart(false);
+    handleSend();
+    // handleSend 每次渲染都会重建，用其内部引用的最新状态即可，不入依赖数组
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, subjectId, inputValue, mode]);
+
   // 停止生成（保留已生成内容）
   const handleStop = () => {
     abortRef.current?.abort();
@@ -673,6 +749,43 @@ const ChatBox: React.FC<ChatBoxProps> = ({
     streamingRef.current = false;
     aiIdRef.current = '';
   };
+
+  /**
+   * 复习作答后的结束反馈。
+   *
+   * 只处理「本次复习的知识点」的作答；结果以服务端记录为准：
+   * - 原复习任务是否已关闭（完成）；提前练习不会关闭未到期的复习
+   * - 是否还有待办（含新排的延后复测）→ 下次复习时间
+   */
+  const handleAnswered = useCallback(async (
+    result: AttemptResult, question: PublicQuestion,
+    progress: { answered: number; total: number },
+  ) => {
+    if (!reviewContext) return;
+    const kp = question?.knowledge_point || reviewContext.knowledgePoint;
+    if (kp && reviewContext.knowledgePoint && kp !== reviewContext.knowledgePoint) return;
+    const correct = result?.is_correct === true ? true
+      : result?.is_correct === false ? false : null;
+    let closed = false;
+    let nextDue: string | null = null;
+    try {
+      const res: any = await getReviews({ subject_id: subjectId });
+      const all: any[] = res?.data || [];
+      const rows: any[] = all.filter(
+        (r: any) => r.knowledge_point_name === (reviewContext.knowledgePoint || kp));
+      const mine = reviewContext.id ? rows.find((r: any) => r.id === reviewContext.id) : rows[0];
+      closed = !!mine && mine.status !== 'PENDING';
+      const pending = rows.filter((r: any) => r.status === 'PENDING');
+      if (pending.length) nextDue = pending.map((r) => r.due_date).sort()[0] || null;
+    } catch {
+      /* 状态查询失败不阻断作答结果展示 */
+    }
+    setReviewResult({
+      correct, closed, nextDue,
+      answered: progress?.answered ?? 0,
+      total: progress?.total ?? 0,
+    });
+  }, [reviewContext, subjectId]);
 
   // 统一键盘交互（V2.5.1）：Enter 发送，Shift+Enter 换行，IME 候选不发送
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -705,8 +818,26 @@ const ChatBox: React.FC<ChatBoxProps> = ({
       sourceTaskId={sourceTaskId}
       agentRunning={agentRunning}
       onStopAgent={handleStopAgent}
+      onAnswered={handleAnswered}
     />
   );
+
+  // 「更多」菜单：辅助模式 + 模型（默认界面不出现，能力不变）
+  const moreMode = MORE_MODES.find((m) => m.value === mode);
+  const moreItems: MenuProps['items'] = [
+    ...MORE_MODES.map((m) => ({ key: 'mode:' + m.value, label: m.label })),
+    { type: 'divider' as const },
+    {
+      key: 'model',
+      label: '回答模型',
+      children: modelOptions.map((m) => ({ key: 'model:' + m.value, label: m.label })),
+    },
+  ];
+  const onMoreClick: MenuProps['onClick'] = ({ key }) => {
+    const k = String(key);
+    if (k.startsWith('mode:')) setMode(k.slice(5) as ChatMode);
+    else if (k.startsWith('model:')) handleModelChange(k.slice(6));
+  };
 
   return (
     <div style={{
@@ -724,13 +855,25 @@ const ChatBox: React.FC<ChatBoxProps> = ({
         borderBottom: '1px solid #f0f0f0',
         background: '#fafafa',
       }}>
-        <Space>
+        <Space size={8} wrap align="start">
           <Title level={5} style={{ margin: 0 }}>
             AI学习助手
           </Title>
-          <Text type="secondary">
-            当前学科: {subjects.find(s => s.subject_id === subjectId)?.name || '未选择'}
-          </Text>
+          <Space direction="vertical" size={0}>
+            <Text type="secondary">
+              当前课程: {subjects.find(s => s.subject_id === subjectId)?.name || '未选择'}
+            </Text>
+            {subjectId && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                知识库范围：{isCourseSubject ? '本课程资料' : '个人资料'}
+                {kbScope
+                  ? (kbScope.available
+                    ? '（已收录 ' + kbScope.documentCount + ' 份文档）'
+                    : '（暂无可检索资料）')
+                  : '（读取中…）'}
+              </Text>
+            )}
+          </Space>
           {retrievalTag && (
             <Tag color={retrievalTag.color} style={{ marginLeft: 8 }}>
               {retrievalTag.text}
@@ -743,6 +886,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
+        className="chat-messages"
         style={{
           flex: 1,
           overflow: 'auto',
@@ -776,56 +920,82 @@ const ChatBox: React.FC<ChatBoxProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
+      {/* 复习结束反馈：完成/未完成 + 下次复习时间 + 返回首页 */}
+      {reviewResult && (
+        <div style={{ padding: '12px 24px 0', background: '#fff' }}>
+          <Alert
+            closable
+            onClose={() => setReviewResult(null)}
+            type={reviewResult.correct === false ? 'warning'
+              : reviewResult.closed ? 'success' : 'info'}
+            showIcon
+            message={reviewResult.closed ? '目标知识点复习已完成'
+              : reviewResult.correct === false ? '本次复习未通过' : '本次复习已记录'}
+            description={
+              <Space direction="vertical" size={4}>
+                <Text style={{ fontSize: 13 }}>
+                  复习目标（必做）：{reviewContext?.knowledgePoint || '该知识点'}
+                  {reviewResult.closed ? ' — 已完成' : ' — 未完成'}
+                </Text>
+                <Text style={{ fontSize: 13 }}>
+                  本次练习：已作答 {reviewResult.answered} / {reviewResult.total} 题
+                  {reviewResult.answered < reviewResult.total
+                    ? '（剩余 ' + (reviewResult.total - reviewResult.answered)
+                      + ' 题为同组附加练习，未作答，不影响本次完成）'
+                    : ''}
+                </Text>
+                <Text style={{ fontSize: 13 }}>
+                  作答情况：{reviewResult.correct === true ? '答对'
+                    : reviewResult.correct === false ? '答错' : '已提交'}
+                </Text>
+                <Text style={{ fontSize: 13 }}>
+                  是否需要继续巩固：{reviewResult.nextDue
+                    ? '需要，已安排在 ' + reviewResult.nextDue + ' 复测' : '暂不需要'}
+                </Text>
+                <Text style={{ fontSize: 13 }}>
+                  下次复习时间：{reviewResult.nextDue || '暂无安排'}
+                </Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  「完成」指本次复习目标（该知识点）已完成，并不代表这一组题都做完了。
+                </Text>
+                <Button size="small" type="primary" onClick={() => navigate('/student')}>
+                  返回学习首页
+                </Button>
+              </Space>
+            }
+          />
+        </div>
+      )}
+
       {/* 输入区域 */}
       <div style={{
         padding: '16px 24px',
         borderTop: '1px solid #f0f0f0',
         background: '#fafafa',
       }}>
-        {/* 学习模式选择（Segmented，轻量不占纵向空间） */}
+        {/* 默认只显示三个动作；低频功能与模型选择收进「更多」 */}
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '12px',
+          gap: 8,
           marginBottom: '8px',
           flexWrap: 'wrap',
         }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {MODE_OPTIONS.map(opt => {
-              const active = mode === opt.value;
-              const color = MODE_COLORS[opt.value];
-              return (
-                <Tag
-                  key={opt.value}
-                  onClick={() => setMode(opt.value)}
-                  style={{
-                    cursor: 'pointer',
-                    marginInlineEnd: 0,
-                    padding: '2px 10px',
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontWeight: active ? 600 : 450,
-                    border: active ? `1px solid ${color}` : '1px solid #d1d5db',
-                    background: active ? color : '#ffffff',
-                    color: active ? '#ffffff' : '#475569',
-                    transition: 'all 0.15s cubic-bezier(0.16, 1, 0.3, 1)',
-                  }}
-                >
-                  {opt.label}
-                </Tag>
-              );
-            })}
-          </div>
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Text type="secondary" style={{ fontSize: '12px' }}>当前模型:</Text>
-            <Select
-              value={selectedModel || serverDefaultModel}
-              onChange={handleModelChange}
-              options={modelOptions}
-              style={{ width: 120 }}
-              size="small"
-            />
-          </div>
+          <Segmented
+            size="small"
+            value={mode}
+            onChange={(v) => setMode(v as ChatMode)}
+            options={PRIMARY_MODES.map((m) => ({ label: m.label, value: m.value }))}
+          />
+          <Dropdown menu={{ items: moreItems, onClick: onMoreClick }} trigger={['click']}>
+            <Button size="small">
+              {moreMode ? '更多：' + moreMode.label : '更多'}
+            </Button>
+          </Dropdown>
+          <Text type="secondary" style={{ fontSize: 12, marginLeft: 'auto' }}>
+            模型：{modelOptions.find((m) => m.value === (selectedModel || serverDefaultModel))?.label
+              || serverDefaultModel}
+          </Text>
         </div>
         <Space.Compact style={{ width: '100%' }}>
           {/* 麦克风按钮（录音/停止，V2.5.1 Checkpoint D） */}

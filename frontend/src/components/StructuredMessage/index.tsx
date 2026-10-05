@@ -7,6 +7,7 @@ import {
   QuestionCircleOutlined,
 } from '@ant-design/icons';
 import QuizList from '../QuizList';
+import type { AttemptResult, PublicQuestion } from '../../api/student';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -35,8 +36,9 @@ export interface StructuredMessageProps {
   conversationId?: string;
   /** 来源学习任务：作答会关联到该任务（可追溯） */
   sourceTaskId?: string;
-  /** 作答完成后回调（父组件可刷新掌握度/错题） */
-  onAnswered?: () => void;
+  /** 作答完成后回调（父组件可刷新掌握度/错题、给出复习结束反馈） */
+  onAnswered?: (result: AttemptResult, question: PublicQuestion,
+                progress: { answered: number; total: number }) => void;
 }
 
 /** 卡片入参（不需要 messageType，由外层 switch 决定） */

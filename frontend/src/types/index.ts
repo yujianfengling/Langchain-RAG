@@ -53,6 +53,8 @@ export interface TeachingInfo {
   reasons?: string[];
   signals?: Record<string, any>;
   applied?: TeachingApplied;
+  /** 一句学生可感知、且对应真实作答记录的变化说明（无证据时为空） */
+  adaptation_note?: string | null;
 }
 
 // 参考来源信息（与后端 extract_sources 对齐）
@@ -61,6 +63,14 @@ export interface SourceInfo {
   file_name: string;
   page?: number | null;
   type?: string;
+  /** 真实检索到的原文片段（用于"查看原文"，不拼接、不生成） */
+  snippet?: string;
+  /** 章节/小节（资料里有才给） */
+  section?: string | null;
+  /** 检索/重排分数（诊断信息，默认收起） */
+  score?: number | null;
+  /** 召回来源：vector（向量）/ keyword（关键词） */
+  retrieval_type?: string | null;
 }
 
 export interface ChatResponse {
@@ -153,6 +163,10 @@ export interface ChatMessage {
   payload?: any; // 结构化消息负载（V2.5.1，Card恢复渲染用）
   /** 关联的用户交互记录 ID（阶段一：反馈必须关联真实 interaction_id，而不是 message_id） */
   interaction_id?: string | null;
+  /** 后端 context_used：检索到课程资料并作为上下文提供给了模型（不等于"回答引用了它"） */
+  context_used?: boolean;
+  /** 回答中显式标注引用的来源编号（如 [1][2]）；这是"实际引用"的确定性信号 */
+  cited_source_ids?: number[];
   /** 学习助手执行步骤（阶段二：展示"正在查看学习记录/正在安排复习…"） */
   agent_steps?: AgentStepView[];
   /** 学习助手运行结果 */

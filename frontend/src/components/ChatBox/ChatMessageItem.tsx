@@ -6,6 +6,7 @@ import {
   MinusCircleOutlined, StopOutlined,
 } from '@ant-design/icons';
 import { ChatMessage, ChatMode } from '../../types';
+import type { AttemptResult, PublicQuestion } from '../../api/student';
 import { MessageBubble } from '../AnimateMotion';
 import StructuredMessage from '../StructuredMessage';
 import FeedbackButtons from '../FeedbackButtons';
@@ -45,6 +46,9 @@ interface ChatMessageItemProps {
   agentRunning?: boolean;
   /** 停止学习助手 */
   onStopAgent?: () => void;
+  /** 结构化题卡作答完成回调（用于复习结束反馈） */
+  onAnswered?: (result: AttemptResult, question: PublicQuestion,
+                progress: { answered: number; total: number }) => void;
 }
 
 const AGENT_STATUS_META: Record<string, { color: string; label: string }> = {
@@ -155,63 +159,88 @@ const AgentAdjustmentAction: React.FC<{ subjectId?: string }> = ({ subjectId }) 
   );
 };
 
-/** 学习助手执行过程（只展示工具调用与结果摘要，不展示模型思维过程） */
+/** 运行状态 → 中文 */
+const AGENT_RUN_LABEL: Record<string, string> = {
+  SUCCEEDED: '已完成',
+  RUNNING: '进行中',
+  FAILED: '未完成',
+  CANCELLED: '已停止',
+  TIMEOUT: '超时',
+};
+
+/**
+ * 学习助手执行过程（只展示工具调用与结果摘要，不展示模型思维过程）。
+ *
+ * 2026-10-05 简化：**默认收起**——执行中才展开，结束后只留一行摘要 +
+ * "查看执行过程"；工具细节不再默认占据整屏。
+ */
 const AgentProgress: React.FC<{
   steps: ChatMessage['agent_steps'];
   run?: ChatMessage['agent_run'];
   subjectId?: string;
-}> = ({ steps, run, subjectId }) => (
-  <div style={{ minWidth: 320 }}>
-    <Space size={8} style={{ marginBottom: 6 }}>
-      <Text strong style={{ fontSize: 13 }}>学习助手执行过程</Text>
-      {run && (
-        <Tag color={run.status === 'SUCCEEDED' ? 'success'
-          : run.status === 'CANCELLED' ? 'default'
-          : run.status === 'RUNNING' ? 'processing' : 'error'}>
-          {run.status}
-        </Tag>
+}> = ({ steps, run, subjectId }) => {
+  const running = !run || run.status === 'RUNNING';
+  const [showSteps, setShowSteps] = useState(running);
+  useEffect(() => {
+    if (running) setShowSteps(true);
+  }, [running]);
+
+  const hasAdjustment = (steps || []).some(
+    (s) => s.tool === 'propose_adjustment' && s.status === 'done');
+
+  return (
+    <div style={{ minWidth: 280 }}>
+      <Space size={8} style={{ marginBottom: 6 }} wrap>
+        <Text strong style={{ fontSize: 13 }}>学习助手</Text>
+        {run && (
+          <Tag color={run.status === 'SUCCEEDED' ? 'success'
+            : run.status === 'CANCELLED' ? 'default'
+            : run.status === 'RUNNING' ? 'processing' : 'error'}>
+            {AGENT_RUN_LABEL[run.status] || run.status}
+          </Tag>
+        )}
+        <Button type="link" size="small" style={{ padding: 0 }}
+                onClick={() => setShowSteps((v) => !v)}>
+          {showSteps ? '收起执行过程' : '查看执行过程'}
+        </Button>
+      </Space>
+      {showSteps && (
+        <>
+          <List
+            size="small"
+            dataSource={steps || []}
+            locale={{ emptyText: '正在启动…' }}
+            renderItem={(s) => {
+              const meta = AGENT_STATUS_META[s.status] || AGENT_STATUS_META.running;
+              return (
+                <List.Item style={{ padding: '4px 0', border: 'none' }}>
+                  <Space size={8} align="start">
+                    <Tag color={meta.color} icon={agentStatusIcon(s.status)}>{meta.label}</Tag>
+                    <div>
+                      <Text style={{ fontSize: 13 }}>{s.label || s.tool}</Text>
+                      {s.summary && (
+                        <div><Text type="secondary" style={{ fontSize: 12 }}>{s.summary}</Text></div>
+                      )}
+                      {s.error && (
+                        <div><Text type="danger" style={{ fontSize: 12 }}>{s.error}</Text></div>
+                      )}
+                    </div>
+                  </Space>
+                </List.Item>
+              );
+            }}
+          />
+          {/* 助手提出了计划调整 → 会话内即可确认应用（不必切页签） */}
+          {hasAdjustment && <AgentAdjustmentAction subjectId={subjectId} />}
+        </>
       )}
-    </Space>
-    <List
-      size="small"
-      dataSource={steps || []}
-      locale={{ emptyText: '正在启动…' }}
-      renderItem={(s) => {
-        const meta = AGENT_STATUS_META[s.status] || AGENT_STATUS_META.running;
-        return (
-          <List.Item style={{ padding: '4px 0', border: 'none' }}>
-            <Space size={8} align="start">
-              <Tag color={meta.color} icon={agentStatusIcon(s.status)}>{meta.label}</Tag>
-              <div>
-                <Text style={{ fontSize: 13 }}>{s.label || s.tool}</Text>
-                {s.summary && (
-                  <div><Text type="secondary" style={{ fontSize: 12 }}>{s.summary}</Text></div>
-                )}
-                {s.error && (
-                  <div><Text type="danger" style={{ fontSize: 12 }}>{s.error}</Text></div>
-                )}
-              </div>
-            </Space>
-          </List.Item>
-        );
-      }}
-    />
-    {run?.error && (
-      <Alert type="warning" showIcon style={{ marginTop: 8 }}
-             message={run.error.includes(';') ? '部分步骤未完成（仍可手动操作）' : run.error} />
-    )}
-    {/* 助手提出了计划调整 → 会话内即可确认应用（不必切页签） */}
-    {(steps || []).some((s) => s.tool === 'propose_adjustment' && s.status === 'done') && (
-      <AgentAdjustmentAction subjectId={subjectId} />
-    )}
-    <div style={{ marginTop: 6 }}>
-      <Text type="secondary" style={{ fontSize: 11 }}>
-        说明：这里记录的是工具调用与结果摘要，不含模型内部推理过程；
-        计划、错题、判分等基础功能不依赖本次运行。
-      </Text>
+      {run?.error && (
+        <Alert type="warning" showIcon style={{ marginTop: 8 }}
+               message={run.error.includes(';') ? '部分步骤未完成（仍可手动操作）' : run.error} />
+      )}
     </div>
-  </div>
-);
+  );
+};
 
 /**
  * 单条聊天消息（V2.5.4 拆分）
@@ -222,11 +251,13 @@ const AgentProgress: React.FC<{
  * - 正在流式的那条消息 content 变化 → 仅它自己重渲染
  */
 const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo(
-  ({ msg, mode,
+  ({ msg,
      subjectId, conversationId, sourceTaskId,
-     agentRunning, onStopAgent }) => {
+     agentRunning, onStopAgent, onAnswered }) => {
     const isUser = msg.role === 'user';
     const isStructured = !!msg.message_type && msg.message_type !== 'chat' && !!msg.payload;
+    // "查看原文"展开状态（按来源 id）
+    const [showOriginal, setShowOriginal] = useState<Record<number, boolean>>({});
 
     // Markdown 缓存：仅当 content 变化时重新解析（历史消息不会重复执行 md.render）
     const markdownHtml = useMemo(() => {
@@ -242,8 +273,8 @@ const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo(
           border: 'none',
         }}
       >
-        <MessageBubble delay={0} style={{ maxWidth: '80%' }}>
-        <div style={{
+        <MessageBubble delay={0} className="chat-bubble" style={{ maxWidth: '80%' }}>
+        <div className="chat-msg-row" style={{
           display: 'flex',
           alignItems: 'flex-start',
           gap: '12px',
@@ -257,7 +288,7 @@ const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo(
             }}
           />
 
-          <div style={{
+          <div className="chat-bubble-content" style={{
             background: isUser ? '#0f766e' : '#f6f6f6',
             color: isUser ? '#fff' : '#333',
             padding: isStructured ? '12px' : '12px 16px',
@@ -266,6 +297,17 @@ const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo(
             minWidth: 0,
             wordBreak: 'break-word',
           }}>
+            {/* 学生可感知的一句变化说明（对应真实作答记录；无证据时不显示） */}
+            {!isUser && !isStructured && msg.teaching?.adaptation_note ? (
+              <div style={{
+                marginBottom: 8, padding: '6px 10px',
+                background: 'rgba(15,118,110,0.08)',
+                border: '1px solid rgba(15,118,110,0.2)',
+                borderRadius: 6, fontSize: 12, color: '#0f766e', fontWeight: 600,
+              }}>
+                {msg.teaching.adaptation_note}
+              </div>
+            ) : null}
             {isUser ? (
               <Text style={{ color: '#fff', margin: 0 }}>{msg.content}</Text>
             ) : isStructured ? (
@@ -275,6 +317,7 @@ const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo(
                 subjectId={subjectId}
                 conversationId={conversationId}
                 sourceTaskId={sourceTaskId}
+                onAnswered={onAnswered}
               />
             ) : msg.agent_steps || msg.agent_run ? (
               <AgentProgress steps={msg.agent_steps} run={msg.agent_run} subjectId={subjectId} />
@@ -294,79 +337,161 @@ const ChatMessageItem: React.FC<ChatMessageItemProps> = React.memo(
               </Space>
             )}
 
-            {/* 显示引用来源（列表形式） */}
-            {!isUser && mode === 'chat' && msg.sources && msg.sources.length > 0 && (
-              <div style={{
-                marginTop: '8px',
-                padding: '8px 10px',
-                background: 'rgba(0,0,0,0.04)',
-                borderRadius: '6px',
-              }}>
-                <Text type="secondary" style={{ fontSize: '12px', fontWeight: 600 }}>
-                  参考来源（{msg.sources.length}）
-                </Text>
-                <div style={{ marginTop: '4px' }}>
-                  {msg.sources.map(s => (
-                    <div key={s.id} style={{ fontSize: '12px', lineHeight: '20px', color: '#666' }}>
+            {/* RAG 回答依据：真实检索结果（文件/页码/章节 + 原文），无依据时如实说明 */}
+            {!isUser && !isStructured
+              && ((msg.sources && msg.sources.length > 0) || msg.context_used === false) && (() => {
+              const sources = msg.sources || [];
+              // context_used 的准确含义：检索到课程资料并放进了模型上下文；
+              // "回答是否真的引用"以后端从回答解析出的 cited_source_ids 为准
+              // （确定性信号，不靠回答文案猜测）。
+              const citedIds = msg.cited_source_ids || [];
+              const cited = sources.filter((s: any) => citedIds.includes(s.id));
+              const others = sources.filter((s: any) => !citedIds.includes(s.id));
+              const noBasis = msg.context_used === false;
+              const item = (s: any) => (
+                <div key={s.id} style={{ marginBottom: 4 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <Text style={{ fontSize: 12, color: '#334155' }}>
                       [{s.id}] {s.file_name || '未知来源'}
-                      {s.page != null ? ` · 第 ${s.page} 页` : ''}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 本轮教学策略与依据（画像 → 教学安排，可解释） */}
-            {!isUser && msg.teaching?.reasons?.length ? (
-              <div style={{
-                marginTop: '8px', padding: '8px 10px',
-                background: 'rgba(15,118,110,0.06)', borderRadius: '6px',
-              }}>
-                <Text style={{ fontSize: 12, fontWeight: 600, color: '#0f766e' }}>
-                  本次讲解依据（{msg.teaching.mode === 'foundation' ? '基础优先'
-                    : msg.teaching.mode === 'advanced' ? '综合提升' : '常规'}）
-                </Text>
-                <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
-                  {msg.teaching.reasons.slice(0, 4).map((r, i) => (
-                    <li key={i}><Text type="secondary" style={{ fontSize: 12 }}>{r}</Text></li>
-                  ))}
-                </ul>
-                {/* 明确设置与生效记忆：学生可核对"系统用了我的哪些信息" */}
-                {(msg.teaching.applied?.preferences?.length
-                  || msg.teaching.applied?.memory?.length) ? (
-                  <div style={{ marginTop: '6px' }}>
-                    <Text style={{ fontSize: 12, fontWeight: 600, color: '#0f766e' }}>
-                      已采用你的设置与记忆
+                      {s.page != null ? ' · 第 ' + s.page + ' 页' : ''}
+                      {s.section ? ' · ' + s.section : ''}
                     </Text>
-                    <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
-                      {(msg.teaching.applied?.preferences || []).map((r, i) => (
-                        <li key={`p${i}`}>
-                          <Text type="secondary" style={{ fontSize: 12 }}>{r}</Text>
-                        </li>
-                      ))}
-                      {(msg.teaching.applied?.memory || []).slice(0, 3).map((r, i) => (
-                        <li key={`m${i}`}>
-                          <Text type="secondary" style={{ fontSize: 12 }}>{r}</Text>
-                        </li>
-                      ))}
-                    </ul>
+                    {s.snippet ? (
+                      <Button
+                        type="link" size="small"
+                        style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                        onClick={() => setShowOriginal((prev) => ({ ...prev, [s.id]: !prev[s.id] }))}
+                      >
+                        {showOriginal[s.id] ? '收起原文' : '查看原文'}
+                      </Button>
+                    ) : null}
                   </div>
-                ) : null}
-              </div>
+                  {showOriginal[s.id] && s.snippet ? (
+                    <div style={{
+                      marginTop: 4, padding: '6px 8px', background: '#fff',
+                      border: '1px solid #e2e8f0', borderRadius: 6,
+                      fontSize: 12, lineHeight: 1.6, color: '#334155', whiteSpace: 'pre-wrap',
+                    }}>
+                      {s.snippet}
+                    </div>
+                  ) : null}
+                </div>
+              );
+              const diagnostics = (
+                <details style={{ marginTop: 4 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 11, color: '#64748b' }}>检索诊断</summary>
+                  <div style={{ marginTop: 4, fontSize: 11, color: '#64748b' }}>
+                    <div>命中片段：{sources.length} 处</div>
+                    {sources.map((s: any) => (
+                      <div key={'d' + s.id}>
+                        [{s.id}] {s.retrieval_type === 'keyword' ? '关键词检索'
+                          : s.retrieval_type === 'vector' ? '向量检索' : '检索'}
+                        {s.score != null ? ' · 相似度 ' + Number(s.score).toFixed(3) : ''}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              );
+              const hasCited = cited.length > 0;
+              const tone = noBasis
+                ? { bg: '#fffbeb', border: '#fde68a', color: '#92400e' }
+                : hasCited
+                  ? { bg: 'rgba(15,118,110,0.06)', border: 'rgba(15,118,110,0.18)', color: '#0f766e' }
+                  : { bg: '#f8fafc', border: '#e2e8f0', color: '#475569' };
+              const title = noBasis
+                ? '课程资料中未找到依据：以下回答来自模型通用知识，请自行核对。'
+                : hasCited
+                  ? '依据课程资料（' + cited.length + ' 处，回答已标注引用）'
+                  : '已检索到 ' + sources.length + ' 个课程资料片段（回答未标注具体引用）';
+              return (
+                <div style={{
+                  marginTop: '8px', padding: '8px 10px', borderRadius: '6px',
+                  background: tone.bg, border: '1px solid ' + tone.border,
+                }}>
+                  <Text style={{ fontSize: 12, fontWeight: 600, color: tone.color }}>{title}</Text>
+                  {noBasis ? (
+                    sources.length > 0 ? (
+                      <details style={{ marginTop: 4 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 11, color: tone.color }}>
+                          查看检索到的片段
+                        </summary>
+                        <div style={{ marginTop: 4 }}>{sources.map(item)}</div>
+                        {diagnostics}
+                      </details>
+                    ) : null
+                  ) : hasCited ? (
+                    <>
+                      <div style={{ marginTop: 4 }}>{cited.map(item)}</div>
+                      {others.length > 0 && (
+                        <details style={{ marginTop: 4 }}>
+                          <summary style={{ cursor: 'pointer', fontSize: 11, color: '#64748b' }}>
+                            其他检索到的片段（{others.length} 条，未标注引用）
+                          </summary>
+                          <div style={{ marginTop: 4 }}>{others.map(item)}</div>
+                        </details>
+                      )}
+                      {diagnostics}
+                    </>
+                  ) : (
+                    <details style={{ marginTop: 4 }}>
+                      <summary style={{ cursor: 'pointer', fontSize: 11, color: '#64748b' }}>
+                        查看检索到的片段与诊断
+                      </summary>
+                      <div style={{ marginTop: 4 }}>{sources.map(item)}</div>
+                      {diagnostics}
+                    </details>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* 本轮教学策略与依据：默认折叠（学习记忆详情），学生需要时可展开核对 */}
+            {!isUser && msg.teaching?.reasons?.length ? (
+              <details style={{ marginTop: 8 }}>
+                <summary style={{ cursor: 'pointer', fontSize: 12, color: '#0f766e' }}>
+                  查看本次讲解依据
+                </summary>
+                <div style={{
+                  marginTop: 6, padding: '8px 10px',
+                  background: 'rgba(15,118,110,0.06)', borderRadius: '6px',
+                }}>
+                  <Text style={{ fontSize: 12, fontWeight: 600, color: '#0f766e' }}>
+                    本次讲解依据（{msg.teaching.mode === 'foundation' ? '基础优先'
+                      : msg.teaching.mode === 'advanced' ? '综合提升' : '常规'}）
+                  </Text>
+                  <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                    {msg.teaching.reasons.slice(0, 4).map((r, i) => (
+                      <li key={i}><Text type="secondary" style={{ fontSize: 12 }}>{r}</Text></li>
+                    ))}
+                  </ul>
+                  {/* 明确设置与生效记忆：学生可核对"系统用了我的哪些信息" */}
+                  {(msg.teaching.applied?.preferences?.length
+                    || msg.teaching.applied?.memory?.length) ? (
+                    <div style={{ marginTop: '6px' }}>
+                      <Text style={{ fontSize: 12, fontWeight: 600, color: '#0f766e' }}>
+                        已采用你的设置与记忆
+                      </Text>
+                      <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                        {(msg.teaching.applied?.preferences || []).map((r, i) => (
+                          <li key={'p' + i}>
+                            <Text type="secondary" style={{ fontSize: 12 }}>{r}</Text>
+                          </li>
+                        ))}
+                        {(msg.teaching.applied?.memory || []).slice(0, 3).map((r, i) => (
+                          <li key={'m' + i}>
+                            <Text type="secondary" style={{ fontSize: 12 }}>{r}</Text>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              </details>
             ) : null}
 
-            {/* 模型信息（语音朗读已移除） */}
+            {/* 消息底部操作：反馈 / 停止（不再显示模型与耗时等内部指标） */}
             {!isUser && (
               <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: 8 }}>
-                {(msg.model || msg.latency != null) && (
-                  <Text type="secondary" style={{ fontSize: '11px' }}>
-                    {/* 显示后端实际使用的提供方与模型（历史消息保留当时的标记） */}
-                    {msg.model ? `模型: ${msg.provider ? `${msg.provider} / ` : ''}${msg.model}` : ''}
-                    {msg.ttft != null ? ` | 首字响应: ${msg.ttft.toFixed(2)}s` : ''}
-                    {msg.latency != null ? ` | 总耗时: ${msg.latency.toFixed(2)}s` : ''}
-                  </Text>
-                )}
-                {/* 回答反馈：关联后端回写的真实 interaction_id（阶段一修正） */}
                 <FeedbackButtons interactionId={msg.interaction_id} />
                 {/* 学习助手执行中 → 可停止 */}
                 {agentRunning && msg.agent_steps && onStopAgent && (

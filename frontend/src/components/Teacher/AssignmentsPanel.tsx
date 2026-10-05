@@ -43,6 +43,8 @@ export interface AssignmentsPanelProps {
   courseId: string;
   courseTitle?: string;
   onBack?: () => void;
+  /** 定向出题无合格题目时的"去补充资料"入口（切到课程资料） */
+  onOpenMaterials?: () => void;
 }
 
 interface AssignmentFormValues {
@@ -56,7 +58,9 @@ interface AssignmentFormValues {
 }
 
 /** 作业 / 练习：创建草稿 → AI 出题 → 预览 → 设截止 → 发布 → 查看完成情况 */
-const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({ courseId, courseTitle, onBack }) => {
+const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({
+  courseId, courseTitle, onBack, onOpenMaterials,
+}) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState<string | null>(null);
@@ -74,7 +78,7 @@ const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({ courseId, courseTit
   const [genOpen, setGenOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [genResult, setGenResult] = useState<{
-    requested: number; generated: number; knowledge_point: string; model: string;
+    requested: number; generated: number; knowledge_point: string | null; model: string;
     questions: AssignmentQuestion[];
     /** 出题时挂到的草稿作业；为空表示只预览、没写入任何作业 */
     assignmentId?: string;
@@ -201,8 +205,23 @@ const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({ courseId, courseTit
         evidence: (d.evidence || []) as unknown as { file_name?: string }[],
 assignmentId: values.assignment_id,
       } : null);
-      if (d && d.generated < d.requested) {
+      // 定向出题的有效性必须如实反馈：有效题数、待确认题数、不足原因与下一步入口
+      const valid = d?.valid_count ?? d?.generated ?? 0;
+      const pending = d?.pending_count ?? 0;
+      if (d?.warning && valid === 0 && onOpenMaterials) {
+        Modal.warning({
+          title: '没有生成符合目标知识点的题目',
+          content: d.warning,
+          okText: '去补充课程资料',
+          cancelText: '关闭',
+          onOk: onOpenMaterials,
+        });
+      } else if (d?.warning) {
+        message.warning(d.warning, 8);
+      } else if (d && d.generated < d.requested) {
         message.warning(`请求 ${d.requested} 道，实际生成 ${d.generated} 道（资料可能不足）`);
+      } else if (pending > 0) {
+        message.warning(`已生成 ${valid} 道题，另有 ${pending} 道归属待确认（不计入掌握度）`);
       } else {
         message.success(`已生成 ${d?.generated ?? 0} 道题`);
       }

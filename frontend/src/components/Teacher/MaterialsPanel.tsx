@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Alert, Button, Card, Popconfirm, Radio, Space, Table, Tag, Typography, Upload, message,
+  Alert, Button, Card, Popconfirm, Radio, Space, Table, Tag, Tooltip, Typography, Upload, message,
 } from 'antd';
 import type { UploadProps } from 'antd';
 import {
@@ -23,10 +23,14 @@ export interface MaterialsPanelProps {
   courseId: string;
   courseTitle?: string;
   onBack?: () => void;
+  /** 资料/知识库变化后回调（上传、删除、可见范围、重建）→ 刷新课程数量、知识库状态与下一步 */
+  onChanged?: () => void;
 }
 
 /** 课程资料：上传 / 列表（状态与失败原因）/ 可见范围 / 删除 / 重建知识库 */
-const MaterialsPanel: React.FC<MaterialsPanelProps> = ({ courseId, courseTitle, onBack }) => {
+const MaterialsPanel: React.FC<MaterialsPanelProps> = ({
+  courseId, courseTitle, onBack, onChanged,
+}) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState<string | null>(null);
@@ -79,6 +83,7 @@ const MaterialsPanel: React.FC<MaterialsPanelProps> = ({ courseId, courseTitle, 
         setRebuildMsg('资料已上传，课程知识库已自动构建完成，现在可以生成教案与 AI 出题。');
       }
       await load();
+      onChanged?.();
     } catch (e) {
       message.error(describeTeacherError(e, '资料上传失败').message);
     } finally {
@@ -92,6 +97,7 @@ const MaterialsPanel: React.FC<MaterialsPanelProps> = ({ courseId, courseTitle, 
       await setMaterialVisibility(m.id, courseId, next);
       message.success(`可见范围已改为「${visibilityLabel(next)}」`);
       await load();
+      onChanged?.();
     } catch (e) {
       message.error(describeTeacherError(e, '修改可见范围失败').message);
     } finally {
@@ -112,6 +118,7 @@ const MaterialsPanel: React.FC<MaterialsPanelProps> = ({ courseId, courseTitle, 
         message.success('资料已删除，并已重建索引');
       }
       await load();
+      onChanged?.();
     } catch (e) {
       message.error(describeTeacherError(e, '删除资料失败').message);
     } finally {
@@ -137,6 +144,7 @@ const MaterialsPanel: React.FC<MaterialsPanelProps> = ({ courseId, courseTitle, 
       }
       if (d?.kb) setKb(d.kb);
       await load();
+      onChanged?.();
     } catch (e) {
       const f = describeTeacherError(e, '知识库重建失败');
       setRebuildOk(false);
@@ -270,11 +278,19 @@ const MaterialsPanel: React.FC<MaterialsPanelProps> = ({ courseId, courseTitle, 
             scroll={{ x: 900 }}
             columns={[
               {
-                title: '文件名', dataIndex: 'filename',
+                title: '文件名', dataIndex: 'filename', width: 260,
+                // 文件名可能很长：单行省略 + Tooltip 查看完整名称，避免密集换行
                 render: (v: string) => (
-                  <Space size={6}>
+                  <Space size={6} style={{ maxWidth: 240 }}>
                     <FileTextOutlined style={{ color: '#0f766e' }} />
-                    <Text>{v}</Text>
+                    <Tooltip title={v} placement="topLeft">
+                      <Text style={{
+                        maxWidth: 200, whiteSpace: 'nowrap', overflow: 'hidden',
+                        textOverflow: 'ellipsis', display: 'inline-block', verticalAlign: 'middle',
+                      }}>
+                        {v}
+                      </Text>
+                    </Tooltip>
                   </Space>
                 ),
               },

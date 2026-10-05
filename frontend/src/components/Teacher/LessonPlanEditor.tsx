@@ -145,8 +145,8 @@ const LessonPlanEditor: React.FC<LessonPlanEditorProps> = ({ plan, onSaved }) =>
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message="课程资料不足"
-          description="生成这份教案时，课程知识库没有检索到可用资料，内容主要来自模型已有知识，请务必人工核对后再使用。建议先上传课程资料并重建知识库。"
+          message="课程资料不足：缺少可检索的课程资料依据"
+          description="本次生成没有检索到与本课程主题相关的资料片段；教案正文（目标、重难点、步骤、练习）均为 AI 补充的教学建议，不是课程资料内容，请务必人工核对。缺少的是：本课程知识库中与该主题相关的可检索资料。建议先在「课程资料」上传/补充资料并确认知识库就绪，再重新生成。"
         />
       )}
 
@@ -357,23 +357,47 @@ const LessonPlanEditor: React.FC<LessonPlanEditorProps> = ({ plan, onSaved }) =>
       />
 
       <Divider orientation="left" plain style={{ margin: '12px 0 8px' }}>
-        依据资料（{evidence.length}）
+        课程资料依据（{evidence.length}）
       </Divider>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 8 }}
+        message="区分「课程资料依据」与「AI 教学建议」"
+        description="下方依据来自本课程知识库/教师指定资料，可点开核对原文；教案正文的目标、重难点、步骤与练习属于 AI 补充的教学设计建议，请教师核对后使用。"
+      />
       {evidence.length === 0 ? (
         <Alert
           type="warning"
           showIcon
-          message="没有可展示的依据资料"
-          description="本次生成没有检索到任何课程资料片段，请核对上方「课程资料不足」提示。"
+          message="本次没有课程资料依据"
+          description="生成时没有检索到与本课程主题相关的资料片段；教案正文全部为 AI 补充建议，请核对后使用。建议先在「课程资料」上传资料并确认知识库就绪，再重新生成。"
         />
       ) : (
-        <Space size={6} wrap>
+        <Space direction="vertical" size={4} style={{ width: '100%' }}>
           {evidence.map((e, i) => (
-            <Tag key={`${e.file_name}-${i}`} color={e.source === 'retrieval' ? 'blue' : 'default'}>
-              {e.file_name || '未知文件'}
-              {e.page != null ? ` · 第 ${e.page} 页` : ''}
-              {e.source === 'selected_material' ? '（教师指定）' : ''}
-            </Tag>
+            <div key={'evidence-' + i}>
+              <Space size={6} wrap>
+                <Tag color={e.source === 'selected_material' ? 'default' : 'blue'}>
+                  {e.file_name || '未知文件'}
+                  {e.page != null ? ' · 第 ' + e.page + ' 页' : ''}
+                  {e.section ? ' · ' + e.section : ''}
+                  {e.source === 'selected_material' ? '（教师指定）' : ''}
+                </Tag>
+                {e.snippet ? (
+                  <details style={{ display: 'inline-block' }}>
+                    <summary style={{ cursor: 'pointer', fontSize: 12, color: '#0f766e' }}>查看原文</summary>
+                    <div style={{
+                      marginTop: 4, padding: '6px 8px', background: '#fff',
+                      border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12,
+                      lineHeight: 1.6, color: '#334155', whiteSpace: 'pre-wrap', maxWidth: 720,
+                    }}>
+                      {e.snippet}
+                    </div>
+                  </details>
+                ) : null}
+              </Space>
+            </div>
           ))}
         </Space>
       )}

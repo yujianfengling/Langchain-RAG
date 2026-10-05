@@ -3,8 +3,8 @@ import {
   Alert, Button, Card, Form, Input, Menu, Modal, Select, Space, Tag, Typography, message,
 } from 'antd';
 import {
-  BarChartOutlined, BookOutlined, DashboardOutlined, FileTextOutlined,
-  FolderOpenOutlined, PlusOutlined, ReloadOutlined, TeamOutlined, UserOutlined,
+  BarChartOutlined, BookOutlined, PlusOutlined, ReloadOutlined, SolutionOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
 import {
   TeacherCourse, createCourse, describeTeacherError, isForbiddenError, listTeacherCourses,
@@ -12,10 +12,8 @@ import {
 import { isLoggedIn } from '../api/auth';
 import { AUTH_CHANGED_EVENT } from '../components/UserAuth';
 import { EmptyBlock, ErrorAlert, LoadingBlock, PermissionAlert } from '../components/Teacher/common';
-import DashboardPanel, { DashboardNavTarget } from '../components/Teacher/DashboardPanel';
+import CoursePrepPanel from '../components/Teacher/CoursePrepPanel';
 import ClassesPanel from '../components/Teacher/ClassesPanel';
-import MaterialsPanel from '../components/Teacher/MaterialsPanel';
-import LessonPlansPanel from '../components/Teacher/LessonPlansPanel';
 import AssignmentsPanel from '../components/Teacher/AssignmentsPanel';
 import AnalyticsPanel from '../components/Teacher/AnalyticsPanel';
 import StudentsPanel from '../components/Teacher/StudentsPanel';
@@ -24,50 +22,39 @@ import { useIsNarrow } from '../hooks/useIsNarrow';
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
-type PanelKey = 'dashboard' | 'classes' | 'materials' | 'plans' | 'assignments' | 'analytics' | 'students';
+type MenuKey = 'prep' | 'materials' | 'plans' | 'classes' | 'assignments' | 'analytics' | 'students';
 
 export interface TeacherPageProps {
-  /** 可选：外部路由跳转钩子（不传则仅在本页内切换） */
   onNavigate?: (path: string) => void;
 }
 
-const MENU_ITEMS = [
-  { key: 'dashboard', icon: <DashboardOutlined />, label: '工作台' },
-  { key: 'classes', icon: <TeamOutlined />, label: '班级管理' },
-  { key: 'materials', icon: <FolderOpenOutlined />, label: '课程资料' },
-  { key: 'plans', icon: <FileTextOutlined />, label: '教案' },
-  { key: 'assignments', icon: <BookOutlined />, label: '作业与练习' },
-  { key: 'analytics', icon: <BarChartOutlined />, label: '学情分析' },
-  // 学生画像：逐个学生看（与「学情分析」的班级聚合互补）；不依赖具体课程，故不需要先选课
-  { key: 'students', icon: <UserOutlined />, label: '学生画像' },
-];
-
 /**
- * 教师工作台
+ * 教师工作台（2026-10-05 重排）
  *
- * 组织方式：工作台 → 班级管理 → 课程资料 → 教案 → 作业 → 学情
+ * 入口按三组组织：
+ * - 课程与备课：课程（课程列表 → 课程空间：资料 → 建库 → 教案生成/编辑/发布）、班级、课程资料、教案
+ * - 作业与批改：作业与批改（承接现有面板）
+ * - 学情分析：班级学情、学生详情（承接现有面板）
+ *
  * 权限：全部由后端判定；这里的展示判断不构成安全边界。
  */
 const TeacherPage: React.FC<TeacherPageProps> = () => {
   const isNarrow = useIsNarrow();
   const [loggedIn, setLoggedIn] = useState(isLoggedIn());
-  const [activeKey, setActiveKey] = useState<PanelKey>('dashboard');
+  const [menuKey, setMenuKey] = useState<MenuKey>('prep');
 
   const [courses, setCourses] = useState<TeacherCourse[]>([]);
   const [coursesLoading, setCoursesLoading] = useState(false);
   const [coursesError, setCoursesError] = useState<string | null>(null);
   const [coursesForbidden, setCoursesForbidden] = useState<string | null>(null);
   const [courseId, setCourseId] = useState<string | undefined>();
-
-  const [focus, setFocus] = useState<{
-    classId?: string; planId?: string; knowledgePointId?: string;
-  }>({});
+  // 课程与备课：true = 显示课程列表；false = 已进入某门课程的备课空间
+  const [prepList, setPrepList] = useState(true);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [form] = Form.useForm<{ title: string; description?: string; subject_name?: string }>();
 
-  // 登录态变化时同步（与 StudentPage 保持一致的做法）
   useEffect(() => {
     const sync = () => setLoggedIn(isLoggedIn());
     window.addEventListener('storage', sync);
@@ -113,12 +100,15 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
         subject_name: values.subject_name?.trim() || undefined,
       });
       const created = res?.data;
-      message.success(`课程《${created?.title || values.title}》已创建`);
+      message.success('课程《' + (created?.title || values.title) + '》已创建，下一步：上传课程资料');
       setCreateOpen(false);
       form.resetFields();
       await loadCourses();
-      if (created?.id) setCourseId(created.id);
-      setActiveKey('classes');
+      if (created?.id) {
+        setCourseId(created.id);
+        setPrepList(false);       // 直接进入新课程的备课空间
+        setMenuKey('prep');
+      }
     } catch (e) {
       message.error(describeTeacherError(e, '创建课程失败').message);
     } finally {
@@ -126,94 +116,94 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
     }
   };
 
-  const handleDashboardNav = (target: DashboardNavTarget) => {
-    if (target.courseId) setCourseId(target.courseId);
-    setFocus({
-      classId: target.classId,
-      planId: target.planId,
-      knowledgePointId: target.knowledgePointId,
-    });
-    setActiveKey(target.key);
-  };
-
   const currentCourse = useMemo(
     () => courses.find((c) => c.id === courseId) || null,
     [courses, courseId],
   );
 
-  // 工作台与学生画像都是跨课程的，不强制先选课程
-  const courseRequired = activeKey !== 'dashboard' && activeKey !== 'students';
-  const needCourse = courseRequired && !courseId;
+  // 收敛为三个主入口：班级 / 资料 / 教案都在"课程与备课"的课程空间内；
+  // 学生明细从"学情分析"进入（不再单独占一级菜单）。
+  const MENU_ITEMS = [
+    { key: 'prep', icon: <BookOutlined />, label: '课程与备课' },
+    { key: 'assignments', icon: <SolutionOutlined />, label: '作业与批改' },
+    { key: 'analytics', icon: <BarChartOutlined />, label: '学情分析' },
+  ];
+
+  const handleMenuClick = ({ key }: { key: string }) => {
+    const k = key as MenuKey;
+    setMenuKey(k);
+    if (k === 'prep') setPrepList(true);
+  };
 
   const renderPanel = () => {
-    if (needCourse) {
+    if (menuKey === 'prep' || menuKey === 'materials' || menuKey === 'plans') {
+      return (
+        <CoursePrepPanel
+          courses={courses}
+          loading={coursesLoading}
+          courseId={prepList ? undefined : courseId}
+          courseTitle={currentCourse?.title}
+          initialTab={menuKey === 'plans' ? 'plans' : 'materials'}
+          onSelectCourse={(id) => { setCourseId(id); setPrepList(false); }}
+          onBackToList={() => setPrepList(true)}
+          onCreateCourse={() => setCreateOpen(true)}
+          onChanged={loadCourses}
+        />
+      );
+    }
+
+    if (!courseId) {
       return (
         <Card size="small">
-          <EmptyBlock description="请先选择或创建一门课程">
-            <Space>
-              <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-                新建课程
-              </Button>
-            </Space>
+          <EmptyBlock description="该功能需要先有一门课程。请先在「课程」里选择或创建课程。">
+            <Button type="primary" icon={<BookOutlined />}
+                    onClick={() => { setMenuKey('prep'); setPrepList(true); }}>
+              去课程
+            </Button>
           </EmptyBlock>
         </Card>
       );
     }
-    switch (activeKey) {
+
+    switch (menuKey) {
       case 'classes':
         return (
           <ClassesPanel
-            key={`classes-${courseId}`}
-            courseId={courseId!}
+            key={'classes-' + courseId}
+            courseId={courseId}
             courseTitle={currentCourse?.title}
-            focusClassId={focus.classId}
-            onBack={() => setActiveKey('dashboard')}
-          />
-        );
-      case 'materials':
-        return (
-          <MaterialsPanel
-            key={`materials-${courseId}`}
-            courseId={courseId!}
-            courseTitle={currentCourse?.title}
-            onBack={() => setActiveKey('dashboard')}
-          />
-        );
-      case 'plans':
-        return (
-          <LessonPlansPanel
-            key={`plans-${courseId}-${focus.planId || ''}`}
-            courseId={courseId!}
-            courseTitle={currentCourse?.title}
-            focusPlanId={focus.planId}
-            onBack={() => setActiveKey('dashboard')}
+            onBack={() => { setMenuKey('prep'); setPrepList(false); }}
           />
         );
       case 'assignments':
         return (
           <AssignmentsPanel
-            key={`assignments-${courseId}`}
-            courseId={courseId!}
+            key={'assignments-' + courseId}
+            courseId={courseId}
             courseTitle={currentCourse?.title}
-            onBack={() => setActiveKey('dashboard')}
+            onBack={() => { setMenuKey('prep'); setPrepList(false); }}
+            onOpenMaterials={() => { setMenuKey('prep'); setPrepList(false); }}
           />
         );
       case 'analytics':
         return (
-          <AnalyticsPanel
-            key={`analytics-${courseId}-${focus.classId || ''}-${focus.knowledgePointId || ''}`}
-            courseId={courseId!}
-            courseTitle={currentCourse?.title}
-            focusClassId={focus.classId}
-            focusKnowledgePointId={focus.knowledgePointId}
-            onBack={() => setActiveKey('dashboard')}
-          />
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Button icon={<UserOutlined />} onClick={() => setMenuKey('students')}>
+              学生明细
+            </Button>
+            <AnalyticsPanel
+              key={'analytics-' + courseId}
+              courseId={courseId}
+              courseTitle={currentCourse?.title}
+              onBack={() => { setMenuKey('prep'); setPrepList(false); }}
+            />
+          </Space>
         );
       case 'students':
-        return <StudentsPanel onBack={() => setActiveKey('dashboard')} />;
-      case 'dashboard':
+        // 学生明细从"学情分析"进入，返回也回到学情
+        return <StudentsPanel onBack={() => setMenuKey('analytics')} />;
       default:
-        return <DashboardPanel onOpen={handleDashboardNav} />;
+        return null;
     }
   };
 
@@ -235,21 +225,17 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
 
   return (
     <div style={{ padding: 24, maxWidth: 1280, margin: '0 auto' }}>
-      {/* 顶部：课程选择与新建 */}
       <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 12 }} wrap>
         <Space size={12} wrap>
           <Title level={4} style={{ margin: 0 }}>教师工作台</Title>
-          {currentCourse && <Tag color="blue">当前课程：{currentCourse.title}</Tag>}
+          {currentCourse && !prepList && <Tag color="blue">当前课程：{currentCourse.title}</Tag>}
         </Space>
         <Space wrap>
           <Select
             style={{ width: 240 }}
             placeholder={courses.length ? '选择课程' : '还没有课程'}
             value={courseId}
-            onChange={(v) => {
-              setCourseId(v);
-              setFocus({});
-            }}
+            onChange={(v) => { setCourseId(v); setPrepList(false); }}
             loading={coursesLoading}
             options={courses.map((c) => ({ value: c.id, label: c.title }))}
             notFoundContent="还没有课程，请先新建"
@@ -269,32 +255,32 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
           <ErrorAlert message={coursesError} onRetry={loadCourses} />
         </div>
       )}
-      {!coursesLoading && !coursesError && courses.length === 0 && activeKey === 'dashboard' && (
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="你还没有课程"
-          description="点击右上角「新建课程」创建第一门课程。创建课程后即可建班级、发班级邀请码、上传资料、生成教案与布置作业。"
-          action={<Button size="small" type="primary" onClick={() => setCreateOpen(true)}>新建课程</Button>}
-        />
-      )}
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        {/* 左侧导航 */}
-        <Card size="small" style={{ width: isNarrow ? '100%' : 168, minWidth: isNarrow ? 0 : 168 }}>
-          <Menu
-            mode="inline"
-            selectedKeys={[activeKey]}
-            items={MENU_ITEMS}
-            onClick={({ key }) => { setActiveKey(key as PanelKey); setFocus({}); }}
-            style={{ border: 'none' }}
-          />
-        </Card>
+        {/* 宽屏：左侧竖向导航；窄屏（≤900px）：顶部紧凑横向导航，避免菜单占据大半屏 */}
+        {!isNarrow && (
+          <Card size="small" style={{ width: 176, minWidth: 176 }}>
+            <Menu
+              mode="inline"
+              selectedKeys={[menuKey]}
+              items={MENU_ITEMS}
+              onClick={handleMenuClick}
+              style={{ border: 'none' }}
+            />
+          </Card>
+        )}
 
-        {/* 右侧内容 */}
         <div style={{ flex: 1, minWidth: isNarrow ? 0 : 480 }}>
-          {coursesLoading && activeKey === 'dashboard' && courses.length === 0
+          {isNarrow && (
+            <Menu
+              mode="horizontal"
+              selectedKeys={[menuKey]}
+              items={MENU_ITEMS}
+              onClick={handleMenuClick}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {coursesLoading && courses.length === 0
             ? <LoadingBlock tip="正在加载课程…" />
             : renderPanel()}
         </div>
@@ -305,7 +291,6 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
         「学生加入课程」由学生在「我的学习」页输入班级邀请码完成。
       </Paragraph>
 
-      {/* 新建课程 */}
       <Modal
         title="新建课程"
         open={createOpen}

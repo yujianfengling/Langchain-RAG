@@ -1,6 +1,9 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { Layout, Typography, Space, Card } from 'antd';
-import { SettingOutlined, InfoCircleOutlined, UserOutlined } from '@ant-design/icons';
+import {
+  SettingOutlined, InfoCircleOutlined, UserOutlined, DatabaseOutlined,
+} from '@ant-design/icons';
 import UserProfileDashboard from '../components/UserProfileDashboard';
 import PersonalizationSettings from '../components/PersonalizationSettings';
 import SpeechSettings from '../components/SpeechSettings';
@@ -78,6 +81,22 @@ const SettingsPage: React.FC = () => {
             <SubjectSelector value={selectedSubject} onChange={setSelectedSubject} />
           </div>
 
+          {/* 资料知识库（个人/管理）：课程资料入口已在「我的课程」内，这里保留个人资料入口 */}
+          <div style={{ marginBottom: 24 }}>
+            <Title level={5} style={{ marginBottom: '16px' }}>
+              <DatabaseOutlined /> 资料知识库（个人 / 管理）
+            </Title>
+            <Card size="small">
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Text type="secondary">
+                  个人资料知识库的上传与索引管理入口。教师课程的「课程资料」在「我的课程 → 课程资料与知识库」里查看，
+                  两套资料权限不同：课程资料由任课老师维护、只对本课程学生可见。
+                </Text>
+                <Link to="/knowledge">进入知识库管理</Link>
+              </Space>
+            </Card>
+          </div>
+
           {/* 运行状态：外部能力与当日用量（观测数据的用户可见入口） */}
           <div style={{ marginBottom: 24 }}>
             <SystemStatusPanel />
@@ -93,7 +112,7 @@ const SettingsPage: React.FC = () => {
               <Space direction="vertical" style={{ width: '100%' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <Text>系统名称</Text>
-                  <Text>智慧教育RAG系统</Text>
+                  <Text>RAG与LangChain融合的智慧教育系统</Text>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <Text>版本</Text>
@@ -119,9 +138,30 @@ const SettingsPage: React.FC = () => {
             </Card>
             
             <Paragraph type="secondary" style={{ marginTop: '16px', fontSize: '12px' }}>
-              智慧教育RAG系统是一个基于检索增强生成技术的教育知识问答系统。
-              系统支持多学科知识库管理，提供智能问答服务，并支持多种AI模型切换。
+              RAG与LangChain融合的智慧教育系统：基于课程资料的检索增强问答与教学辅助。
+              支持多学科/课程知识库、资料级引用、智能问答与教学辅助。
             </Paragraph>
+
+            {/* 技术说明：准确区分 LangChain 组件与自研逻辑，避免把普通函数调用说成"LangChain 链" */}
+            <Card size="small" style={{ marginTop: 12 }}>
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                <Text strong>技术说明（RAG 与 LangChain）</Text>
+                <Text style={{ fontSize: 12 }}>
+                  LangChain 组件：文档加载（PyPDFLoader / TextLoader / UnstructuredMarkdownLoader）、
+                  文本切分（RecursiveCharacterTextSplitter）、统一文档对象（langchain_core Document）、
+                  本地向量化（HuggingFaceEmbeddings）；思维导图生成使用 LangChain 表达式链
+                  （ChatOpenAI + ChatPromptTemplate + JsonOutputParser）。
+                </Text>
+                <Text style={{ fontSize: 12 }}>
+                  项目自研：FAISS 向量存储与缓存（直接调用 faiss）、BM25 关键词检索、RRF 融合与重排、
+                  检索阈值与降级、提示词与上下文组装、模型调用与流式输出、会话与学习闭环、权限校验。
+                </Text>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  问答与检索主链路（chat_service + rag_service）是自研流程，不是 LangChain Chain；
+                  引用只来自真实检索到的资料片段。
+                </Text>
+              </Space>
+            </Card>
           </div>
         </div>
       </Content>

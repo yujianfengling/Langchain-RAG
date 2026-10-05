@@ -6,7 +6,6 @@ import {
   MessageOutlined,
   DatabaseOutlined,
   SettingOutlined,
-  CalendarOutlined,
   ReadOutlined,
   TeamOutlined,
   MenuOutlined,
@@ -36,14 +35,18 @@ const { Text } = Typography;
 // 侧边栏菜单配置（V2.5.1：教学辅助整合进 AI学习助手）
 // 阶段一：新增「我的学习」——今日任务 / 错题本 / 复习 / 掌握度的学生入口
 const sidebarItems = [
-  { key: '/student',    icon: <ReadOutlined />,     label: '我的学习' },
+  /* 主导航只保留三条学习主线 + 设置（2026-10-05）：
+     学习首页 / 我的课程 / AI 学习助手。
+     学习计划不再单列——它已是「学习首页 → 计划与时间」的次级入口；
+     知识库是管理型功能，入口放在「设置 → 课程知识库」。
+     不再用"（次级）"这种标签当降级手段，而是让人物/入口各归其位。 */
+  { key: '/student',              icon: <ReadOutlined />,     label: '学习首页' },
+  { key: '/student?tab=courses',  icon: <DatabaseOutlined />, label: '我的课程' },
+  { key: '/chat',                 icon: <MessageOutlined />,  label: '学习助手' },
   // 教师工作台：仅在后端返回的 role 为 teacher/admin 时显示（**显示不等于权限**，
   // 真正的越权拦截一律在后端；直接输入 /teacher 也会被后端拒绝）
-  { key: '/teacher',    icon: <TeamOutlined />,     label: '教师工作台', teacherOnly: true },
-  { key: '/chat',       icon: <MessageOutlined />,  label: 'AI学习助手' },
-  { key: '/knowledge',  icon: <DatabaseOutlined />, label: '知识库' },
-  { key: '/learning',   icon: <CalendarOutlined />, label: '学习计划' },
-  { key: '/settings',   icon: <SettingOutlined />,  label: '设置' },
+  { key: '/teacher',              icon: <TeamOutlined />,     label: '教师工作台', teacherOnly: true },
+  { key: '/settings',             icon: <SettingOutlined />,  label: '设置' },
 ];
 
 /** 懒加载页面时的占位，避免切换路由白屏 */
@@ -97,7 +100,12 @@ const App: React.FC = () => {
   const getSelectedKey = () => {
     const path = location.pathname;
     if (path.startsWith('/teacher')) return '/teacher';
-    if (path.startsWith('/student')) return '/student';
+    if (path.startsWith('/student')) {
+      /* 学习首页与我的课程共用 /student 路由：用 ?tab= 区分，否则
+         /student?tab=courses 也会高亮「学习首页」（2026-10-04 修复） */
+      const tab = new URLSearchParams(location.search).get('tab');
+      return tab === 'courses' ? '/student?tab=courses' : '/student';
+    }
     if (path.startsWith('/chat')) return '/chat';
     if (path.startsWith('/knowledge')) return '/knowledge';
     if (path.startsWith('/learning')) return '/learning';
@@ -106,8 +114,12 @@ const App: React.FC = () => {
   };
 
   // ---- 导航内容（侧边栏与手机抽屉共用同一份，避免两处菜单走样）----
-  const brandNode = (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+  /**
+   * 品牌区。完整名称较长，侧边栏/抽屉里换行展示，不硬挤一行；
+   * 窄屏顶栏用短名（见下方 app-topbar-title）。
+   */
+  const brandNode = (compact = false) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
       <div
         style={{
           width: 38, height: 38, borderRadius: 11,
@@ -119,12 +131,15 @@ const App: React.FC = () => {
       >
         智
       </div>
-      <div>
-        <div style={{ fontWeight: 700, fontSize: 15, color: '#0f172a', letterSpacing: '-0.02em', lineHeight: 1.2 }}>
-          RAG智慧教育
+      <div style={{ minWidth: 0 }}>
+        <div style={{
+          fontWeight: 700, fontSize: compact ? 15 : 13, color: '#0f172a',
+          letterSpacing: '-0.02em', lineHeight: 1.35, wordBreak: 'break-word',
+        }}>
+          {compact ? 'RAG智慧教育' : 'RAG与LangChain融合的智慧教育系统'}
         </div>
-        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, letterSpacing: '0.01em' }}>
-          检索增强 · 智能问答
+        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, lineHeight: 1.4 }}>
+          {compact ? '检索增强问答' : '基于课程资料的检索增强问答与教学辅助'}
         </div>
       </div>
     </div>
@@ -184,9 +199,16 @@ const App: React.FC = () => {
         },
         components: {
           Menu: {
+            /* 浅色底上的可读性（2026-10-04 人工测试反馈：悬浮时文字变白、与浅色背景糊在一起）。
+               原实现把 `itemHoverColor` 设成了近白色 #f0fdfa——那是"背景色"却被当成
+               文字/图标色，于是悬浮反而看不见。现在：默认深字、悬浮深青字 + 浅青底、
+               选中深青字 + 更明显的浅青底，并显式给出 active/focus 底色。 */
+            itemColor: '#0f172a',
+            itemHoverColor: '#0f766e',
+            itemHoverBg: '#f0fdfa',
             itemSelectedColor: '#0f766e',
-            itemHoverColor: '#f0fdfa',
-            itemSelectedBg: '#f0fdfa',
+            itemSelectedBg: '#ccfbf1',
+            itemActiveBg: '#ccfbf1',
             horizontalItemSelectedColor: '#0f766e',
             itemHeight: 42,
           },
@@ -228,7 +250,7 @@ const App: React.FC = () => {
             }}
           >
             <div style={{ padding: '20px 20px 16px', borderBottom: '1px solid #f1f5f9' }}>
-              {brandNode}
+              {brandNode()}
             </div>
             <div style={{ flex: 1, padding: '8px 10px', overflowY: 'auto' }}>{menuNode}</div>
             <div style={{ padding: '10px 14px', borderTop: '1px solid #f1f5f9' }}>
@@ -272,7 +294,7 @@ const App: React.FC = () => {
           title={null}
         >
           <div style={{ display: 'flex', alignItems: 'center', padding: '14px 16px', borderBottom: '1px solid #f1f5f9' }}>
-            {brandNode}
+            {brandNode()}
             <Button
               type="text"
               icon={<CloseOutlined />}

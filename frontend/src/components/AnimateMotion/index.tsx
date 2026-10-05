@@ -25,8 +25,9 @@ export const AnimatedPage: React.FC<{ children: React.ReactNode; className?: str
 );
 
 // ============ 聊天气泡弹入（快速柔和） ============
-export const MessageBubble: React.FC<{ children: React.ReactNode; delay?: number; style?: React.CSSProperties }> = ({ children, delay = 0, style }) => (
+export const MessageBubble: React.FC<{ children: React.ReactNode; delay?: number; style?: React.CSSProperties; className?: string }> = ({ children, delay = 0, style, className }) => (
   <motion.div
+    className={className}
     initial={{ opacity: 0, y: 10, scale: 0.98 }}
     animate={{ opacity: 1, y: 0, scale: 1 }}
     transition={{ 

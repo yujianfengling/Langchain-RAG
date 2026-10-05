@@ -25,6 +25,10 @@ export interface StreamDeltaEvent {
 export interface StreamDoneEvent {
   type: 'done';
   sources?: SourceInfo[];
+  /** 检索到课程资料并作为上下文提供给了模型（不等于回答引用了它） */
+  context_used?: boolean;
+  /** 回答中显式标注引用的来源编号 */
+  cited_source_ids?: number[];
   model?: string;
   provider?: string;
   elapsed?: number;

@@ -441,14 +441,43 @@ body {
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 
-.ant-menu-item:hover {
-  background: #f0fdfa !important;
+/* 侧边栏菜单：浅底深字。hover / selected / focus 三种状态都必须可读
+   （2026-10-04 人工测试反馈：悬浮时文字变白，与浅色背景糊在一起，菜单无法辨认） */
+.app-sider {
+  background: #ffffff !important;
 }
 
-.ant-menu-item-selected {
+.app-sider .ant-menu-item,
+.ant-menu-light .ant-menu-item {
+  color: #0f172a !important;
+}
+
+.ant-menu-item .anticon {
+  color: inherit !important;
+}
+
+.ant-menu-item:hover,
+.ant-menu-item:focus-visible,
+.ant-menu-item-active {
   background: #f0fdfa !important;
   color: #0f766e !important;
+}
+
+.ant-menu-item:hover .anticon,
+.ant-menu-item:focus-visible .anticon,
+.ant-menu-item-active .anticon {
+  color: #0f766e !important;
+}
+
+.ant-menu-item-selected,
+.ant-menu-item-selected:hover {
+  background: #ccfbf1 !important;
+  color: #0f766e !important;
   font-weight: 600 !important;
+}
+
+.ant-menu-item-selected .anticon {
+  color: #0f766e !important;
 }
 
 .ant-menu-item-selected::after {
@@ -482,4 +511,19 @@ a:hover {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
   border-radius: var(--radius-xs);
+}
+
+/* ==================== 手机端阅读优化（2026-10-05） ====================
+/* 390px 下减少助手气泡左右留白，让回答与引用原文充分使用可用宽度；
+   头像与引用入口保留，桌面布局不变。 */
+@media (max-width: 480px) {
+  .chat-messages { padding: 8px 6px !important; }
+  .chat-msg-row { gap: 8px !important; }
+  .chat-bubble { max-width: 100% !important; }
+  .chat-bubble-content { padding: 10px 10px !important; }
+  .chat-bubble-content .markdown-body { font-size: 13px; }
+  /* 代码 / 公式：横向滚动，不撑破页面 */
+  .chat-bubble-content pre,
+  .chat-bubble-content .markdown-body pre { overflow-x: auto; max-width: 100%; }
+  .chat-bubble-content img { max-width: 100%; height: auto; }
 }

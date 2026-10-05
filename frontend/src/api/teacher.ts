@@ -344,6 +344,10 @@ export interface PlanEvidence {
   page?: number | null;
   type?: string | null;
   source?: string | null;
+  /** 真实原文片段（检索命中时由后端给出），用于教师核对依据 */
+  snippet?: string | null;
+  /** 章节/小节（资料里有才给） */
+  section?: string | null;
 }
 
 export interface PlanClassSummary {
@@ -535,7 +539,15 @@ export interface GenerateQuestionsResult {
   question_ids: string[];
   requested: number;
   generated: number;
-  knowledge_point: string;
+  /** 知识点归属确定的**有效**题数（"全部待确认"时 valid_count=0，不算定向出题成功） */
+  valid_count?: number;
+  /** 归属待确认的题数（保留题目与作答，但不计入知识点掌握度） */
+  pending_count?: number;
+  /** 有效题为 0 或存在待确认时的明确说明（含不足原因与下一步建议） */
+  warning?: string | null;
+  retryable?: boolean;
+  knowledge_points_used?: string[];
+  knowledge_point: string | null;
   evidence: PlanEvidence[];
   model: string;
 }

@@ -137,28 +137,31 @@ const UserAuth: React.FC = () => {
             type="info"
             showIcon
             style={{ marginBottom: 12 }}
-            message="登录后作答、错题、复习与计划会归属到你的账号"
+            message={mode === 'login'
+              ? '用学号（学生）或工号（教师）登录'
+              : '注册后即可作答、看错题与复习安排'}
           />
           {error && <Alert type="error" showIcon style={{ marginBottom: 12 }} message={error} />}
           <Form form={form} layout="vertical" requiredMark={false}>
             <Form.Item
               name="username"
-              label="用户名"
-              rules={[{ required: true, message: '请输入用户名' }]}
+              label="账号"
+              extra="学生填学号，教师填工号；也可以用已有的英文账号"
+              rules={[{ required: true, message: '请输入账号（学号 / 工号）' }]}
             >
-              <Input autoComplete="username" placeholder="3-32 位字母/数字/下划线/中文" />
+              <Input autoComplete="username" placeholder="例如 20250101 或 demo_student" />
             </Form.Item>
             {mode === 'register' && (
-              <Form.Item name="display_name" label="昵称（可选）">
-                <Input placeholder="显示名称" />
+              <Form.Item name="display_name" label="姓名（可选）">
+                <Input placeholder="显示名称，例如 张三" />
               </Form.Item>
             )}
             <Form.Item
               name="password"
-              label="口令"
+              label="密码"
               rules={[
-                { required: true, message: '请输入口令' },
-                { min: 6, message: '口令至少 6 位' },
+                { required: true, message: '请输入密码' },
+                { min: 6, message: '密码至少 6 位' },
               ]}
             >
               <Input.Password autoComplete={mode === 'login' ? 'current-password' : 'new-password'} />

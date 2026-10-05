@@ -24,7 +24,8 @@ export interface QuizListProps {
   sourceTaskId?: string;
   conversationId?: string;
   /** 完成一次作答后回调（供父组件刷新掌握度/错题/复习） */
-  onAnswered?: (result: AttemptResult, question: PublicQuestion) => void;
+  onAnswered?: (result: AttemptResult, question: PublicQuestion,
+                progress: { answered: number; total: number }) => void;
   /** 紧凑模式（聊天卡片内使用） */
   compact?: boolean;
 }
@@ -125,7 +126,10 @@ export const QuizList: React.FC<QuizListProps> = ({
       if (data) {
         patch(q.id, { result: data, submitting: false });
       delete tokenCache.current[q.id];   // 成功后轮换：重做算新的一次作答
-        onAnswered?.(data, q);
+        // 作答进度：本次已作答 / 本组总题数（用于"完成的是目标知识点，不是整组"的提示）
+        const answeredNow = quizzes.filter(
+          (x) => x.id === q.id || !!(states[x.id] && states[x.id].result)).length;
+        onAnswered?.(data, q, { answered: answeredNow, total: quizzes.length });
         if (data.grade_status === 'ai_graded') {
           message.info(data.ai_feedback
             ? `AI 评判：${data.ai_feedback}`

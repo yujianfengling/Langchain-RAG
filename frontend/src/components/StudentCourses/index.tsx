@@ -1,16 +1,17 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Alert, Badge, Button, Card, Descriptions, Empty, Input, List, Modal, Radio,
-  Space, Spin, Tag, Typography, message,
+  Space, Spin, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
-  BookOutlined, CheckCircleOutlined, FileTextOutlined, LoginOutlined,
+  BookOutlined, CheckCircleOutlined, DatabaseOutlined, FileTextOutlined, LoginOutlined,
   ReloadOutlined, TeamOutlined,
 } from '@ant-design/icons';
 import {
   AssignmentQuestion, MyCourse, StudentAssignment,
   completeAssignment, describeCourseError, getAssignment, joinCourseByCode,
-  leaveCourse, listCourseLessonPlans, listMyAssignments, listMyCourses,
+  leaveCourse, listCourseLessonPlans, listCourseMaterials, listMyAssignments, listMyCourses,
 } from '../../api/studentCourses';
 import { submitAnswer } from '../../api/student';
 import { MarkdownBlock } from '../Teacher/common';
@@ -30,10 +31,20 @@ const { Text, Paragraph } = Typography;
 export interface StudentCoursesProps {
   /** 入班成功后回调：把该课程的学科告知父组件（用于自动选中学科，避免错题本"看不到东西"） */
   onJoined?: (subjectId?: string) => void;
+  /** 深链目标：打开「我的课程」时自动弹出这份作业（首页「去作答」按钮用） */
+  focusAssignmentId?: string | null;
+  /** 深链已消费回调：父组件据此把 assignment 参数从网址移除 */
+  onFocusConsumed?: () => void;
+  /** 课程/作业状态变化（提交作业、入班、退班）→ 让首页立即刷新，不必手动刷新 */
+  onChanged?: () => void;
 }
 
-const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
+const StudentCourses: React.FC<StudentCoursesProps> = ({
+  onJoined, focusAssignmentId, onFocusConsumed, onChanged,
+}) => {
   const [loading, setLoading] = useState(false);
+  /** 是否已完成过一次加载：深链判断"没找到"必须等加载完，否则首帧就误判 */
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [courses, setCourses] = useState<MyCourse[]>([]);
   const [assignments, setAssignments] = useState<StudentAssignment[]>([]);
@@ -46,6 +57,15 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, any>>({});
+  // 提交后的结果小结（作业"完成"与"答对"分开：答错也算完成，并已进入错题/复习）
+  const [submitResult, setSubmitResult] =
+    useState<{ correct: number; wrong: number; total: number } | null>(null);
+  // 课程资料与知识库（学生可见范围 + 真实建库状态）
+  const [materialsCourse, setMaterialsCourse] = useState<MyCourse | null>(null);
+  const [materials, setMaterials] = useState<any[] | null>(null);
+  const [materialsKb, setMaterialsKb] = useState<any>(null);
+  const [materialsLoading, setMaterialsLoading] = useState(false);
+  const navigate = useNavigate();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -62,6 +82,7 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
       setAssignments((assignRes.value as any)?.data?.assignments || []);
     }
     setLoading(false);
+    setLoaded(true);
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -116,9 +137,10 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
     });
   };
 
-  const openAssignmentDetail = async (assignment: StudentAssignment) => {
+  const openAssignmentDetail = useCallback(async (assignment: StudentAssignment) => {
     setResults({});
     setAnswers({});
+    setSubmitResult(null);
     try {
       const res: any = await getAssignment(assignment.id);
       setOpenAssignment(res?.data || null);
@@ -130,7 +152,24 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
     } catch (e) {
       message.error(describeCourseError(e));
     }
-  };
+  }, []);
+
+  // 深链：/student?tab=courses&assignment=<id> 直接打开这份作业（首页「去作答」按钮）
+  const focusedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusAssignmentId || focusedRef.current === focusAssignmentId) return;
+    const target = assignments.find((a) => a.id === focusAssignmentId);
+    if (target) {
+      focusedRef.current = focusAssignmentId;
+      openAssignmentDetail(target);
+      onFocusConsumed?.();
+    } else if (loaded && !loading) {
+      // 目标不存在（已下线/不属于本班）：停止重试并如实告知，不假装打开成功
+      focusedRef.current = focusAssignmentId;
+      message.warning('没有找到这份作业（可能已被老师下线，或不属于你的班级）');
+      onFocusConsumed?.();
+    }
+  }, [focusAssignmentId, assignments, loaded, loading, openAssignmentDetail, onFocusConsumed]);
 
   // 幂等令牌缓存（2026-10-03 修复）：此前 token 里带 `Date.now()`，每次点击都不同，
   // 后端 client_token 幂等永不命中 → 同一题重复提交会被重复计数。
@@ -174,15 +213,45 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
   const finishAssignment = async () => {
     try {
       await completeAssignment(openAssignment.id);
-      message.success('已标记完成');
-      setOpenAssignment(null);
+      const vals: any[] = Object.values(results);
+      setSubmitResult({
+        correct: vals.filter((r) => r?.is_correct === true).length,
+        wrong: vals.filter((r) => r?.is_correct === false).length,
+        total: (openAssignment.questions || []).length,
+      });
+      message.success('作业已提交');
       await load();
+      // 首页与"我的课程"是同一路由下的不同视图，提交后立即通知首页刷新
+      onChanged?.();
     } catch (e) {
       message.error(describeCourseError(e));
     }
   };
 
+  /** 查看本课程资料与知识库状态（学生只看得到"学生可见"的资料） */
+  const openMaterials = async (course: MyCourse) => {
+    setMaterialsCourse(course);
+    setMaterials(null);
+    setMaterialsKb(null);
+    setMaterialsLoading(true);
+    try {
+      const res: any = await listCourseMaterials(course.course_id);
+      setMaterials(res?.data?.materials || []);
+      setMaterialsKb(res?.data?.knowledge_base || null);
+    } catch (e) {
+      setMaterials([]);
+      message.error(describeCourseError(e));
+    } finally {
+      setMaterialsLoading(false);
+    }
+  };
+
   const questionText = (q: AssignmentQuestion) => q.question || q.stem || '（题干缺失）';
+
+  // 作业"是否完成"（每题作答）与"是否答对"分开：答错也允许提交
+  const answeredCount = Object.keys(results).length;
+  const totalCount = (openAssignment?.questions || []).length;
+  const allAnswered = totalCount > 0 && answeredCount >= totalCount;
 
   /** 查看本课程**已发布**的教案（草稿在后端就不下发） */
   const openLessonPlans = async (course: MyCourse) => {
@@ -233,6 +302,9 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
               renderItem={(c) => (
                 <List.Item
                   actions={[
+                    <Button key="kb" size="small" type="link"
+                            icon={<DatabaseOutlined />}
+                            onClick={() => openMaterials(c)}>课程资料与知识库</Button>,
                     <Button key="plans" size="small" type="link"
                             icon={<FileTextOutlined />}
                             onClick={() => openLessonPlans(c)}>已发布教案</Button>,
@@ -318,13 +390,42 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
         title={openAssignment?.title}
         onCancel={() => setOpenAssignment(null)}
         width={760}
-        footer={[
+        footer={submitResult ? [
+          <Button key="home" type="primary"
+                  onClick={() => { setOpenAssignment(null); navigate('/student'); }}>
+            返回学习首页
+          </Button>,
+          <Button key="stay" onClick={() => setOpenAssignment(null)}>留在本页</Button>,
+        ] : [
           <Button key="close" onClick={() => setOpenAssignment(null)}>关闭</Button>,
-          <Button key="done" type="primary" icon={<CheckCircleOutlined />}
-                  onClick={finishAssignment}>标记完成</Button>,
+          <Tooltip key="submit-tip"
+                   title={allAnswered ? '' : '还有 ' + Math.max(0, totalCount - answeredCount) + ' 题未作答'}>
+            <Button key="submit" type="primary" icon={<CheckCircleOutlined />}
+                    disabled={!allAnswered}
+                    onClick={finishAssignment}>提交作业</Button>
+          </Tooltip>,
         ]}
       >
-        {openAssignment && (
+        {openAssignment && (submitResult ? (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Alert
+              type="success"
+              showIcon
+              message="作业已提交"
+              description={
+                '共 ' + submitResult.total + ' 题：答对 ' + submitResult.correct
+                + ' 题，答错 ' + submitResult.wrong + ' 题。'
+                + (submitResult.wrong > 0
+                  ? '答错的题已进入错题本，并会安排后续复习。'
+                  : '全部答对，继续保持。')
+              }
+            />
+            <Text type="secondary">
+              「完成作业」和「全部答对」是两件事：只要每题都作答过就能提交；
+              答错的题仍会按正常流程进入错题与复习。
+            </Text>
+          </Space>
+        ) : (
           <Space direction="vertical" style={{ width: '100%' }} size={12}>
             <Descriptions size="small" column={2}>
               <Descriptions.Item label="课程">{openAssignment.course_title || '—'}</Descriptions.Item>
@@ -337,6 +438,14 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
               type="info"
               showIcon
               message="作答由后端判分，交卷前不会显示标准答案"
+            />
+            <Alert
+              type={allAnswered ? 'success' : 'warning'}
+              showIcon
+              message={'已作答 ' + answeredCount + ' / ' + totalCount + ' 题'}
+              description={allAnswered
+                ? '已全部作答，可以提交作业。'
+                : '还有 ' + Math.max(0, totalCount - answeredCount) + ' 题未作答，全部作答后才能提交。'}
             />
             {(openAssignment.questions || []).map((q: AssignmentQuestion, idx: number) => {
               const r = results[q.id];
@@ -371,7 +480,7 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
               );
             })}
           </Space>
-        )}
+        ))}
       </Modal>
 
       <Modal
@@ -405,6 +514,80 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({ onJoined }) => {
           </Space>
         )}
       </Modal>
+
+      {/* 课程资料与知识库：学生可见范围 + 真实建库状态 */}
+      <Modal
+        open={!!materialsCourse}
+        title={materialsCourse ? '《' + materialsCourse.title + '》课程资料与知识库' : '课程资料'}
+        onCancel={() => { setMaterialsCourse(null); setMaterials(null); setMaterialsKb(null); }}
+        footer={null}
+        width={720}
+      >
+        {materialsLoading ? <Spin /> : (
+          <Space direction="vertical" size={10} style={{ width: '100%' }}>
+            <Alert
+              type={materialsKb?.available ? 'success' : 'warning'}
+              showIcon
+              message={materialsKb?.available
+                ? '课程知识库可用（已收录 ' + (materialsKb?.document_count ?? 0) + ' 份文档）'
+                : '课程知识库当前不可用'}
+              description={materialsKb?.available
+                ? '在「学习助手」里基于本课程资料提问时，回答会引用这里的文件与原文片段。'
+                : (materialsKb?.error || '老师还没有上传资料，或资料尚未建库完成。')}
+            />
+            {materials === null ? <Spin /> : materials.length === 0 ? (
+              <Empty description="本课程还没有对学生可见的资料" />
+            ) : (
+              <List
+                dataSource={materials}
+                renderItem={(m: any) => (
+                  <List.Item>
+                    <List.Item.Meta
+                      title={
+                        <Space wrap>
+                          <FileTextOutlined />
+                          <Text>{m.filename}</Text>
+                          <Tag>{m.status === 'ready' ? '已就绪' : (m.status || '处理中')}</Tag>
+                        </Space>
+                      }
+                      description={
+                        <Space wrap size={12}>
+                          {m.size_bytes != null && (
+                            <Text type="secondary">{Math.round(m.size_bytes / 1024)} KB</Text>
+                          )}
+                          <Text type="secondary">
+                            {m.visibility === 'students' ? '学生可见' : '仅教师可见'}
+                          </Text>
+                          {m.created_at && (
+                            <Text type="secondary">上传于 {String(m.created_at).slice(0, 10)}</Text>
+                          )}
+                        </Space>
+                      }
+                    />
+                  </List.Item>
+                )}
+              />
+            )}
+          </Space>
+        )}
+      </Modal>
+
+      {/* 个人资料知识库：与"教师课程资料"区分开，入口仍然可达 */}
+      <Card
+        size="small"
+        style={{ marginTop: 12 }}
+        title={<Space><DatabaseOutlined />个人资料知识库</Space>}
+        extra={
+          <Button size="small" type="primary" onClick={() => navigate('/knowledge')}>
+            管理我的资料
+          </Button>
+        }
+      >
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          这里是你个人上传/维护的资料知识库，与上面老师课程的「课程资料」是两套：
+          课程资料由任课老师维护、只对本课程学生可见；个人资料仅你自己使用。
+        </Text>
+      </Card>
     </div>
   );
 };
