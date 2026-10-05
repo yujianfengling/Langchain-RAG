@@ -49,6 +49,7 @@ from pydantic import BaseModel, Field
 
 from api.deps import require_admin, require_current_user, require_teacher
 from api.schemas.response_schema import SuccessResponse
+from starlette.concurrency import run_in_threadpool
 from services.teaching_data import TeachingError
 
 router = APIRouter()
@@ -519,7 +520,10 @@ async def upload_material(course_id: str,
     from services import teaching_service
     try:
         content = await file.read()
-        data = teaching_service.upload_material(
+        # 上传会同步重建知识库（含嵌入），必须移出事件循环，避免阻塞其他请求
+        # （否则连续上传/浏览会互相卡住）
+        data = await run_in_threadpool(
+            teaching_service.upload_material,
             user_id, course_id, content, file.filename or "", visibility=visibility)
         return SuccessResponse(data=data, message="资料上传成功")
     except TeachingError as e:
@@ -545,8 +549,9 @@ async def delete_material(material_id: str, course_id: str = Query(...),
                           user_id: str = Depends(require_current_user)):
     from services import teaching_service
     try:
-        return SuccessResponse(data=teaching_service.delete_material(user_id, course_id, material_id),
-                               message="资料已删除")
+        data = await run_in_threadpool(
+            teaching_service.delete_material, user_id, course_id, material_id)
+        return SuccessResponse(data=data, message="资料已删除")
     except TeachingError as e:
         return _err(e)
 
@@ -558,7 +563,8 @@ async def set_visibility(material_id: str, request: VisibilityRequest,
     """设置资料可见范围（学生可见 / 仅教师）"""
     from services import teaching_service
     try:
-        data = teaching_service.set_material_visibility(
+        data = await run_in_threadpool(
+            teaching_service.set_material_visibility,
             user_id, course_id, material_id, request.visibility)
         return SuccessResponse(data=data, message="可见范围已更新")
     except TeachingError as e:
@@ -570,7 +576,8 @@ async def rebuild_knowledge(course_id: str, user_id: str = Depends(require_curre
     """重建课程知识库（失败会返回原因，不会静默成功）"""
     from services import teaching_service
     try:
-        data = teaching_service.rebuild_course_knowledge(user_id, course_id)
+        data = await run_in_threadpool(
+            teaching_service.rebuild_course_knowledge, user_id, course_id)
         return SuccessResponse(data=data,
                                message="知识库重建完成" if data.get("ok") else "知识库重建失败")
     except TeachingError as e:

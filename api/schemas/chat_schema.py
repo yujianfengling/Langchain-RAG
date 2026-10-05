@@ -39,7 +39,10 @@ class ChatResponse(BaseModel):
     provider: Optional[str] = None
     provider_display: Optional[str] = None
     latency: float = 0.0
+    # 检索到课程资料并放进上下文（不等于"回答引用了它"）
     context_used: bool = False
+    # 回答中显式标注引用的来源编号（如 [1][2]）——"实际引用"的确定性信号
+    cited_source_ids: List[int] = []
     message_type: Optional[str] = None
     payload: Optional[dict] = None
     detail_level: Optional[str] = None

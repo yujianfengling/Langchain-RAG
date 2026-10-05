@@ -241,18 +241,51 @@ def build_teaching_context(user_id: Optional[str], subject_id: Optional[str],
     # ---- 1) 相关知识点证据 ----
     if point:
         bd = point.get("evidence_breakdown") or {}
-        wrong = bd.get("independent_wrong", 0)
-        correct = bd.get("independent_correct", 0)
-        sample = correct + wrong
+        latest = point.get("latest_view") or {}
+        # 历史累计（用于复习与趋势）
+        hist_wrong = bd.get("independent_wrong", 0)
+        hist_correct = bd.get("independent_correct", 0)
+        hist_sample = hist_wrong + hist_correct
+        # 当前掌握口径与学生面板一致：每题最新一次有效作答（Design C）。
+        # 2026-10-05 修复：此前这里读累计 mastery_level，出现"学生刚答错、面板已降到
+        # 低分，Agent/讲解却仍按累计高分走"的口径分裂；没有最新证据时回退累计并标注 basis。
+        latest_mastery = latest.get("latest_mastery_level")
+        latest_wrong = latest.get("latest_independent_wrong")
+        latest_correct = latest.get("latest_independent_correct")
+        latest_sample = latest.get("latest_evidence_count")
+        wrong = latest_wrong if latest_wrong is not None else hist_wrong
+        correct = latest_correct if latest_correct is not None else hist_correct
+        sample = latest_sample if latest_sample else hist_sample
+        # 是否"跨天间隔复现"（而不是同一段时间内连续答对）。
+        # 长期掌握只认跨天复现；密集答对（fast path）不能被说成"已通过间隔复现"。
+        from services import mastery_service
+        first_at, last_at = point.get("first_correct_at"), point.get("last_correct_at")
+        spaced_review = mastery_service.is_spaced_consolidation(first_at, last_at)
+        span_days = mastery_service._span_days(first_at, last_at)
         signals = {
             "knowledge_point": point.get("knowledge_point"),
             "knowledge_point_id": point.get("knowledge_point_id"),
+            # 当前（每题最新有效作答，与学生面板一致）
+            "mastery_level": (latest_mastery if latest_mastery is not None
+                              else point.get("mastery_level")),
+            "mastery_basis": "每题最新一次有效作答（与学生面板一致）",
+            "latest_mastery_level": latest_mastery,
+            "latest_independent_correct": correct,
+            "latest_independent_wrong": wrong,
+            "latest_evidence_count": sample,
+            # 兼容旧字段：当前口径
             "independent_correct": correct,
             "independent_wrong": wrong,
             "sample_size": sample,
-            "mastery_level": point.get("mastery_level"),
+            # 历史累计（勿当作"当前掌握"）
+            "history_mastery_level": point.get("mastery_level"),
+            "history_independent_correct": hist_correct,
+            "history_independent_wrong": hist_wrong,
+            "history_sample_size": hist_sample,
             "mastery_status": point.get("mastery_status"),
             "consolidated": point.get("consolidated"),
+            "correct_span_days": span_days,
+            "spaced_review": spaced_review,
             "review_wrong": bd.get("review_wrong", 0),
         }
 
@@ -266,31 +299,62 @@ def build_teaching_context(user_id: Optional[str], subject_id: Optional[str],
     task = _current_task(user_id, subject_id, kp_id)
     signals["task"] = task
 
-    # ---- 4) 判定教学策略（可解释） ----
+    # ---- 4) 判定教学策略（可解释，口径 = 每题最新有效作答） ----
     sample = signals.get("sample_size") or 0
     wrong = signals.get("independent_wrong") or 0
     correct = signals.get("independent_correct") or 0
     mastery = signals.get("mastery_level")
+    hist_correct = signals.get("history_independent_correct") or 0
+    hist_wrong = signals.get("history_independent_wrong") or 0
+    hist_sample = signals.get("history_sample_size") or 0
 
     mode = MODE_STANDARD
+    # 判据放在"当前口径"上：刚发生独立答错就进入基础优先（小步练习），
+    # 而不是被历史累计的高分掩盖。样本为 0 时不预设水平。
     if sample == 0:
         result["reasons"].append(
             "该知识点尚无作答证据 → 使用常规教学，不预设学生水平")
-    elif wrong >= FOUNDATION_MIN_WRONG and mastery is not None and mastery < ADVANCED_MASTERY:
+    elif wrong >= FOUNDATION_MIN_WRONG and (mastery is None or mastery < ADVANCED_MASTERY):
         mode = MODE_FOUNDATION
         result["reasons"].append(
-            f"该知识点有 {wrong} 次独立答错、{correct} 次独立答对 → 以基础讲解与小步练习为主")
+            f"按每题最新有效作答：最近有 {wrong} 次独立答错、{correct} 次独立答对"
+            f"（历史累计对 {hist_correct}/错 {hist_wrong}）→ 以基础讲解与小步练习为主")
     elif (sample >= ADVANCED_MIN_SAMPLE and mastery is not None
-          and mastery >= ADVANCED_MASTERY and signals.get("consolidated")):
+          and mastery >= ADVANCED_MASTERY and signals.get("consolidated")
+          and signals.get("spaced_review")):
         mode = MODE_ADVANCED
         result["reasons"].append(
-            f"该知识点已通过间隔复现（独立作答 {sample} 次，掌握估计 "
-            f"{round(mastery * 100)}%）→ 可进入综合练习与迁移应用")
+            f"该知识点当前掌握估计 {round(mastery * 100)}% 且已跨天间隔复现"
+            f"（每题最新有效作答 {sample} 次）→ 可进入综合练习与迁移应用")
+    elif (signals.get("consolidated") and mastery is not None
+          and mastery >= ADVANCED_MASTERY):
+        # 密集答对（同一段时间内）不足以判定长期掌握，保持常规教学并如实说明
+        result["reasons"].append(
+            f"已连续答对（每题最新有效作答 {sample} 次，掌握估计 "
+            f"{round(mastery * 100)}%），但尚未跨天间隔复现 → 仍按常规讲解，暂不认定为长期掌握")
     elif mastery is not None:
         result["reasons"].append(
-            f"该知识点有 {sample} 次独立作答、掌握估计 {round(mastery * 100)}% "
-            f"（暂估，未通过间隔复现）→ 常规讲解 + 针对性练习")
+            f"按每题最新有效作答：当前掌握估计 {round(mastery * 100)}%"
+            f"（独立作答 {sample} 次，尚未间隔复现）→ 常规讲解 + 针对性练习")
     result["teaching_mode"] = mode
+
+    # ---- 4.1) 一句学生可感知的变化说明（只依据真实记录；证据为 0 时不宣称） ----
+    kp_name = signals.get("knowledge_point")
+    if kp_name and sample > 0:
+        # 说明只引用"知识点 + 真实独立答错次数"：题目的知识点标签由出题环节给出，
+        # 可能与知识点语义不完全对应，直接引用题干会造成"说明与题目不匹配"。
+        if mode == MODE_FOUNDATION:
+            result["adaptation_note"] = (
+                f"你上次在「{kp_name}」上有 {wrong} 次独立答错，"
+                "这次先用基础讲解并针对这些错题做小步练习。")
+        elif mode == MODE_ADVANCED:
+            result["adaptation_note"] = (
+                f"你在「{kp_name}」上已有 {correct} 次独立答对并通过跨天复现，这次进入综合练习。")
+        elif wrong >= 1:
+            # 有真实独立答错但掌握估计还不低：仍然针对这些错题做小步复习
+            result["adaptation_note"] = (
+                f"你上次在「{kp_name}」上有 {wrong} 次独立答错，"
+                "这次先复习这些错题，再做同类练习。")
     # 结构化信号随结果一起返回（前端展示与自动化验收都要用）
     result["signals"] = signals
 
@@ -318,11 +382,16 @@ def build_teaching_context(user_id: Optional[str], subject_id: Optional[str],
             f"- {_truncate(p, BUDGET['preferences'] // max(1, len(prefs)))}" for p in prefs[:3]))
 
     if sample > 0:
-        ev = (f"- 相关知识点：{signals.get('knowledge_point')}；独立作答 {sample} 次"
-              f"（对 {correct} / 错 {wrong}）")
+        ev = (f"- 相关知识点：{signals.get('knowledge_point')}；"
+              f"每题最新有效作答 {sample} 次（对 {correct} / 错 {wrong}）")
         if mastery is not None:
-            ev += f"；掌握估计 {round(mastery * 100)}%（暂估，非结论）"
-            ev += "；已通过间隔复现" if signals.get("consolidated") else "；尚未间隔复现"
+            ev += f"；当前掌握估计 {round(mastery * 100)}%（暂估，非结论）"
+            ev += ("；已跨天间隔复现"
+                   if (signals.get("consolidated") and signals.get("spaced_review"))
+                   else "；尚未跨天间隔复现（连续答对不视为长期掌握）")
+        if hist_sample:
+            ev += (f"；历史累计独立作答 {hist_sample} 次"
+                   f"（对 {hist_correct} / 错 {hist_wrong}，仅用于复习与趋势）")
         lines.append("【该知识点的真实作答证据】\n" + _truncate(ev, BUDGET["evidence"]))
 
     if mistakes:

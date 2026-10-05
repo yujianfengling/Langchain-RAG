@@ -201,19 +201,47 @@ class TestPersonalizedTeaching(Phase2Base):
         self.assertGreaterEqual(sig.get("independent_wrong") or 0, 1)
         self.assertTrue(any("基础" in r for r in teaching.get("reasons") or []))
 
-    def test_evidenced_student_gets_advanced(self):
-        """已有充分且间隔复现的证据 → 允许综合练习"""
-        token, uid = self.login("p2_advanced")
-        # 同一知识点连续独立答对 3 次（不同题目 → 都是独立证据）→ 判定已巩固
+    def test_dense_correct_is_not_long_term_mastery(self):
+        """同一段时间内连续答对 → 仍按常规讲解，不宣称长期掌握（2026-10-05 口径）"""
+        token, uid = self.login("p2_dense")
+        # 同一知识点连续独立答对 3 次（不同题目 → 都是独立证据）
         for i in (1, 2, 3):
             quiz = self.gen_quiz(token, topic=KP)
             q = next(x for x in quiz if x["type"] == "single_choice")
-            self.answer(token, q["id"], "B", f"adv-{i}")
+            self.answer(token, q["id"], "B", f"dense-{i}")
+
+        teaching = self._system_prompt(token)
+        self.assertEqual(teaching.get("mode"), "standard", teaching)
+        self.assertTrue(any("跨天" in r for r in teaching.get("reasons") or []),
+                        teaching.get("reasons"))
+
+    def test_spaced_evidence_gets_advanced(self):
+        """真正跨天复现的证据 → 允许综合练习"""
+        from datetime import datetime, timedelta
+        token, uid = self.login("p2_spaced")
+        for i in (1, 2, 3):
+            quiz = self.gen_quiz(token, topic=KP)
+            q = next(x for x in quiz if x["type"] == "single_choice")
+            self.answer(token, q["id"], "B", f"spaced-{i}")
+
+        # 把"最早答对时间"回拨 2 天，模拟跨天间隔复现（真实实现的判据就是它）
+        from services import mastery_service
+        conn = mastery_service._get_db()
+        try:
+            old = (datetime.now() - timedelta(days=2)).isoformat(timespec="seconds")
+            conn.execute(
+                "UPDATE knowledge_mastery SET first_correct_at=? "
+                "WHERE user_id=? AND subject_id=? AND knowledge_point=?",
+                (old, uid, SUBJECT, KP))
+            conn.commit()
+        finally:
+            conn.close()
 
         teaching = self._system_prompt(token)
         self.assertEqual(teaching.get("mode"), "advanced", teaching)
         sig = teaching.get("signals") or {}
         self.assertTrue(sig.get("consolidated"))
+        self.assertTrue(sig.get("spaced_review"))
         self.assertTrue(any("综合练习" in r for r in teaching.get("reasons") or []))
 
     def test_two_accounts_get_different_teaching(self):
@@ -231,7 +259,8 @@ class TestPersonalizedTeaching(Phase2Base):
         t2 = self._system_prompt(advanced)
         self.assertNotEqual(t1.get("mode"), t2.get("mode"))
         self.assertEqual(t1.get("mode"), "foundation")
-        self.assertEqual(t2.get("mode"), "advanced")
+        # 密集答对不再直接给 advanced（需跨天间隔复现）；这里两者仍应不同
+        self.assertEqual(t2.get("mode"), "standard")
 
     def test_explicit_preference_is_used(self):
         """学生明确设置的偏好进入教学上下文，且来源标注为显式设置"""

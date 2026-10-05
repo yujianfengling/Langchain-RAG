@@ -43,6 +43,7 @@ def _error(e: PlanAdjustmentError):
         "not_found": 404,
         "forbidden": 403,
         "confirmation_required": 409,
+        "stale_proposal": 409,      # 约束已变化，旧方案不再可行
         "conflict": 409,
     }.get(e.error_type, 500)
     return JSONResponse(

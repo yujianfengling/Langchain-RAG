@@ -269,9 +269,12 @@ def _content_hash(subject_id: str, qtype: str, stem: str) -> str:
 
 # ==================== 题库持久化 ====================
 
+PENDING_KP_LABEL = "待确认"
+
+
 def persist_questions(
     subject_id: str,
-    knowledge_point_name: str,
+    knowledge_point_name: Optional[str],
     questions: List[Dict[str, Any]],
     source: str = "note",
     kp_id: Optional[str] = None,
@@ -286,7 +289,14 @@ def persist_questions(
     """
     if not subject_id or not questions:
         return []
-    kp_id = kp_id or ensure_knowledge_point(subject_id, knowledge_point_name, source=source)
+    # 归属待确认的题目：用保留标签留痕，kp_id 置空串（假值）——
+    # 事件层据此跳过"精确掌握度/复习/记忆"，题目与作答记录仍然保留。
+    kp_name = str(knowledge_point_name).strip() if knowledge_point_name else None
+    if kp_name:
+        kp_id = kp_id or ensure_knowledge_point(subject_id, kp_name, source=source)
+    else:
+        kp_name = PENDING_KP_LABEL
+        kp_id = ""
     out: List[Dict[str, Any]] = []
     conn = _get_db()
     try:
@@ -318,7 +328,7 @@ def persist_questions(
                         stem, options_json, correct_option_id, reference_answer, explanation,
                         version, source, content_hash, created_at)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (qid, subject_id, kp_id, knowledge_point_name, qtype, stem,
+                    (qid, subject_id, kp_id, kp_name, qtype, stem,
                      json.dumps(options, ensure_ascii=False),
                      mapping["correct_option_id"], mapping["reference_answer"],
                      str(q.get("explanation", "") or "").strip(),
@@ -329,7 +339,7 @@ def persist_questions(
                 "question_type": qtype,
                 "stem": stem,
                 "options": options,
-                "knowledge_point_name": knowledge_point_name,
+                "knowledge_point_name": kp_name,
                 "knowledge_point_id": kp_id,
                 "version": version,
             }))

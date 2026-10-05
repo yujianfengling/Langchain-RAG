@@ -10,6 +10,7 @@ chat_service: 负责普通聊天逻辑（流式/非流式）
 education_service: 负责教育prompt增强（总结/解析/建议）
 """
 
+import re
 import time
 from typing import List, Dict, Any, Optional
 
@@ -155,11 +156,32 @@ def extract_sources(context_docs: List) -> List[Dict[str, Any]]:
         page = metadata.get('page')
         doc_type = metadata.get('type') or metadata.get('modality') or 'text'
 
+        # 原文片段：让学生能点开核对"回答依据的到底是哪段话"。
+        # 只截取真实检索到的 chunk，不拼接、不生成，杜绝编造引用。
+        content = getattr(doc, 'page_content', '') or ''
+        snippet = re.sub(r'\s+', ' ', content).strip()[:300]
+
+        # 章节/小节（有则给，没有不编）
+        section = metadata.get('section') or metadata.get('chapter') or metadata.get('heading')
+
+        # 诊断用分数：优先 rerank，其次检索分数（主界面不展示，放可展开详情）
+        score = metadata.get('rerank_score')
+        if score is None:
+            score = metadata.get('retrieval_score')
+        try:
+            score = round(float(score), 4) if score is not None else None
+        except (TypeError, ValueError):
+            score = None
+
         sources.append({
             "id": i + 1,
             "file_name": file_name,
             "page": page,
             "type": doc_type,
+            "snippet": snippet,
+            "section": section,
+            "score": score,
+            "retrieval_type": metadata.get('retrieval_type'),
         })
 
     return sources

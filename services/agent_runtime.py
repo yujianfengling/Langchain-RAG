@@ -161,21 +161,45 @@ def _tool_get_learning_state(user_id: str, subject_id: str, **_) -> Dict[str, An
     reviews = review_service.list_review_tasks(user_id, subject_id, "PENDING")
     budget = plan_adjustment.analyze_plan_budget(user_id, subject_id)
 
-    # 只挑证据相关的知识点，避免把整份画像塞给模型
-    weak = [p for p in points if p["mastery_level"] is not None and p["mastery_level"] < 0.4]
-    advanced = [p for p in points if p.get("consolidated")]
+    # 只挑证据相关的知识点，避免把整份画像塞给模型。
+    # 2026-10-05 口径修复：当前掌握 = 每题最新一次有效作答（与学生面板一致）；
+    # 历史累计另列，避免"刚答错但累计仍高"被 Agent 误判为已掌握。
+    def _current_level(p):
+        lv = p.get("latest_view") or {}
+        lvl = lv.get("latest_mastery_level")
+        return lvl if lvl is not None else p.get("mastery_level")
+
+    def _latest_wrong(p):
+        return (p.get("latest_view") or {}).get("latest_independent_wrong") or 0
+
+    # "需要关注"：当前掌握偏低（<40%），**或**最近有独立答错且尚未回到 70%。
+    # 后者保证"刚答错、但历史累计仍高"的知识点不会被 Agent 忽略（2026-10-05 口径修复）。
+    weak = [p for p in points
+            if _current_level(p) is not None
+            and (_current_level(p) < 0.4 or _latest_wrong(p) >= 1)]
+    # 只有"跨天间隔复现"才算长期巩固；密集连对不算（与教学策略、复习调度一致）
+    advanced = [p for p in points
+                if p.get("consolidated")
+                and mastery_service.is_spaced_consolidation(
+                    p.get("first_correct_at"), p.get("last_correct_at"))]
     return {
+        "mastery_basis": "当前掌握=每题最新一次有效作答（与学生面板一致）；history_mastery_level 为历史累计",
         "mastery": {
             "distribution": summary["distribution"],
             "accuracy": summary["accuracy"],
             "accuracy_sample_size": summary["accuracy_sample_size"],
         },
         "weak_points": [{"knowledge_point": p["knowledge_point"],
-                         "mastery_level": p["mastery_level"],
-                         "sample_size": p["sample_size"]} for p in weak[:5]],
+                         "reason": (f"最近独立答错 {_latest_wrong(p)} 次" if _latest_wrong(p)
+                                    else "当前掌握低于 40%"),
+                         "mastery_level": _current_level(p),
+                         "latest_mastery_level": (p.get("latest_view") or {}).get("latest_mastery_level"),
+                         "history_mastery_level": p.get("mastery_level"),
+                         "latest_evidence_count": (p.get("latest_view") or {}).get("latest_evidence_count"),
+                         "sample_size": p.get("sample_size")} for p in weak[:5]],
         "consolidated_points": [p["knowledge_point"] for p in advanced[:5]],
         "no_evidence_points": [p["knowledge_point"] for p in points
-                               if p["mastery_level"] is None][:8],
+                               if _current_level(p) is None][:8],
         # 学习记忆（偏好 + 由真实记录推断的记忆；与普通问答同一口径）
         "memory": memory_items,
         "wrong_count": len(wrong),
@@ -261,18 +285,28 @@ def _tool_create_plan(user_id: str, subject_id: str, goal: str,
     from services import learning_service, plan_adjustment
     plan = learning_service.generate_plan(subject_id=subject_id, goal=goal,
                                           model=model, user_id=user_id)
-    budget = plan_adjustment.analyze_plan_budget(user_id, subject_id)
+    budget = plan.get("budget") or plan_adjustment.analyze_plan_budget(user_id, subject_id)
     return {
         "plan_id": plan.get("id"),
         "title": plan.get("title"),
+        # 草案/生效：未满足预算与截止约束时计划为 DRAFT，需学生确认调整后才生效
+        "status": plan.get("status"),
+        "pending_confirmation": plan.get("status") == "DRAFT",
+        "moved_tasks": (budget or {}).get("moved"),
+        "kept_fixed_tasks": (budget or {}).get("kept_fixed"),
+        "conflict_sources": {
+            "fixed_minutes": (budget or {}).get("fixed_minutes"),
+            "movable_minutes": (budget or {}).get("movable_minutes"),
+            "capacity_minutes": (budget or {}).get("capacity_minutes"),
+        },
         "task_count": len(plan.get("tasks") or []),
         "tasks": [{"title": t.get("title"), "planned_date": t.get("planned_date"),
                    "task_type": t.get("task_type"),
                    "estimated_minutes": t.get("estimated_minutes")}
                   for t in (plan.get("tasks") or [])[:12]],
-        "budget_fits": budget["fits"],
-        "budget_conflicts": budget["conflicts"],
-        "budget_suggestions": budget["suggestions"],
+        "budget_fits": (budget or {}).get("fits"),
+        "budget_conflicts": (budget or {}).get("conflicts") or [],
+        "budget_suggestions": (budget or {}).get("suggestions") or [],
     }
 
 

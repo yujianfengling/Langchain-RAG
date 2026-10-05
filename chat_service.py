@@ -14,6 +14,7 @@ v2.1 更新：
 - 统一通过 services.ai_service 调用公共逻辑
 """
 
+import re
 import time
 from typing import List, Dict, Any, Optional, Generator
 
@@ -333,9 +334,10 @@ def chat_with_ai(
             return response
 
         # 2. 构建上下文 + 提取来源（V2.5.3：context 字符预算）
+        #    numbered=True：片段带 [i] 编号，与 sources.id 对齐，供回答标注引用
         if context_used:
             try:
-                context = build_context(context_docs, max_chars=3000)
+                context = build_context(context_docs, max_chars=3000, numbered=True)
             except Exception as e:
                 logger.warning(f"构建上下文失败: {e}")
                 context = ""
@@ -371,6 +373,8 @@ def chat_with_ai(
                 "reasons": teaching_ctx.get("reasons"),
                 "signals": teaching_ctx.get("signals"),
                 "applied": teaching_ctx.get("applied"),
+                # 一句学生可感知、且对应真实记录的变化说明
+                "adaptation_note": teaching_ctx.get("adaptation_note"),
             }
 
         # 5. 获取模型信息
@@ -413,6 +417,9 @@ def chat_with_ai(
         response["success"] = True
         response["answer"] = answer
         response["context_used"] = context_used
+        # 回答真正标注引用的来源编号（context_used 只表示"检索到并放进了上下文"）
+        response["cited_source_ids"] = _cited_source_ids(
+            answer, len(response.get("sources") or []))
         response["confidence"] = "high" if context_used else "medium"
         response["latency"] = time.time() - start_time
         return response
@@ -570,7 +577,7 @@ def chat_stream(
         # 4. 构建上下文 + 来源（V2.5.3：context 字符预算，保留最相关证据）
         if context_used:
             try:
-                context = build_context(context_docs, max_chars=3000)
+                context = build_context(context_docs, max_chars=3000, numbered=True)
             except Exception as e:
                 logger.warning(f"构建上下文失败: {e}")
                 context = ""
@@ -664,6 +671,10 @@ def chat_stream(
         yield {
             "type": "done",
             "sources": sources,
+            # context_used 的准确含义：检索到课程资料并作为上下文提供给了模型；
+            # 不等于"回答一定引用了它"。回答是否引用以 cited_source_ids 为准。
+            "context_used": context_used,
+            "cited_source_ids": _cited_source_ids(full_answer, len(sources)),
             "model": model_name,
             "provider": provider.model_name,
             "elapsed": elapsed,
@@ -675,6 +686,7 @@ def chat_stream(
                 "reasons": teaching_ctx.get("reasons"),
                 "signals": teaching_ctx.get("signals"),
                 "applied": teaching_ctx.get("applied"),
+                "adaptation_note": teaching_ctx.get("adaptation_note"),
             } if teaching_ctx else None),
         }
 
@@ -992,6 +1004,23 @@ def _get_expanded_system_message() -> str:
         return get_education_system_prompt_expanded()
     except Exception:
         return "你是一名智慧教育助手。用户明确要求详细解释，请提供结构化完整回答，包含概念解释、示例说明、总结要点和学习建议。"
+
+
+def _cited_source_ids(answer: str, n_sources: int) -> List[int]:
+    """
+    从回答中解析实际标注引用的来源编号（如 [1]、[2]）。
+
+    这是"回答是否真的用了课程资料"的**确定性信号**：只把模型显式标注、
+    且落在本次检索来源编号范围内的片段算作引用；不靠文案关键词猜测。
+    """
+    if not answer or n_sources <= 0:
+        return []
+    ids = set()
+    for m in re.finditer(r"\[(\d{1,2})\]", answer):
+        v = int(m.group(1))
+        if 1 <= v <= n_sources:
+            ids.add(v)
+    return sorted(ids)
 
 
 def _make_title(question: str, max_len: int = 24) -> str:

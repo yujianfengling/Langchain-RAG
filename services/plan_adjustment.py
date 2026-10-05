@@ -78,7 +78,8 @@ CREATE TABLE IF NOT EXISTS plan_adjustments (
     idempotency_key TEXT UNIQUE,
     created_at TEXT NOT NULL,
     applied_at TEXT,
-    undone_at TEXT
+    undone_at TEXT,
+    constraints_json TEXT
 )
 """
 
@@ -98,6 +99,13 @@ def _get_db() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute(_CONSTRAINTS_DDL)
     conn.execute(_ADJUSTMENTS_DDL)
+    # 迁移：为旧库补 constraints_json（记录方案基于哪一版约束，确认时用于防旧方案）
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(plan_adjustments)").fetchall()}
+        if "constraints_json" not in cols:
+            conn.execute("ALTER TABLE plan_adjustments ADD COLUMN constraints_json TEXT")
+    except sqlite3.Error:
+        pass
     conn.commit()
     return conn
 
@@ -281,6 +289,121 @@ def analyze_plan_budget(user_id: str, subject_id: str,
     }
 
 
+def fit_plan_to_budget(user_id: str, subject_id: str,
+                       plan_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    让计划在**生效前**符合每日预算与截止约束（2026-10-05）。
+
+    规则：
+    - 只重排**可调整**任务（非教师固定、未完成）；把超出每日预算的部分顺延到
+      后续仍有容量的日期（不超过截止日）；
+    - **教师固定任务**（source='teacher_assignment'）保留原日期，绝不擅自延期；
+    - 重排后仍无法满足（总量超过截止前容量，或单任务超过单日预算）→ fits=False，
+      返回明确冲突，交由"待确认方案"处理，而不是当作已完成。
+
+    Returns:
+        {"fits", "daily_minutes", "deadline", "moved": [...], "kept_fixed",
+         "conflicts": [...], "fixed_minutes", "movable_minutes"}
+    """
+    from services import learning_service
+
+    constraints = get_constraints(user_id, subject_id)
+    daily = constraints.get("daily_minutes") or DEFAULT_DAILY_MINUTES
+    deadline = constraints.get("effective_deadline")
+    today = _today()
+    today_d = date.fromisoformat(today)
+
+    tasks = learning_service.list_tasks(user_id, subject_id, None, plan_id, limit=1000)
+    remaining = [t for t in tasks if t.get("status") != "COMPLETED"]
+    fixed = [t for t in remaining if t.get("source") == "teacher_assignment"]
+    movable = [t for t in remaining if t.get("source") != "teacher_assignment"]
+    fixed_minutes = sum(int(t.get("estimated_minutes") or 0) for t in fixed)
+    movable_minutes = sum(int(t.get("estimated_minutes") or 0) for t in movable)
+
+    conflicts: List[str] = []
+    moved: List[Dict[str, Any]] = []
+
+    if deadline:
+        try:
+            last = date.fromisoformat(deadline)
+        except ValueError:
+            last = None
+    else:
+        last = None
+    if last is None:
+        dates = [t.get("planned_date") for t in remaining if t.get("planned_date")]
+        last = (date.fromisoformat(max(dates)) if dates
+                else today_d + timedelta(days=30))
+    if last < today_d:
+        return {"fits": False, "daily_minutes": daily, "deadline": last.isoformat(),
+                "moved": [], "kept_fixed": len(fixed), "conflicts": [f"截止日期 {last.isoformat()} 已过"],
+                "fixed_minutes": fixed_minutes, "movable_minutes": movable_minutes}
+
+    # 固定任务先占用各自日期
+    used: Dict[str, int] = {}
+    for t in fixed:
+        d = t.get("planned_date") or today
+        used[d] = used.get(d, 0) + int(t.get("estimated_minutes") or 0)
+
+    # 可调整任务：优先原日期，放不下则顺延到最近的可用日期
+    for t in sorted(movable, key=lambda x: (x.get("planned_date") or today,
+                                            x.get("priority") or 3)):
+        need = int(t.get("estimated_minutes") or 0)
+        orig = t.get("planned_date")
+        if need > daily:
+            conflicts.append(f"「{t.get('title') or t.get('knowledge_point')}」预计 {need} 分钟，"
+                             f"超过每天可用 {daily} 分钟（请拆分或缩减）")
+        start = today_d
+        if orig:
+            try:
+                od = date.fromisoformat(orig)
+                start = od if od > today_d else today_d
+            except ValueError:
+                start = today_d
+        day = start
+        placed = None
+        while day <= last:
+            key = day.isoformat()
+            if used.get(key, 0) + need <= daily:
+                placed = key
+                break
+            day += timedelta(days=1)
+        if placed is None:
+            conflicts.append(f"「{t.get('title') or t.get('knowledge_point')}」"
+                             f"（{need} 分钟）在 {last.isoformat()} 前放不下")
+            continue
+        used[placed] = used.get(placed, 0) + need
+        if placed != orig:
+            try:
+                learning_service.reschedule_task(user_id, t["id"], placed,
+                                                 reason="按每日预算自动重排")
+                moved.append({"task_id": t["id"], "from": orig, "to": placed})
+            except Exception as e:
+                logger.debug(f"自动重排失败（保留原日期）: {e}")
+
+    # 总量与截止容量
+    days = (last - today_d).days + 1
+    capacity = days * daily
+    total = fixed_minutes + movable_minutes
+    if total > capacity:
+        conflicts.append(f"剩余任务共需 {total} 分钟，截止前可用仅 {capacity} 分钟"
+                         f"（{days} 天 × {daily} 分钟/天），缺 {total - capacity} 分钟")
+
+    suggestions: List[str] = []
+    if conflicts:
+        suggestions.append("可按每天可用时长，把超出部分顺延到后续仍有容量的日期")
+        if fixed_minutes:
+            suggestions.append(f"其中 {fixed_minutes} 分钟来自教师固定任务（保留原日期），"
+                               "可调整的空间在可自主安排的任务上")
+        if total > capacity:
+            suggestions.append("若截止前容量确实不足，请缩小范围或延长截止日期后再确认")
+    return {"fits": not conflicts, "daily_minutes": daily, "deadline": last.isoformat(),
+            "moved": moved, "kept_fixed": len(fixed), "conflicts": conflicts,
+            "suggestions": suggestions,
+            "fixed_minutes": fixed_minutes, "movable_minutes": movable_minutes,
+            "capacity_minutes": capacity, "total_minutes": total}
+
+
 def _reduce_scope_suggestion(tasks: List[Dict[str, Any]], missing_minutes: int) -> str:
     """预算不足时给出"缩小范围"的具体建议（按优先级/预计时长挑可削减任务）"""
     ranked = sorted(tasks, key=lambda t: (
@@ -368,7 +491,19 @@ def propose_schedule(user_id: str, subject_id: str,
     for t in ordered:
         minutes = int(t.get("estimated_minutes") or 30)
         placed = None
-        cursor = day
+        original = t.get("planned_date")
+        # 起点 = max(今天, 原计划日期)：既不排到今天之前，也**不提前**任务；
+        # 关键修复（2026-10-05）：原实现把"提前"的任务又计一次原日期容量，
+        # 会把任务留在原日期却不再校验容量 → 方案本身超预算（实测 65 分钟/天）。
+        start = day
+        if original:
+            try:
+                od = date.fromisoformat(original)
+                if od > start:
+                    start = od
+            except ValueError:
+                pass
+        cursor = start
         guard = 0
         while guard < 400:
             d = cursor.isoformat()
@@ -386,14 +521,7 @@ def propose_schedule(user_id: str, subject_id: str,
             overflow.append(t)
             continue
 
-        # 尊重既有设置：不把任务**提前**到原计划日期之前
-        # （逾期任务的新日期晚于原日期，不受影响）
-        original = t.get("planned_date")
-        if original and placed < original:
-            used[original] = used.get(original, 0) + minutes
-            continue
-
-        if placed != t.get("planned_date"):
+        if placed != original:
             changes.append({
                 "task_id": t["id"],
                 "title": t.get("title"),
@@ -421,7 +549,8 @@ def propose_schedule(user_id: str, subject_id: str,
 
     summary = _summarize(changes, daily, deadline)
     return _save_adjustment(user_id, subject_id, plan_id, source,
-                            reason or summary, changes, idempotency_key)
+                            reason or summary, changes, idempotency_key,
+                            constraints=constraints)
 
 
 def _summarize(changes: List[Dict[str, Any]], daily: int,
@@ -456,7 +585,8 @@ def _is_major(changes: List[Dict[str, Any]], total_pending: int) -> bool:
 
 def _save_adjustment(user_id: str, subject_id: str, plan_id: Optional[str],
                      source: str, reason: str, changes: List[Dict[str, Any]],
-                     idempotency_key: Optional[str]) -> Dict[str, Any]:
+                     idempotency_key: Optional[str],
+                     constraints: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     from services import learning_service
     pending = [t for t in learning_service.list_tasks(user_id, subject_id, None, plan_id,
                                                       limit=1000)
@@ -469,11 +599,12 @@ def _save_adjustment(user_id: str, subject_id: str, plan_id: Optional[str],
         conn.execute(
             """INSERT INTO plan_adjustments
                (id, user_id, subject_id, plan_id, source, reason, changes_json,
-                summary, status, major, idempotency_key, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                summary, status, major, idempotency_key, created_at, constraints_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (aid, user_id, subject_id, plan_id, source, reason,
              json.dumps(changes, ensure_ascii=False), reason,
-             ADJ_PROPOSED, 1 if major else 0, idempotency_key, _now()))
+             ADJ_PROPOSED, 1 if major else 0, idempotency_key, _now(),
+             json.dumps(constraints or {}, ensure_ascii=False)))
         conn.commit()
     except sqlite3.IntegrityError:
         # 并发下同 key 已存在 → 返回既有建议
@@ -527,6 +658,8 @@ def _row_to_adjustment(row) -> Dict[str, Any]:
         "created_at": row["created_at"],
         "applied_at": row["applied_at"],
         "undone_at": row["undone_at"],
+        "constraints": (json.loads(row["constraints_json"])
+                        if ("constraints_json" in row.keys() and row["constraints_json"]) else {}),
     }
 
 
@@ -566,6 +699,41 @@ def _get_adjustment(adjustment_id: str, user_id: str) -> Dict[str, Any]:
     return data
 
 
+def _validate_changes_against_constraints(user_id: str, subject_id: str,
+                                           plan_id: Optional[str],
+                                           changes: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    确认时用**当前**约束复核方案是否仍然可行（2026-10-05）。
+
+    约束可能在"提出"之后被改（每日时长/截止），此时不应把旧方案直接应用。
+    Returns: 不可行的原因；None 表示可行。
+    """
+    from services import learning_service
+    constraints = get_constraints(user_id, subject_id)
+    daily = constraints.get("daily_minutes") or DEFAULT_DAILY_MINUTES
+    deadline = constraints.get("effective_deadline")
+    tasks = learning_service.list_tasks(user_id, subject_id, None, plan_id, limit=1000)
+    new_date = {t["id"]: t.get("planned_date") for t in tasks if t.get("status") != "COMPLETED"}
+    for c in changes or []:
+        if c.get("change_type") == CHANGE_RESCHEDULE and c.get("task_id"):
+            new_date[c["task_id"]] = c.get("to_date") or c.get("from_date")
+    by_day: Dict[str, int] = {}
+    for t in tasks:
+        if t.get("status") == "COMPLETED":
+            continue
+        d = new_date.get(t["id"]) or t.get("planned_date")
+        if not d:
+            continue
+        if deadline and d > deadline:
+            return f"调整后有任务排到 {d}，超过当前截止 {deadline}"
+        by_day[d] = by_day.get(d, 0) + int(t.get("estimated_minutes") or 0)
+    over = {d: m for d, m in by_day.items() if m > daily}
+    if over:
+        d, m = sorted(over.items())[0]
+        return f"按当前约束（每天 {daily} 分钟），{d} 仍有 {m} 分钟"
+    return None
+
+
 def apply_adjustment(adjustment_id: str, user_id: str,
                      confirm: bool = False) -> Dict[str, Any]:
     """
@@ -583,6 +751,15 @@ def apply_adjustment(adjustment_id: str, user_id: str,
     if data["major"] and not confirm:
         raise PlanAdjustmentError(
             "这是较大范围的调整，需要学生确认后才能应用", "confirmation_required")
+
+    # 确认时核对当前约束与"提出方案时"的快照：约束变了 → 不应用旧方案
+    snapshot = data.get("constraints") or {}
+    current = get_constraints(user_id, data["subject_id"])
+    if snapshot and (snapshot.get("daily_minutes") != current.get("daily_minutes")
+                     or snapshot.get("effective_deadline") != current.get("effective_deadline")):
+        raise PlanAdjustmentError(
+            "约束已变化（每日时长或截止日期），该方案基于旧约束；"
+            "请重新生成调整建议后再确认。", "stale_proposal")
 
     from services import learning_service
 
@@ -615,10 +792,23 @@ def apply_adjustment(adjustment_id: str, user_id: str,
     finally:
         conn.close()
 
+    # 应用后按当前约束复核剩余冲突：仍有冲突 → 计划保持草案（不作为生效任务进首页）
+    from services import learning_service as _ls
+    remaining = _validate_changes_against_constraints(
+        user_id, data["subject_id"], data.get("plan_id"), [])
+    if data.get("plan_id"):
+        try:
+            _ls._set_plan_status(data["plan_id"], "DRAFT" if remaining else "ACTIVE")
+        except Exception as e:
+            logger.debug(f"更新计划状态失败: {e}")
+    if remaining:
+        logger.info(f"调整已部分应用但仍不满足约束: plan={data.get('plan_id')} {remaining}")
+
     logger.info(f"应用计划调整: id={adjustment_id}, applied={len(applied)}, "
                 f"skipped={len(skipped)}")
     return {**_get_adjustment(adjustment_id, user_id),
-            "applied_changes": applied, "skipped_changes": skipped}
+            "applied_changes": applied, "skipped_changes": skipped,
+            "remaining_conflicts": [remaining] if remaining else []}
 
 
 def undo_adjustment(adjustment_id: str, user_id: str) -> Dict[str, Any]:

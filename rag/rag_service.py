@@ -506,7 +506,8 @@ def retrieve_context(
         raise RuntimeError(f"检索上下文失败: {str(e)}")
 
 
-def build_context(documents: List[Document], max_chars: Optional[int] = None) -> str:
+def build_context(documents: List[Document], max_chars: Optional[int] = None,
+                  numbered: bool = False) -> str:
     """
     将文档列表转换为LLM上下文字符串
 
@@ -515,6 +516,9 @@ def build_context(documents: List[Document], max_chars: Optional[int] = None) ->
         max_chars: 上下文总字符预算（V2.5.3，可选）。文档按相关性排序优先
                   拼接，超过预算时截断当前文档并停止，保留最相关证据。
                   为 None 时不做预算（全量拼接）。
+        numbered: 是否给每个片段加稳定编号 [i]（与 extract_sources 的 id 对齐）。
+                  仅问答链路开启，用于让模型按 [n] 标注实际引用的来源，
+                  从而把"检索到的片段"和"回答真正引用的依据"区分开。
 
     Returns:
         格式化的上下文字符串
@@ -545,8 +549,8 @@ def build_context(documents: List[Document], max_chars: Optional[int] = None) ->
             retrieval_type = metadata.get('retrieval_type', '')
             rerank_score = metadata.get('rerank_score', None)
 
-            # 构建来源标注
-            source_label = f"来源: {source}"
+            # 构建来源标注（numbered 时带片段编号，编号与 extract_sources 的 id 一致）
+            source_label = (f"[{i}] 来源: {source}" if numbered else f"来源: {source}")
             if section:
                 source_label += f" > {section}"
             if retrieval_type:
@@ -878,8 +882,13 @@ def get_rag_readiness() -> Dict[str, Any]:
         faiss_available = False
 
     # BM25可用性：存在至少一个含 bm25.pkl 的学科索引
+    #
+    # 必须查**配置的数据目录**（_DATA_ROOT，受 EDU_DATA_DIR 控制），不能写死
+    # 仓库下的 data/。实测（2026-10-05）：后端跑在隔离/演示目录（EDU_DATA_DIR=demo_data）时，
+    # BM25 索引确实存在于该目录，但这里查的是仓库 data/（为空）→ bm25.available=false，
+    # retrieval_mode 被误判成 vector_only，前端据此显示"知识库检索服务不可用"的假告警。
     bm25_available = False
-    bm25_base = Path(os.path.join(_PROJECT_ROOT, "data", "bm25_index"))
+    bm25_base = Path(os.path.join(_DATA_ROOT, "bm25_index"))
     try:
         if bm25_base.exists():
             bm25_available = any(

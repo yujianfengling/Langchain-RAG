@@ -334,6 +334,27 @@ def filter_documents_by_min_length(
             f"这通常意味着文档抽取质量差（扫描版 PDF 未做 OCR），"
             f"建议修数据管道而非仅调阈值。")
 
+    # 第 4 步：按来源文档兜底——每个文件至少保留 1 个有内容的分块。
+    # 起因（2026-10-05）：一份 60 字的验收说明只有 1 个分块，低于 min_length 被
+    # 整份丢弃；资料列表显示"已就绪"、知识库也报 ready，但学生永远检索不到这份资料。
+    # 兜底只"补回"本会被丢掉的文件，不删除任何已有内容。
+    by_source: Dict[str, List[Document]] = {}
+    for d in non_wrapper:
+        meta = getattr(d, "metadata", {}) or {}
+        src = meta.get("file_name") or meta.get("source") or meta.get("filename") or "_"
+        by_source.setdefault(str(src), []).append(d)
+    kept_ids = {id(d) for d in kept}
+    rescued = 0
+    for _src, items in by_source.items():
+        if any(id(d) in kept_ids for d in items):
+            continue
+        best = max(items, key=_len)
+        kept.append(best)
+        kept_ids.add(id(best))
+        rescued += 1
+    if rescued:
+        logger.info(f"短资料兜底：为 {rescued} 个来源各保留 1 个分块（避免整份资料被长度过滤丢弃）")
+
     stats = {
         "min_length": effective,
         "configured_min_length": min_length,
@@ -342,6 +363,7 @@ def filter_documents_by_min_length(
         "dropped": total - len(kept),
         "meta_wrapper_dropped": wrapper_dropped,
         "meaningless_dropped": 0,
+        "rescued_sources": rescued,
         "dropped_ratio": round((total - len(kept)) / max(total, 1), 4),
         "relaxed": relaxed,
         "low_yield": len(kept) < max(1, int(total * min_keep_ratio)),

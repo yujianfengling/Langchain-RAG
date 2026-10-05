@@ -46,7 +46,9 @@ async def register(request: RegisterRequest):
         user = await run_in_threadpool(
             auth_service.register_user, request.username, request.password, request.display_name)
         session = await run_in_threadpool(auth_service.create_session, user["id"])
-        return SuccessResponse(data={**user, **session}, message="注册成功")
+        effective_role = await run_in_threadpool(auth_service.get_role, user["id"])
+        return SuccessResponse(
+            data={**user, "role": effective_role, **session}, message="注册成功")
     except AuthError as e:
         return _auth_error(e)
 
@@ -64,7 +66,11 @@ async def login(request: LoginRequest):
                          "message": "用户名或口令不正确", "error_type": "invalid_credentials"},
             )
         session = await run_in_threadpool(auth_service.create_session, user["id"])
-        return SuccessResponse(data={**user, **session}, message="登录成功")
+        # 返回**生效角色**（环境白名单 > 库内角色），与 /auth/me 和权限判定一致：
+        # 只回库内 role 会出现"登录显示学生、请求却按教师放行"，导致教师入口不显示。
+        effective_role = await run_in_threadpool(auth_service.get_role, user["id"])
+        return SuccessResponse(
+            data={**user, "role": effective_role, **session}, message="登录成功")
     except AuthError as e:
         return _auth_error(e)
 

@@ -176,6 +176,57 @@ def ensure_review_task(
             "reason": reason, "merged_count": 1, "plan_task_id": plan_task_id}
 
 
+def void_review_tasks_for_attempt(user_id: str, source_attempt_id: str,
+                                  reason: str) -> int:
+    """
+    按来源作答**作废**待办复习（归属修正等场景）。
+
+    保留原记录（任务行不删除，状态置 CANCELLED），并把原因写清楚；
+    与 complete_review_tasks 不同：这不是"复习通过"，而是"该复习所依据的
+    归属已被修正"，因此用 CANCELLED 而非 DONE，便于审计区分。
+    """
+    if not (user_id and source_attempt_id):
+        return 0
+    conn = _get_db()
+    try:
+        cur = conn.execute(
+            """UPDATE review_tasks SET status=?, reason=?, updated_at=?
+               WHERE user_id=? AND source_attempt_id=? AND status=?""",
+            (REVIEW_CANCELLED, reason, _now(), user_id, source_attempt_id, REVIEW_PENDING))
+        conn.commit()
+        if cur.rowcount:
+            logger.info(f"作废复习任务（归属修正）: user={user_id}, "
+                        f"attempt={source_attempt_id}, n={cur.rowcount}")
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def void_pending_reviews_for_point(user_id: str, subject_id: str,
+                                     knowledge_point_id: str, reason: str) -> int:
+    """
+    作废某知识点当前所有**待办**复习（归属修正后该知识点已无未完成错题依据等）。
+
+    行不删除、状态置 CANCELLED、原因写明，便于审计；幂等（已作废不再变更）。
+    """
+    if not (user_id and subject_id and knowledge_point_id):
+        return 0
+    conn = _get_db()
+    try:
+        cur = conn.execute(
+            """UPDATE review_tasks SET status=?, reason=?, updated_at=?
+               WHERE user_id=? AND subject_id=? AND knowledge_point_id=? AND status=?""",
+            (REVIEW_CANCELLED, reason, _now(), user_id, subject_id, knowledge_point_id,
+             REVIEW_PENDING))
+        conn.commit()
+        if cur.rowcount:
+            logger.info(f"作废知识点待办复习（归属修正）: user={user_id}, "
+                        f"kp_id={knowledge_point_id}, n={cur.rowcount}")
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
 def complete_review_tasks(
     user_id: str,
     subject_id: str,
@@ -183,6 +234,7 @@ def complete_review_tasks(
     reason: str = "复习已通过",
     attempt_kind: Optional[str] = None,
     source_attempt_id: Optional[str] = None,
+    due_on_or_before: Optional[str] = None,
 ) -> int:
     """
     关闭该知识点的待办复习任务（历史保留，不删除错误过程）。
@@ -191,6 +243,11 @@ def complete_review_tasks(
     - `attempt_kind` 为 after_reveal（看过答案后作答）→ **不关闭**
       （否则"看答案 → 答对 → 复习完成"会形成虚假闭环）
     - `attempt_kind` 为 None（内部调用，如管理员/系统）→ 按原语义关闭
+
+    due_on_or_before（2026-10-05 新增，间隔复习语义）：
+      只关闭**到期日不晚于该日期**的待办。学生用"新题做对"提前练习时，
+      不应提前关掉一个还没到期的复习/延后复测（否则会提前消耗复测阶段、
+      让间隔复习失效）。传 None 表示不限制（教师改判等显式决定仍可立即关闭）。
 
     幂等：以 source_attempt_id 记账，事件重试不会重复关闭/重复写日志。
 
@@ -213,12 +270,15 @@ def complete_review_tasks(
                 conn.rollback()
                 return 0
 
-        cur = conn.execute(
-            """UPDATE review_tasks
-               SET status=?, completed_at=?, reason=?, updated_at=?
-               WHERE user_id=? AND subject_id=? AND knowledge_point_id=? AND status=?""",
-            (REVIEW_DONE, _now(), reason, _now(),
-             user_id, subject_id, knowledge_point_id, REVIEW_PENDING))
+        sql = ("""UPDATE review_tasks
+                  SET status=?, completed_at=?, reason=?, updated_at=?
+                  WHERE user_id=? AND subject_id=? AND knowledge_point_id=? AND status=?""")
+        params = [REVIEW_DONE, _now(), reason, _now(),
+                  user_id, subject_id, knowledge_point_id, REVIEW_PENDING]
+        if due_on_or_before:
+            sql += " AND due_date <= ?"
+            params.append(due_on_or_before)
+        cur = conn.execute(sql, params)
         conn.commit()
         if cur.rowcount:
             logger.info(f"关闭复习任务: user={user_id}, kp_id={knowledge_point_id}, n={cur.rowcount}")
@@ -332,6 +392,8 @@ __all__ = [
     "ReviewServiceError",
     "ensure_review_task",
     "complete_review_tasks",
+    "void_review_tasks_for_attempt",
+    "void_pending_reviews_for_point",
     "schedule_recheck",
     "list_review_tasks",
     "get_pending_review_for_point",

@@ -399,7 +399,8 @@ class TestRagReadiness(unittest.TestCase):
         # vector_store: 匹配 rag_service._VECTOR_STORE_BASE（patch为 _root/vector_store）
         (self._root / "vector_store" / "test_subj").mkdir(parents=True, exist_ok=True)
         (self._root / "vector_store" / "test_subj" / "index.faiss").touch()
-        # bm25: 匹配 get_rag_readiness 中的 _PROJECT_ROOT/data/bm25_index
+        # bm25: 匹配 get_rag_readiness 中的 _DATA_ROOT/bm25_index
+        # （2026-10-05：BM25 可用性改为查配置数据目录，不再写死仓库 data/）
         (self._root / "data" / "bm25_index" / "test_subj").mkdir(parents=True, exist_ok=True)
         (self._root / "data" / "bm25_index" / "test_subj" / "bm25.pkl").touch()
 
@@ -410,7 +411,8 @@ class TestRagReadiness(unittest.TestCase):
     def _patch_paths(self):
         patcher1 = mock.patch.object(rag_service, "_VECTOR_STORE_BASE",
                                      str(self._root / "vector_store"))
-        patcher2 = mock.patch.object(rag_service, "_PROJECT_ROOT", str(self._root))
+        # BM25 走 _DATA_ROOT（配置数据目录）：测试数据放在 <root>/data 下
+        patcher2 = mock.patch.object(rag_service, "_DATA_ROOT", str(self._root / "data"))
         patcher1.start()
         patcher2.start()
         self.addCleanup(patcher1.stop)

@@ -220,6 +220,24 @@ def _span_days(first_iso: Optional[str], last_iso: Optional[str]) -> Optional[in
     return abs((b - a).days)
 
 
+def is_spaced_consolidation(first_correct_at: Optional[str],
+                           last_correct_at: Optional[str],
+                           min_span_days: Optional[int] = None) -> bool:
+    """
+    是否"跨天间隔复现"（2026-10-05）。
+
+    长期掌握只认跨天复现；同一段时间内连续答对（存储层的 fast path 也会把
+    consolidation_status 标成 consolidated）不足以判定长期掌握，也不应据此
+    跳过延后复测。教学策略、Agent 与复习调度统一用本函数判"真正巩固"。
+    """
+    days = _span_days(first_correct_at, last_correct_at)
+    if days is None:
+        return False
+    floor = (MASTERY_RULES["consolidated_min_span_days"]
+             if min_span_days is None else min_span_days)
+    return days >= floor
+
+
 def _consolidation(ind_correct: int, first_correct_at: Optional[str],
                    last_correct_at: Optional[str]) -> str:
     """

@@ -254,7 +254,9 @@ def _evidence(sources: List[Dict[str, Any]], materials: List[Dict[str, Any]]) ->
             continue
         seen.add(key)
         out.append({"file_name": s.get("file_name"), "page": s.get("page"),
-                    "type": s.get("type"), "source": "retrieval"})
+                    "type": s.get("type"), "source": "retrieval",
+                    # 带上真实片段与章节，教师可点开核对"这条依据到底出自哪段原文"
+                    "snippet": s.get("snippet"), "section": s.get("section")})
     if not out:
         for m in materials:
             out.append({"file_name": m["filename"], "page": None, "type": "material",

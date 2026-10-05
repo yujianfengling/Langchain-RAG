@@ -37,7 +37,8 @@ QUESTION_PROMPT = """你是一名命题老师，请依据下面的课程资料�
       "question": "题干",
       "options": ["选项A内容", "选项B内容", "选项C内容", "选项D内容"],
       "answer": "正确选项的内容（必须与某个选项完全一致）",
-      "explanation": "为什么选它，并指出依据"
+      "explanation": "为什么选它，并指出依据",
+      "knowledge_point": "这道题**实际考查**的知识点，必须从上方的知识点中选一个"
     }}
   ]
 }}
@@ -45,7 +46,11 @@ QUESTION_PROMPT = """你是一名命题老师，请依据下面的课程资料�
 ## 规则
 1. type 只用 single_choice（单选）或 judgement（判断题用 options=["正确","错误"]）。
 2. 每题必须有唯一正确答案，答案必须能在资料里找到依据。
-3. 若资料不足，就少出题（可以少于 {count} 道），不要编造知识点。
+3. **每题的知识点必须与该题题干实际考查的内容一致**：题目只能考查所选知识点，
+   不要给同一批题目统一填同一个知识点；若某题无法归入上方任一知识点，
+   就不要出这道题。
+4. 若上方给出多个知识点，请分散覆盖，不要全部集中在同一个知识点上。
+5. 若资料不足，就少出题（可以少于 {count} 道），不要编造知识点。
 """
 
 
@@ -142,28 +147,57 @@ def generate_questions(user_id: str, course_id: str, *, assignment_id: Optional[
     if not context.strip():
         raise TeachingError(
             "课程资料为空，无法出题（请先上传课程资料并重建知识库）", "insufficient_evidence")
-    try:
-        raw = ai_service.call_llm(
-            QUESTION_PROMPT.format(count=count, context=context,
-                                   knowledge_points="、".join(kps) or "（未指定，按资料重点出题）"),
-            system_message="你是严谨的命题老师，只依据给定资料命题。",
-            model=model, temperature=0.3, max_tokens=2000)
-        items = _parse_questions(raw)
-    except Exception as e:
-        raise TeachingError(f"出题失败：{e}", "llm_error")
-    if not items:
-        raise TeachingError("模型没有产出可用题目（资料可能不足）", "insufficient_evidence")
+    from services import quiz_service, kp_attribution, learning_data
+    # 允许集合：教师指定的知识点；未指定（综合练习）时用本课程已登记的有效知识点。
+    course_kp_names = [p.get("name") for p in learning_data.list_knowledge_points(course["subject_id"])
+                       if p.get("name")]
+    allowed = list(kps) or list(course_kp_names)
+    prompt = QUESTION_PROMPT.format(
+        count=count, context=context,
+        knowledge_points="、".join(kps) or "（未指定，按资料重点出题）")
 
-    from services import quiz_service
-    kp_name = kps[0] if kps else (course["title"] or "课程练习")
-    public = quiz_service.persist_questions(
-        subject_id=course["subject_id"], knowledge_point_name=kp_name,
-        questions=items,
-        # 修复（2026-10-04）：`source` 表示**题目依据来源**，不是渠道。
-        # 本路径上面已强制校验课程资料命中（context 非空），因此依据是课程知识库；
-        # "教师作业"作为**渠道**由返回载荷的 channel 表达，不再污染 source。
-        source="knowledge_base")
+    # 归属审核（2026-10-05）：模型给出的知识点可能与题干实际考查内容不符
+    # （实测"快速排序稳定性判断"名下混入"最坏时间复杂度"题）。逐题确认；
+    # 无法可靠归属的记为待确认（不参与精确掌握估计）。
+    # 单知识点出题却整批无法归属时重试一次（不编造，仍按同一规则过滤）。
+    items: List[Dict[str, Any]] = []
+    by_kp: Dict[str, List[Dict[str, Any]]] = {}
+    pending: List[Dict[str, Any]] = []
+    for attempt in range(2):
+        try:
+            raw = ai_service.call_llm(
+                prompt, system_message="你是严谨的命题老师，只依据给定资料命题。",
+                model=model, temperature=0.3 if attempt == 0 else 0.5, max_tokens=2000)
+            items = _parse_questions(raw)
+        except Exception as e:
+            raise TeachingError(f"出题失败：{e}", "llm_error")
+        if not items:
+            raise TeachingError("模型没有产出可用题目（资料可能不足）", "insufficient_evidence")
+        verified = kp_attribution.verify_attribution(
+            items, allowed,
+            lambda p: ai_service.call_llm(p, system_message="你是严谨的命题审核员。",
+                                          model=model, temperature=0.0, max_tokens=800))
+        for it, kp in zip(items, verified):
+            it["knowledge_point"] = kp
+        by_kp, pending = kp_attribution.resolve_items(items, allowed)
+        if not (len(allowed) == 1 and pending and not by_kp and attempt == 0):
+            break
+    public: List[Dict[str, Any]] = []
+    for kp_name, group in by_kp.items():
+        public += quiz_service.persist_questions(
+            subject_id=course["subject_id"], knowledge_point_name=kp_name,
+            questions=group,
+            # 修复（2026-10-04）：`source` 表示**题目依据来源**，不是渠道。
+            source="knowledge_base")
+    if pending:
+        # 归属无法可靠确定的题目：保留题目本身，但知识点记为 NULL（待确认），
+        # 不参与精确知识点掌握估计，也不据此生成该知识点的复习。
+        public += quiz_service.persist_questions(
+            subject_id=course["subject_id"], knowledge_point_name=None,
+            questions=pending, source="knowledge_base")
     question_ids = [q["id"] for q in public if q.get("id")]
+    pending_count = len(pending)
+    valid_count = sum(len(g) for g in by_kp.values())
 
     if assignment_id:
         assignment = td.get_assignment(assignment_id)
@@ -179,7 +213,22 @@ def generate_questions(user_id: str, course_id: str, *, assignment_id: Optional[
               "requested": count})
     return {"questions": public, "question_ids": question_ids,
             "requested": count, "generated": len(question_ids),
-            "knowledge_point": kp_name,
+            "knowledge_point": kps[0] if len(kps) == 1 else None,
+            "knowledge_points_used": sorted(by_kp.keys()),
+            "valid_count": valid_count,
+            "pending_count": pending_count,
+            "pending_label": kp_attribution.PENDING_LABEL,
+            # 定向出题的诚实反馈：有效题数 + 不足原因（不把"全部待确认"当成功）
+            "warning": (
+                (f"本次没有生成符合「{'、'.join(kps) or '指定范围'}」的合格题目："
+                 f"{pending_count} 道题无法确认知识点归属，已标记为"
+                 f"「{kp_attribution.PENDING_LABEL}」且不计入掌握度。"
+                 "请补充该知识点的课程资料，或换个更具体的知识点后重新生成。")
+                if pending_count and not valid_count else
+                (f"有 {pending_count} 道题无法可靠确定知识点归属，已标记为"
+                 f"「{kp_attribution.PENDING_LABEL}」，暂不计入知识点掌握度")
+                if pending_count else None),
+            "retryable": valid_count == 0,
             # 渠道 vs 依据（2026-10-04 分离）：渠道=教师作业；依据=课程知识库（上面已校验命中）
             "channel": "teacher_assignment", "channel_label": "教师作业",
             "source": "knowledge_base", "source_label": "课程知识库",

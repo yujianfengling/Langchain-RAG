@@ -161,7 +161,26 @@ def _persist_and_publicize(
         return []
     try:
         from services.quiz_service import persist_questions
-        return persist_questions(subject_id, topic, quiz, source=source)
+        from services import kp_attribution, learning_data
+        # 允许集合 = 请求主题 + 本课程已登记的知识点；按每题自身归属分组，
+        # 归属不在集合内的记为待确认（不整批套用主题）。
+        allowed = [topic] + [p.get("name") for p in learning_data.list_knowledge_points(subject_id)
+                             if p.get("name")]
+        # 归属审核：题干的真实考查点可能与模型首轮标注不符，逐题确认或待确认
+        verified = kp_attribution.verify_attribution(
+            quiz, allowed,
+            lambda p: call_llm(p, system_message="你是严谨的命题审核员。",
+                               temperature=0.0, max_tokens=800))
+        for it, kp in zip(quiz, verified):
+            if isinstance(it, dict):
+                it["knowledge_point"] = kp
+        by_kp, pending = kp_attribution.resolve_items(quiz, allowed)
+        out: List[Dict[str, Any]] = []
+        for kp_name, group in by_kp.items():
+            out += persist_questions(subject_id, kp_name, group, source=source)
+        if pending:
+            out += persist_questions(subject_id, None, pending, source=source)
+        return out
     except Exception as e:
         logger.warning(f"题目入库失败（降级为未入库题目，不参与判分）: {e}")
         return [
@@ -204,7 +223,10 @@ def _normalize_quiz(raw: Any, knowledge_point: str) -> List[Dict[str, Any]]:
             "options": options,
             "answer": str(q.get("answer", "")).strip(),
             "explanation": str(q.get("explanation", "")).strip(),
-            "knowledge_point": knowledge_point,
+            # 保留题目**自己的**知识点；模型没给则 None（待确认）。
+            # 修复（2026-10-05）：此前无条件写成整批主题，导致"复杂度题"被计入"稳定性"。
+            "knowledge_point": (str(q.get("knowledge_point")).strip()
+                                if q.get("knowledge_point") else None),
             # 为未来学情诊断预留（V2.6）
             "sources": [],
         })

@@ -329,6 +329,17 @@ def update_task_status(task_id: str, status: str,
         conn.close()
 
 
+def _set_plan_status(plan_id: str, status: str) -> None:
+    """更新计划状态（草案/生效等）"""
+    conn = _get_db()
+    try:
+        conn.execute("UPDATE learning_plans SET status=?, updated_at=? WHERE id=?",
+                     (status, _now(), plan_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _save_plan(plan: Dict[str, Any], tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     保存计划 + 任务（事务）
@@ -510,6 +521,24 @@ def generate_plan(subject_id: str, goal: str, model: Optional[str] = None,
             "goal": str(raw.get("goal") or goal.strip()),
         }
         saved = _save_plan(plan, tasks)
+        # 生效前校验每日预算与教师固定截止（2026-10-05）：
+        # 可调整任务重排、教师固定任务保留；仍不满足则标记为**草案（待确认）**，
+        # 不把不满足约束的方案当作已生效计划。
+        try:
+            from services import plan_adjustment
+            owner = user_id or saved.get("user_id")
+            constraints = plan_adjustment.get_constraints(owner, subject_id)
+            # 只在学生**确实配置过**每日预算/截止时校验；未配置时不预设约束
+            if constraints.get("configured"):
+                budget = plan_adjustment.fit_plan_to_budget(owner, subject_id, saved["id"])
+                if not budget.get("fits"):
+                    _set_plan_status(saved["id"], "DRAFT")
+                    saved["status"] = "DRAFT"
+                    logger.info(f"计划未满足预算约束，标记为草案: plan={saved['id']} "
+                                f"conflicts={budget.get('conflicts')}")
+                saved["budget"] = budget
+        except Exception as e:
+            logger.warning(f"计划预算校验失败（保留原状态）: {e}")
         logger.info(f"学习计划已生成并保存: plan={saved['id']}, tasks={len(tasks)}")
         return saved
 
@@ -587,6 +616,22 @@ def list_tasks(
         conn.close()
 
 
+def _draft_plan_ids(user_id: str, subject_id: Optional[str] = None) -> set:
+    """草案（DRAFT）计划 id 集合：其任务不进入首页/Agent 的生效任务视图"""
+    conn = _get_db()
+    try:
+        q = "SELECT id FROM learning_plans WHERE user_id=? AND status='DRAFT'"
+        p: List[Any] = [user_id]
+        if subject_id:
+            q += " AND subject_id=?"
+            p.append(subject_id)
+        return {r["id"] for r in conn.execute(q, p).fetchall()}
+    except sqlite3.Error:
+        return set()
+    finally:
+        conn.close()
+
+
 def get_task_buckets(user_id: str, subject_id: Optional[str] = None,
                      completed_limit: int = 100) -> Dict[str, Any]:
     """
@@ -600,7 +645,10 @@ def get_task_buckets(user_id: str, subject_id: Optional[str] = None,
     - completed 已完成
     """
     today = date.today().isoformat()
-    all_tasks = list_tasks(user_id, subject_id, bucket=None, limit=1000)
+    draft_plans = _draft_plan_ids(user_id, subject_id)
+    # 草案（待确认）计划不作为生效任务进入首页；确认/应用后才出现
+    all_tasks = [t for t in list_tasks(user_id, subject_id, bucket=None, limit=1000)
+                 if t.get("plan_id") not in draft_plans]
 
     todo, completed, today_tasks, overdue = [], [], [], []
     for t in all_tasks:

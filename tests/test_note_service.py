@@ -69,8 +69,16 @@ class TestNormalizeQuiz(unittest.TestCase):
         self.assertEqual(len(quizzes), 1)
         self.assertEqual(quizzes[0]["type"], "judgement")
         self.assertEqual(quizzes[0]["options"], ["正确", "错误"])
-        self.assertEqual(quizzes[0]["knowledge_point"], "二叉树")
+        # 新契约（2026-10-05）：题目**自带**的知识点才被采纳，缺失则待确认；
+        # 不再把整批主题套到每道题上（那会把"复杂度题"算进"稳定性"）。
+        self.assertIsNone(quizzes[0]["knowledge_point"])
         self.assertIn("id", quizzes[0])
+        # 题目自带归属时保留
+        declared = _normalize_quiz(
+            [{"question": "二叉树每个节点最多两个子树？", "type": "judgement",
+              "answer": "正确", "options": ["正确", "错误"],
+              "knowledge_point": "二叉树"}], "树")
+        self.assertEqual(declared[0]["knowledge_point"], "二叉树")
 
     def test_single_choice_and_short_answer(self):
         raw = [
@@ -102,9 +110,11 @@ class TestGenerateSmartNote(IsolatedDataTestCase):
             "class_tips": {"content": "课堂提示：重点掌握三种遍历。"},
             "quiz": [
                 {"question": "二叉树每个节点最多几个子树？", "type": "single_choice",
-                 "options": ["一个", "两个"], "answer": "两个", "explanation": "定义"},
+                 "options": ["一个", "两个"], "answer": "两个", "explanation": "定义",
+                 "knowledge_point": "二叉树"},
                 {"question": "前序遍历顺序？", "type": "short_answer",
-                 "options": [], "answer": "根-左-右", "explanation": "遍历"},
+                 "options": [], "answer": "根-左-右", "explanation": "遍历",
+                 "knowledge_point": "二叉树"},
             ],
         }, ensure_ascii=False)
 

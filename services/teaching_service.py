@@ -377,25 +377,23 @@ def upload_material(user_id: str, course_id: str, file_content: bytes,
              {"filename": filename, "visibility": visibility})
     logger.info(f"课程资料上传: course={course_id} file={filename}")
 
-    # 上传后**自动构建课程知识库**（首次使用实测问题：资料显示"已就绪"，但向量库还没建，
-    # AI 检索为空、出题报"课程资料为空"，教师必须先手动点一次「重建知识库」——顺序陷阱）。
-    # 只在知识库尚未就绪时重建，避免每次上传都重复嵌入；失败不静默，随响应一起返回原因。
+    # 上传后**必须重建课程知识库**（2026-10-05 修复）：
+    # 此前只在"知识库尚未就绪"时重建——若课程已有可用知识库，新上传的资料会写进
+    # 学科目录、资料列表也显示"已就绪"，却**从未进入 FAISS/BM25 索引**，表现为
+    # "学生基于课程资料提问永远检索不到新资料"。正确做法是每次上传后重建索引；
+    # 失败不静默，随响应一起返回原因（前端会提示"已上传但构建失败，可重试"）。
+    kb_rebuild = {"attempted": True, "ok": None, "error": None}
+    try:
+        knowledge_service.rebuild_subject_knowledge(course["subject_id"])
+        kb_rebuild["ok"] = True
+    except Exception as e:
+        kb_rebuild["ok"] = False
+        kb_rebuild["error"] = str(e)[:200]
+        logger.warning(f"上传后重建知识库失败: course={course_id} err={e}")
     kb = _kb_status(course["subject_id"])
-    kb_rebuild = {"attempted": False, "ok": None, "error": None}
-    if not (kb.get("available") and (kb.get("stats") or {}).get("status") == "ready"):
-        kb_rebuild["attempted"] = True
-        try:
-            knowledge_service.rebuild_subject_knowledge(course["subject_id"])
-            kb_rebuild["ok"] = True
-        except Exception as e:
-            kb_rebuild["ok"] = False
-            kb_rebuild["error"] = str(e)[:200]
-            logger.warning(f"上传后自动构建知识库失败: course={course_id} err={e}")
-        kb = _kb_status(course["subject_id"])
-        if kb_rebuild["attempted"]:
-            td.audit(course_id, user_id,
-                     "material.kb_rebuild_ok" if kb_rebuild["ok"] else "material.kb_rebuild_failed",
-                     "course", course_id, {"error": kb_rebuild["error"]})
+    td.audit(course_id, user_id,
+             "material.kb_rebuild_ok" if kb_rebuild["ok"] else "material.kb_rebuild_failed",
+             "course", course_id, {"error": kb_rebuild["error"]})
     return {**_material_public(material), "kb": kb, "kb_rebuild": kb_rebuild}
 
 

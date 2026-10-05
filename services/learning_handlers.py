@@ -9,9 +9,12 @@
 - 依赖幂等键，重复事件（刷新/断网重试/并发）不会重复产生业务结果
 """
 
+from datetime import date
+
 from utils.logger import logger
 from services.learning_events import register_handler, EVENT_DONE
 from services import mastery_service, review_service, quiz_service
+from services.kp_attribution import is_pending
 
 REVIEW_REASON_WRONG = "最近一次作答错误，需要复习"
 
@@ -30,6 +33,10 @@ def _handle_quiz_attempt(ctx: dict) -> None:
     kp_name = p.get("knowledge_point")
     if not (user_id and subject_id and kp_name):
         logger.warning(f"作答事件缺少必要字段，跳过画像记录: {p}")
+        return
+    if is_pending(kp_name) or not p.get("knowledge_point_id"):
+        # 归属待确认的题目：保留作答记录，但不参与精确知识点掌握估计
+        logger.info(f"题目归属待确认，跳过掌握度记录: question={p.get('question_id')}")
         return
     mastery_service.record_evidence(
         user_id=user_id,
@@ -58,8 +65,9 @@ def _handle_quiz_attempt_review(ctx: dict) -> None:
     is_correct = bool(p.get("is_correct"))
     attempt_kind = p.get("attempt_kind") or "independent"
     attempt_id = p.get("attempt_id")
-    if not (user_id and subject_id and kp_name and kp_id):
-        logger.warning(f"作答事件缺少必要字段，跳过复习联动: {p}")
+    if not (user_id and subject_id and kp_name and kp_id) or is_pending(kp_name):
+        # 归属待确认：不生成/关闭复习（避免污染某个知识点）
+        logger.info(f"题目归属待确认或字段不足，跳过复习联动: {p.get('question_id')}")
         return
 
     if not is_correct:
@@ -78,6 +86,15 @@ def _handle_quiz_attempt_review(ctx: dict) -> None:
         logger.info(f"作答性质 {attempt_kind} 不关闭复习待办: user={user_id}, kp={kp_name}")
         return
 
+    # 间隔复习语义（2026-10-05）：
+    # - 用"同知识点的新题"独立做对提前练习 → 只关闭已到期的复习；
+    # - **延后复测**（reason 含"复测"）同理：即使直接重做同一题，未到期也不关闭，
+    #   否则会提前消耗复测阶段、并再排一次复测（阶段提前推进）；
+    # - 普通"错题复习"重做同一题仍按原语义关闭（学生就是在完成这条复习）。
+    # 教师改判走 complete_review_tasks(attempt_kind=None) 的显式例外，不受此限。
+    pending = review_service.get_pending_review_for_point(user_id, subject_id, kp_id)
+    is_recheck = bool(pending and "复测" in (pending.get("reason") or ""))
+    require_due = (attempt_kind == "independent") or is_recheck
     closed = review_service.complete_review_tasks(
         user_id=user_id,
         subject_id=subject_id,
@@ -85,6 +102,7 @@ def _handle_quiz_attempt_review(ctx: dict) -> None:
         reason="复习已通过（重做答对）",
         attempt_kind=attempt_kind,
         source_attempt_id=attempt_id,
+        due_on_or_before=(date.today().isoformat() if require_due else None),
     )
     if not closed:
         return
@@ -97,13 +115,17 @@ def _handle_quiz_attempt_review(ctx: dict) -> None:
     except Exception as e:
         logger.warning(f"读取掌握状态失败（按未巩固处理）: {e}")
 
+    # 只有"跨天间隔复现"才跳过延后复测；密集连对（consolidated 的 fast path）
+    # 不足以判定长期掌握，仍应安排复测——与教学策略/Agent 的表达保持一致。
+    spaced = mastery_service.is_spaced_consolidation(
+        state.get("first_correct_at"), state.get("last_correct_at"))
     recheck = review_service.schedule_recheck(
         user_id=user_id,
         subject_id=subject_id,
         knowledge_point_id=kp_id,
         knowledge_point_name=kp_name,
         source_attempt_id=attempt_id,
-        consolidated=bool(state.get("consolidated")),
+        consolidated=spaced,
         recheck_times=int(state.get("recheck_count") or 0),
     )
     if recheck.get("scheduled"):
@@ -128,7 +150,8 @@ def _handle_quiz_attempt_memory(ctx: dict) -> None:
     kp_id = p.get("knowledge_point_id")
     is_correct = bool(p.get("is_correct"))
     attempt_kind = p.get("attempt_kind") or "independent"
-    if not (user_id and subject_id and kp_name):
+    if not (user_id and subject_id and kp_name) or is_pending(kp_name):
+        # 归属待确认：不写入"需要加强"推断，避免把不明归属的错题算到某知识点
         return
 
     from services import learning_memory, mastery_service

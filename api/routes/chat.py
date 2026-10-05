@@ -78,6 +78,7 @@ async def chat(request: ChatRequest, user_id: str = Depends(get_current_user)):
             provider_display=result.get("provider_display"),
             latency=result.get("latency", 0.0),
             context_used=result.get("context_used", False),
+            cited_source_ids=result.get("cited_source_ids") or [],
             # 结构化模式：卡片数据必须透出，否则前端无法渲染笔记/题单
             message_type=result.get("message_type"),
             payload=result.get("payload"),
