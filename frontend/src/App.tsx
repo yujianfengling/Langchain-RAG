@@ -1,10 +1,11 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { Alert, Layout, Menu, ConfigProvider, Drawer, Button, Spin } from 'antd';
+import { Alert, Layout, Menu, ConfigProvider, Drawer, Button, Spin, Tooltip } from 'antd';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   DatabaseOutlined, CheckSquareOutlined, RobotOutlined, ReloadOutlined,
   EditOutlined, FormOutlined, BarChartOutlined, MenuOutlined, CloseOutlined,
+  MenuFoldOutlined, MenuUnfoldOutlined,
 } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import AccountMenu from './components/AccountMenu';
@@ -85,6 +86,22 @@ const App: React.FC = () => {
   const isNarrow = useIsNarrow();
   const { user } = useAuth();
   const [drawerOpen, setDrawerOpen] = React.useState(false);
+  /**
+   * 全站导航折叠（桌面）。默认展开；用户选择记在 localStorage，
+   * 折叠后 sider 收到 64px，主内容区立刻变宽（需求：导航不再占据过宽区域）。
+   */
+  const [navCollapsed, setNavCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try { return window.localStorage.getItem('app.nav.collapsed') === '1'; } catch { return false; }
+  });
+  const navWidth = navCollapsed ? 68 : 200;
+  const toggleNav = () => {
+    setNavCollapsed((v) => {
+      const next = !v;
+      try { window.localStorage.setItem('app.nav.collapsed', next ? '1' : '0'); } catch { /* 忽略 */ }
+      return next;
+    });
+  };
 
   React.useEffect(() => { setDrawerOpen(false); }, [location.pathname, location.search]);
 
@@ -105,28 +122,39 @@ const App: React.FC = () => {
     return '/student';
   };
 
-  const brandNode = (compact = false) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-      <div style={{
-        width: 38, height: 38, borderRadius: 11,
-        background: 'linear-gradient(135deg, #0f766e 0%, #14b8a6 60%, #5eead4 100%)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        color: '#fff', fontWeight: 800, fontSize: 17, flexShrink: 0,
-      }}>智</div>
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontWeight: 700, fontSize: compact ? 15 : 13, color: '#0f172a', lineHeight: 1.35, wordBreak: 'break-word' }}>
-          {compact ? 'RAG智慧教育' : 'RAG与LangChain融合的智慧教育系统'}
+  /**
+   * 全站导航品牌区。
+   * collapsed=true 时只保留图标，完整项目名通过 Tooltip 仍可查看
+   * （需求：导航保持紧凑、提供折叠入口，但完整名称不能丢）。
+   */
+  const brandNode = (compact = false, collapsed = false) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0,
+                 justifyContent: collapsed ? 'center' : 'flex-start' }}>
+      <Tooltip title={collapsed ? 'RAG与LangChain融合的智慧教育系统' : ''} placement="right">
+        <div style={{
+          width: 38, height: 38, borderRadius: 11,
+          background: 'linear-gradient(135deg, #0f766e 0%, #14b8a6 60%, #5eead4 100%)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: '#fff', fontWeight: 800, fontSize: 17, flexShrink: 0,
+        }}>智</div>
+      </Tooltip>
+      {!collapsed && (
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: compact ? 15 : 13, color: '#0f172a', lineHeight: 1.35, wordBreak: 'break-word' }}>
+            {compact ? 'RAG智慧教育' : 'RAG与LangChain融合的智慧教育系统'}
+          </div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, lineHeight: 1.4 }}>
+            {isTeacher ? '备课 · 作业 · 学情' : '资料问答 · 引导学习'}
+          </div>
         </div>
-        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, lineHeight: 1.4 }}>
-          {isTeacher ? '备课 · 作业 · 学情' : '资料问答 · 引导学习'}
-        </div>
-      </div>
+      )}
     </div>
   );
 
-  const menuNode = (
+  const menuNode = (collapsed = false) => (
     <Menu
       mode="inline"
+      inlineCollapsed={collapsed}
       selectedKeys={[getSelectedKey()]}
       onClick={({ key }) => {
         if (String(key).startsWith('/teacher')) {
@@ -157,23 +185,32 @@ const App: React.FC = () => {
         initial={{ x: -40, opacity: 0 }}
         animate={{ x: 0, opacity: 1 }}
         transition={{ duration: 0.18 }}
-        style={{ display: 'flex', flexDirection: 'column', width: 200, flexShrink: 0 }}
+        style={{ display: 'flex', flexDirection: 'column', width: navWidth, flexShrink: 0 }}
       >
         <Sider
           className="app-sider"
-          width={200}
+          width={navWidth}
           style={{
             background: '#ffffff', borderRight: '1px solid #e2e8f0',
             height: '100vh', position: 'fixed', left: 0, top: 0, bottom: 0, zIndex: 100,
             display: 'flex', flexDirection: 'column', overflow: 'hidden',
           }}
         >
-          <div style={{ padding: '18px 16px 14px', borderBottom: '1px solid #f1f5f9' }}>{brandNode()}</div>
-          <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode}</div>
-          <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}>
-            <AccountMenu onOpenProfile={() => navigate('/me')} />
+          <div style={{ padding: navCollapsed ? '18px 8px 14px' : '18px 16px 14px', borderBottom: '1px solid #f1f5f9' }}>
+            {brandNode(false, navCollapsed)}
           </div>
-          {footerNode}
+          <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode(navCollapsed)}</div>
+          <div style={{ padding: navCollapsed ? '8px 6px' : '8px 10px', borderTop: '1px solid #f1f5f9' }}>
+            {navCollapsed ? null : <AccountMenu onOpenProfile={() => navigate('/me')} />}
+          </div>
+          <div style={{ padding: '6px 8px', borderTop: '1px solid #f1f5f9', textAlign: 'center' }}>
+            <Tooltip title={navCollapsed ? '展开导航' : '收起导航'} placement="right">
+              <Button type="text" size="small" aria-label={navCollapsed ? '展开导航' : '收起导航'}
+                      icon={navCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+                      onClick={toggleNav} />
+            </Tooltip>
+          </div>
+          {navCollapsed ? null : footerNode}
         </Sider>
       </motion.div>
 
@@ -193,7 +230,7 @@ const App: React.FC = () => {
           {brandNode()}
           <Button type="text" icon={<CloseOutlined />} aria-label="关闭导航菜单" style={{ marginLeft: 'auto' }} onClick={() => setDrawerOpen(false)} />
         </div>
-        <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode}</div>
+        <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode(false)}</div>
         <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}>
           <AccountMenu onOpenProfile={() => { setDrawerOpen(false); navigate('/me'); }} />
         </div>
@@ -245,3 +282,5 @@ const AppWithRouter: React.FC = () => (
 );
 
 export default AppWithRouter;
+// 2026-10-07 布局轮：导航折叠（触发 Vite 重新编译）
+// 2026-10-07 布局轮：导航折叠图标（触发 Vite 重新编译）

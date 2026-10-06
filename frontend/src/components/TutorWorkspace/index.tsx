@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Alert, Button, Checkbox, Input, Segmented, Select, Space, Spin, Tag, Tooltip,
-  Typography, message as antdMessage,
+  Alert, Button, Checkbox, Dropdown, Input, Popover, Segmented, Select, Space, Spin, Tag,
+  Tooltip, Typography, message as antdMessage,
 } from 'antd';
 import {
   BookOutlined, BulbOutlined, CheckSquareOutlined, CloseOutlined, DatabaseOutlined,
-  FileTextOutlined, FormOutlined, MenuOutlined, PartitionOutlined, ReloadOutlined,
-  RobotOutlined, SendOutlined, StopOutlined,
+  DownOutlined, FileTextOutlined, FormOutlined, MenuOutlined, MoreOutlined,
+  PartitionOutlined, ReloadOutlined, RightOutlined, RobotOutlined, SendOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
 import { useCourse } from '../../context/CourseContext';
 import { useIsNarrow } from '../../hooks/useIsNarrow';
@@ -24,6 +25,20 @@ import './tutor.css';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
+
+/**
+ * 路线状态的中文兜底。
+ * 后端 capabilities/知识地图会给 status_labels，但缺失时界面绝不能回落到英文键
+ * （实测截图里出现过 new/learning/practicing/passed/needs_review 的英文图例）。
+ * 状态含义保持真实业务口径：一次"检测通过"不等于永久掌握，复习后仍会回到待复习。
+ */
+const STATUS_FALLBACK: Record<string, string> = {
+  new: '未开始',
+  learning: '学习中',
+  practicing: '待检测',
+  passed: '检测通过',
+  needs_review: '待复习',
+};
 
 export interface TutorWorkspaceProps {
   initialSubjectId?: string;
@@ -78,6 +93,12 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const ctx = useCourse();
   const navigate = useNavigate();
   const isNarrow = useIsNarrow();
+  /**
+   * 右栏（引用原文/学习成果/执行详情）在 1366px 及以下改为**覆盖式抽屉**：
+   * 并排展开会把正文挤到难读（实测 1366px 时三栏只剩 ~700px），
+   * 抽屉只覆盖、不改变主区宽度，关闭后空间立即归还。
+   */
+  const isNarrowForPanel = useIsNarrow('(max-width: 1559px)');
   const [subjectId, setSubjectId] = useState<string>(initialSubjectId || '');
   const [sessionLoading, setSessionLoading] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -99,7 +120,29 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const [artifacts, setArtifacts] = useState<any[]>([]);
   const [focusSource, setFocusSource] = useState<number | null>(null);
   const [leftOpen, setLeftOpen] = useState(false);
+  /**
+   * 右栏开关。默认收起；开合状态按"学科"记忆在 sessionStorage 里
+   * （参考 Archify reader-layout.js 的 rail 偏好与 DeepTutor useLearningMode 的按工作区快照，
+   * 见 docs/THIRD_PARTY_REUSE.md）。开关面板本身绝不动会话/草稿/节点/资料范围。
+   */
   const [rightOpen, setRightOpen] = useState(false);
+  const panelPrefKey = useMemo(() => `tutor.rightPanel:${subjectId || 'default'}`, [subjectId]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setRightOpen(window.sessionStorage.getItem(panelPrefKey) === '1');
+  }, [panelPrefKey]);
+  const toggleRightPanel = useCallback((next: boolean) => {
+    setRightOpen(next);
+    try { window.sessionStorage.setItem(panelPrefKey, next ? '1' : '0'); } catch { /* 隐私模式忽略 */ }
+  }, [panelPrefKey]);
+
+  // Esc 关闭覆盖式抽屉（参考 Archify reader-layout.js 的 overlay 键盘行为）
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') toggleRightPanel(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [toggleRightPanel]);
 
   const abortRef = useRef<AbortController | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -479,42 +522,56 @@ const includeNodeSources = useCallback(() => {
         />
       </div>
 
-      <div className="tutor-left-section">
-        <div className="tutor-left-title">
-          回答依据的资料
-          <span className="tutor-left-count">{allSelected ? readyMaterials.length : selectedDocs.length} 份</span>
-        </div>
-        {sessionLoading ? <Spin size="small" /> : (
-          <div className="tutor-scope">
-            <Checkbox checked={allSelected} onChange={() => applyScope([])}>使用全部资料</Checkbox>
-            <div className="tutor-scope-list">
-              {readyMaterials.map((m) => (
-                <Checkbox
-                  key={m.doc_id}
-                  checked={selectedDocs.includes(m.doc_id)}
-                  disabled={!scopeMaterialIds.has(m.doc_id)}
-                  onChange={(e) => {
-                    const next = e.target.checked
-                      ? [...selectedDocs, m.doc_id]
-                      : selectedDocs.filter((x) => x !== m.doc_id);
-                    applyScope(next);
-                  }}
-                >
-                  <Tooltip title={m.file_name}>
-                    <span className="tutor-scope-name">{m.file_name}</span>
-                  </Tooltip>
-                </Checkbox>
-              ))}
-              {readyMaterials.length === 0 && (
-                <Text type="secondary" style={{ fontSize: 12 }}>暂无可用资料，先到资料库上传</Text>
-              )}
+      {/* 资料范围：收起时只占一行（"资料：全部 8 份"），点开才出现勾选列表。
+          2026-10-07 之前这里是常驻复选列表，会把左栏的"学习路线"挤掉大半高度。 */}
+      <div className="tutor-left-section tutor-left-scope">
+        <Popover
+          trigger="click"
+          placement="bottomLeft"
+          arrow={false}
+          title="回答依据的资料"
+          overlayClassName="tutor-scope-pop"
+          content={sessionLoading ? <Spin size="small" /> : (
+            <div className="tutor-scope">
+              <Checkbox checked={allSelected} onChange={() => applyScope([])}>使用全部资料</Checkbox>
+              <div className="tutor-scope-list">
+                {readyMaterials.map((m) => (
+                  <Checkbox
+                    key={m.doc_id}
+                    checked={selectedDocs.includes(m.doc_id)}
+                    disabled={!scopeMaterialIds.has(m.doc_id)}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                        ? [...selectedDocs, m.doc_id]
+                        : selectedDocs.filter((x) => x !== m.doc_id);
+                      applyScope(next);
+                    }}
+                  >
+                    <Tooltip title={m.file_name}>
+                      <span className="tutor-scope-name">{m.file_name}</span>
+                    </Tooltip>
+                  </Checkbox>
+                ))}
+                {readyMaterials.length === 0 && (
+                  <Text type="secondary" style={{ fontSize: 12 }}>暂无可用资料，先到资料库上传</Text>
+                )}
+              </div>
+              <div className="tutor-scope-hint">
+                {scopeLabel || '基于本学科全部资料'}
+                {scopeInvalid.length > 0 && `（${scopeInvalid.length} 项已失效）`}
+              </div>
             </div>
-            <div className="tutor-scope-hint">
-              {scopeLabel || '基于本学科全部资料'}
-              {scopeInvalid.length > 0 && `（${scopeInvalid.length} 项已失效）`}
-            </div>
-          </div>
-        )}
+          )}
+        >
+          <button type="button" className="tutor-scope-btn" title={scopeLabel || '基于本学科全部资料'}>
+            <DatabaseOutlined />
+            <span className="tutor-scope-btn-text">
+              {allSelected ? `资料：全部 ${readyMaterials.length} 份` : `资料：已选 ${selectedDocs.length} 份`}
+            </span>
+            {scopeInvalid.length > 0 && <span className="tutor-scope-warn">·{scopeInvalid.length} 失效</span>}
+            <DownOutlined className="tutor-scope-btn-caret" />
+          </button>
+        </Popover>
       </div>
 
       <div className="tutor-left-section tutor-left-grow">
@@ -538,6 +595,35 @@ const includeNodeSources = useCallback(() => {
     </div>
   );
 
+  /** 右栏内容（引用原文 / 学习成果 / 执行详情）：桌面内嵌与窄屏抽屉共用同一份，
+   *  避免两处各写一遍导致行为不一致。 */
+  const rightPanelBody = (
+    <div className="tutor-right">
+      <div className="tutor-right-head">
+        <span className="tutor-right-title">引用与成果</span>
+        <Button type="text" size="small" icon={<CloseOutlined />} aria-label="收起引用与成果"
+                onClick={() => toggleRightPanel(false)} />
+      </div>
+      <SourcePanel
+        sources={lastSourcesRef.current}
+        citedIds={lastCitedRef.current}
+        artifacts={artifacts}
+        trace={lastTraceRef.current}
+        stages={stages}
+        focusSourceId={focusSource}
+        onDeleteArtifact={async (a) => {
+          await deleteArtifact(a.id);
+          setArtifacts((prev) => prev.filter((x) => x.id !== a.id));
+        }}
+        onUpdateArtifact={async (a, content) => {
+          const updated = await updateArtifact(a.id, { subject_id: subjectId, content });
+          setArtifacts((prev) => prev.map((x) => (x.id === a.id ? { ...x, ...updated } : x)));
+          antdMessage.success('已保存修改');
+        }}
+      />
+    </div>
+  );
+
   return (
     <div className="tutor-workspace">
       {isNarrow ? (
@@ -545,7 +631,7 @@ const includeNodeSources = useCallback(() => {
           <div className="tutor-mobile-bar">
             <Button type="text" icon={<MenuOutlined />} onClick={() => setLeftOpen(true)}>资料与路线</Button>
             <span className="tutor-mobile-title">{nodeDetail ? nodeDetail.label : 'AI 伴学'}</span>
-            <Button type="text" icon={<FileTextOutlined />} onClick={() => setRightOpen(true)}>引用</Button>
+            <Button type="text" icon={<FileTextOutlined />} onClick={() => toggleRightPanel(true)}>引用</Button>
           </div>
           {leftOpen && (
             <div className="tutor-drawer tutor-drawer-left">
@@ -555,27 +641,7 @@ const includeNodeSources = useCallback(() => {
             </div>
           )}
           {rightOpen && (
-            <div className="tutor-drawer tutor-drawer-right">
-              <Button type="text" icon={<CloseOutlined />} className="tutor-drawer-close"
-                      onClick={() => setRightOpen(false)} />
-              <SourcePanel
-                sources={lastSourcesRef.current}
-                citedIds={lastCitedRef.current}
-                artifacts={artifacts}
-                trace={lastTraceRef.current}
-                stages={stages}
-                focusSourceId={focusSource}
-                onDeleteArtifact={async (a) => {
-                  await deleteArtifact(a.id);
-                  setArtifacts((prev) => prev.filter((x) => x.id !== a.id));
-                }}
-                onUpdateArtifact={async (a, content) => {
-                  const updated = await updateArtifact(a.id, { subject_id: subjectId, content });
-                  setArtifacts((prev) => prev.map((x) => (x.id === a.id ? { ...x, ...updated } : x)));
-                  antdMessage.success('已保存修改');
-                }}
-              />
-            </div>
+            <div className="tutor-drawer tutor-drawer-right">{rightPanelBody}</div>
           )}
         </>
       ) : (
@@ -592,22 +658,37 @@ const includeNodeSources = useCallback(() => {
             }}
             options={Object.entries(ABILITY_LABELS).map(([key, label]) => ({ label, value: key }))}
           />
-          <div className="tutor-main-scope">
-            <Tooltip title={scopeLabel || '基于全部资料'}>
-              <Tag icon={<DatabaseOutlined />} color={allSelected ? 'default' : 'teal'}>
-                {allSelected ? `全部资料 ${readyMaterials.length} 份` : `所选 ${selectedDocs.length} 份`}
-              </Tag>
-            </Tooltip>
+          {/* 范围摘要原先在这里又出现一份（与左栏重复）。现在范围只有左栏一个入口，
+              这里放右栏开关：默认收起，点开才占位（窄屏由移动端栏的「引用」承接）。 */}
+          <div className="tutor-main-actions">
+            {!isNarrow && (
+              <Tooltip title={rightOpen ? '收起引用与成果' : '展开引用原文、学习成果与执行详情'}>
+                <Button
+                  size="small"
+                  type={rightOpen ? 'primary' : 'default'}
+                  icon={<FileTextOutlined />}
+                  onClick={() => toggleRightPanel(!rightOpen)}
+                  className="tutor-panel-toggle"
+                >
+                  引用与成果
+                </Button>
+              </Tooltip>
+            )}
           </div>
         </div>
 
         {nodeDetail && (
           <div className="tutor-node-bar">
             <div className="tutor-node-info">
-              <Tag color="green">{nodeDetail.status_label || '未开始'}</Tag>
-              <span className="tutor-node-name">{nodeDetail.label}</span>
+              <span className="tutor-node-eyebrow">正在学</span>
+              <Tag color="green">
+                {nodeDetail.status_label || STATUS_FALLBACK[nodeDetail.status] || '未开始'}
+              </Tag>
+              <span className="tutor-node-name" title={nodeDetail.label}>{nodeDetail.label}</span>
               {nodeDetail.source_docs?.length > 0 && (
-                <span className="tutor-node-src">来源：{nodeDetail.source_docs.join('、')}</span>
+                <Tooltip title={nodeDetail.source_docs.join('、')}>
+                  <span className="tutor-node-src">· {nodeDetail.source_docs.length} 份来源</span>
+                </Tooltip>
               )}
             </div>
             {nodeScopeMissing.length > 0 && (
@@ -618,11 +699,30 @@ const includeNodeSources = useCallback(() => {
                 </Button>
               </Tooltip>
             )}
-            <Space size={6} wrap>
-              <Button size="small" icon={<BulbOutlined />} onClick={() => startNodeActivity('learn')}>学习</Button>
-              <Button size="small" icon={<FormOutlined />} onClick={() => startNodeActivity('practice')}>练习</Button>
-              <Button size="small" icon={<CheckSquareOutlined />} onClick={() => startNodeActivity('quiz')}>检测</Button>
-              <Button size="small" icon={<FileTextOutlined />} onClick={() => startNodeActivity('note')}>记笔记</Button>
+            {/* 同一动作只保留一个主要入口：学习/练习/检测是主操作，
+                「记笔记」等次级能力收进"更多"，避免与顶部模式栏功能重叠、按钮成排。 */}
+            <Space size={6} wrap className="tutor-node-actions">
+              <Button size="small" type="primary" ghost icon={<BulbOutlined />}
+                      onClick={() => startNodeActivity('learn')}>开始学习</Button>
+              <Button size="small" icon={<FormOutlined />}
+                      onClick={() => startNodeActivity('practice')}>做练习</Button>
+              <Button size="small" icon={<CheckSquareOutlined />}
+                      onClick={() => startNodeActivity('quiz')}>检测</Button>
+              <Dropdown
+                trigger={['click']}
+                menu={{
+                  items: [
+                    { key: 'note', icon: <FileTextOutlined />, label: '记笔记' },
+                    { key: 'trace', icon: <RightOutlined />, label: '引用与执行详情' },
+                  ],
+                  onClick: ({ key }) => {
+                    if (key === 'note') startNodeActivity('note');
+                    if (key === 'trace') toggleRightPanel(true);
+                  },
+                }}
+              >
+                <Button size="small" icon={<MoreOutlined />}>更多</Button>
+              </Dropdown>
             </Space>
           </div>
         )}
@@ -666,7 +766,7 @@ const includeNodeSources = useCallback(() => {
                     </div>
                   )}
                   {msg.content
-                    ? <MarkdownText text={msg.content} onCitation={(id) => { setFocusSource(id); setRightOpen(true); }} />
+                    ? <MarkdownText text={msg.content} onCitation={(id) => { setFocusSource(id); toggleRightPanel(true); }} />
                     : (msg.streaming ? (
                       <div className="tutor-stage">
                         <Spin size="small" />
@@ -727,26 +827,19 @@ const includeNodeSources = useCallback(() => {
         </div>
       </main>
 
-      {!isNarrow && (
-        <aside className="tutor-aside tutor-aside-right">
-          <SourcePanel
-            sources={lastSourcesRef.current}
-            citedIds={lastCitedRef.current}
-            artifacts={artifacts}
-            trace={lastTraceRef.current}
-            stages={stages}
-            focusSourceId={focusSource}
-            onDeleteArtifact={async (a) => {
-              await deleteArtifact(a.id);
-              setArtifacts((prev) => prev.filter((x) => x.id !== a.id));
-            }}
-            onUpdateArtifact={async (a, content) => {
-              const updated = await updateArtifact(a.id, { subject_id: subjectId, content });
-              setArtifacts((prev) => prev.map((x) => (x.id === a.id ? { ...x, ...updated } : x)));
-              antdMessage.success('已保存修改');
-            }}
-          />
-        </aside>
+      {/* 右栏默认收起：关闭后不渲染任何占位列，主区自动占满。
+          宽屏才内嵌并排；1366px 及以下改为覆盖式抽屉，避免把正文挤窄。 */}
+      {!isNarrow && rightOpen && !isNarrowForPanel && (
+        <aside className="tutor-aside tutor-aside-right">{rightPanelBody}</aside>
+      )}
+      {!isNarrow && rightOpen && isNarrowForPanel && (
+        <div className="tutor-panel-overlay" role="presentation"
+             onClick={() => toggleRightPanel(false)}>
+          <div className="tutor-panel-drawer" role="dialog" aria-label="引用与成果"
+               onClick={(e) => e.stopPropagation()}>
+            {rightPanelBody}
+          </div>
+        </div>
       )}
     </div>
   );

@@ -29,6 +29,23 @@ const STATUS_DOT: Record<string, string> = {
   needs_review: '#d97706',
 };
 
+/**
+ * 状态中文兜底（2026-10-07）。
+ * 后端会下发 status_labels，但缺失时界面曾直接显示 new / learning / practicing /
+ * passed / needs_review 这些英文键（截图里可见）。这里给中文兜底，
+ * 并保持真实业务口径：一次"检测通过"不代表永久掌握。
+ */
+const STATUS_FALLBACK: Record<string, string> = {
+  new: '未开始',
+  learning: '学习中',
+  practicing: '待检测',
+  passed: '检测通过',
+  needs_review: '待复习',
+};
+
+const statusText = (key: string, labels?: Record<string, string>, own?: string): string =>
+  labels?.[key] || own || STATUS_FALLBACK[key] || key;
+
 const MapTree: React.FC<{
   nodes: MapNode[];
   currentNodeId?: string | null;
@@ -67,7 +84,7 @@ const MapTree: React.FC<{
                 <span className="tutor-map-dot" style={{ background: STATUS_DOT[node.status] || '#cbd5e1' }} />
                 <span className="tutor-map-label">{node.label}</span>
                 <span className="tutor-map-status">
-                  {statusLabels?.[node.status] || node.status_label || ''}
+                  {statusText(node.status, statusLabels, node.status_label)}
                 </span>
               </button>
               {renderLevel(node.node_id, depth + 1)}
@@ -94,14 +111,14 @@ const MapTree: React.FC<{
 
   return (
     <div className="tutor-map">
+      {/* 下一步建议压成单行：此前是一张带说明的卡片，反复占掉路线高度。 */}
       {nextNode && (
-        <div className="tutor-map-next">
-          <AimOutlined style={{ color: 'var(--color-primary)' }} />
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 600 }}>建议下一步：{nextNode.label}</div>
-            <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{nextNode.reason}</div>
+        <Tooltip title={nextNode.reason}>
+          <div className="tutor-map-next">
+            <AimOutlined style={{ color: 'var(--color-primary)' }} />
+            <span className="tutor-map-next-label">建议下一步：{nextNode.label}</span>
           </div>
-        </div>
+        </Tooltip>
       )}
       <div className="tutor-map-scroll">{renderLevel(null, 0)}</div>
       <div className="tutor-map-footer">
@@ -109,10 +126,10 @@ const MapTree: React.FC<{
           <Button size="small" type="text" icon={<ReloadOutlined />} loading={generating}
                   onClick={onGenerate}>重新生成</Button>
         </Tooltip>
-        <span className="tutor-map-legend">
+        <span className="tutor-map-legend" title="路线状态：未开始 / 学习中 / 待检测 / 检测通过 / 待复习">
           {(Object.keys(STATUS_DOT) as string[]).map((k) => (
             <span key={k} className="tutor-legend-item">
-              <i style={{ background: STATUS_DOT[k] }} />{statusLabels?.[k] || k}
+              <i style={{ background: STATUS_DOT[k] }} />{statusText(k, statusLabels)}
             </span>
           ))}
         </span>
@@ -122,3 +139,4 @@ const MapTree: React.FC<{
 };
 
 export default MapTree;
+// 2026-10-07 布局轮：状态标签中文兜底（触发 Vite 重新编译）

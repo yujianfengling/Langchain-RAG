@@ -71,3 +71,25 @@ retrieve_and_build_context_scoped` + `services/tutor_agent.py`）。问答、地
 - 本项目的实现为**独立 Python/TypeScript 重写**，未逐段拷贝上述仓库源码；
   借鉴的是数据模型、注册表/协议设计与校验思路，已在文件头注释与本文档中注明出处。
 - 交付/答辩材料中如需引用，请保留本文件与 `docs/research/` 两份研究报告。
+
+---
+
+## 2026-10-07 布局轮：AI 伴学工作台信息层级（采用位置与出处）
+
+本轮只改前端布局，不改检索/权限/会话隔离。参考实现均**只读源码**后按需重写，
+未整文件搬运，也未引入第二套系统。版本与 SHA 见本文档开头表格。
+
+| 我们的实现 | 位置 | 参考出处（文件:行） | 许可证 | 采纳了什么 / 没采纳什么 |
+|---|---|---|---|---|
+| 右栏默认收起、关闭后不留占位列 | `frontend/src/components/TutorWorkspace/index.tsx`（rightOpen 条件渲染 + .tutor-panel-overlay） | DeepTutor `web/components/reading/workspace/ReadingWorkspace.tsx:602-611` | Apache-2.0 | 采纳"关栏即去掉列轨道"；未采纳拖动改宽与 4 轨 grid（我们只读三种内容） |
+| 右栏偏好持久化（按学科） | 同上 panelPrefKey + sessionStorage | DeepTutor `web/components/reading/workspace/useLearningMode.ts:44,67-71` | Apache-2.0 | 采纳"按工作区归属的开关快照"；键名与结构自建 |
+| 覆盖式抽屉 + 遮罩 + Esc/外点关闭 | `tutor.css` .tutor-panel-overlay 与键盘 useEffect | Archify `reader-layout.js:145-166,270-278,354-376` | MIT | 强采纳"默认收起 + 记忆 + overlay 关闭"；未采纳其 SVG 尺寸测量 |
+| 收起后入口仍可发现 | `App.tsx` 导航折叠按钮、`tutor-main-actions` | Archify `reader-layout.js:361` | MIT | 采纳可发现性与基础无障碍 |
+| 学习路线状态中文 + 当前节点高亮 | `MapTree.tsx` STATUS_FALLBACK / statusText | DeepTutor `SourceNavigator.tsx:135-138,288-324` | Apache-2.0 | 采纳"当前行归约高亮"；滚动居中未做 |
+| 资料范围"一行摘要 + 点开勾选" | `TutorWorkspace/index.tsx` Popover + .tutor-scope-btn | DeepTutor `web/components/workspaces/WorkspaceResourcePicker.tsx:116-152,172-176` | Apache-2.0 | 部分采纳：只取勾选交互与计数文案；未采纳其 settings 页资源模型 |
+| 窄屏只开一个面板 | `useIsNarrow`(900/1559) + .tutor-drawer | DeepTutor `ReadingWorkspace.tsx:271-304` 的思路 | Apache-2.0 | 采纳原则；390/800 具体断点三仓库都没有，为自定义 |
+
+**明确未采用**：DeepTutor `SessionViewerPanel.tsx`（1361 行，含 tab 组/命令式 handle/桥接层）——
+我们的右栏只展示三种只读内容，引入等于重复系统；Archify `node-finder.js`/`guided-views.js`
+的 SVG 相机定位与我们无关。**三个仓库都没有"点 [1] 打开侧栏并定位真实来源"的现成实现**
+（它们的引用 [n] 只是文档内锚点滚动）；这条交互是本项目原有实现，本轮只把它接到新的可开关面板上。

@@ -69,11 +69,14 @@
 
 /* ---------- 学习路线树 ---------- */
 .tutor-map { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+/* 下一步建议压成单行（此前是带说明的卡片，反复占掉路线高度） */
 .tutor-map-next {
-  display: flex; gap: 8px; align-items: flex-start;
+  display: flex; gap: 8px; align-items: center;
   background: var(--color-primary-50); border: 1px solid var(--color-primary-100);
-  border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 8px;
+  border-radius: var(--radius-sm); padding: 6px 10px; margin-bottom: 8px;
+  font-size: 12px;
 }
+.tutor-map-next-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tutor-map-scroll { flex: 1; overflow: auto; min-height: 0; }
 .tutor-map-level { list-style: none; margin: 0; }
 .tutor-map-node {
@@ -249,3 +252,49 @@
   .tutor-bubble-ai { max-width: 100%; }
   .tutor-composer { padding: 10px 12px 12px; }
 }
+
+/* ---------- 资料范围：紧凑入口（2026-10-07 布局调整） ---------- */
+/* 收起时只占一行；勾选列表放进 Popover，左栏剩余高度全部交给学习路线。 */
+.tutor-left-section.tutor-left-scope { padding: 10px 12px; }
+.tutor-scope-btn {
+  width: 100%; display: flex; align-items: center; gap: 7px;
+  padding: 6px 9px; border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm); background: #fff; cursor: pointer;
+  font-size: 13px; color: var(--color-text); text-align: left;
+  transition: border-color 0.15s var(--ease-out), background 0.15s var(--ease-out);
+}
+.tutor-scope-btn:hover { border-color: var(--color-primary); background: var(--color-primary-50); }
+.tutor-scope-btn-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tutor-scope-btn-caret { font-size: 10px; color: var(--color-text-muted); }
+.tutor-scope-warn { font-size: 11px; color: #d97706; }
+.tutor-scope-pop .ant-popover-inner { padding: 10px 12px; }
+.tutor-scope-pop .tutor-scope-list { max-height: 260px; }
+
+/* ---------- 右栏：可开关辅助面板 ---------- */
+/* 默认不渲染 → 关闭后没有任何占位列，主区宽度立即归还。 */
+.tutor-right { display: flex; flex-direction: column; min-height: 0; height: 100%; width: 100%; }
+.tutor-right-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--color-border-light);
+  flex-shrink: 0;
+}
+.tutor-right-title { font-size: 13px; font-weight: 650; color: var(--color-text); }
+.tutor-main-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.tutor-panel-overlay {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(15, 23, 42, 0.28);
+  display: flex; justify-content: flex-end;
+}
+.tutor-panel-drawer {
+  width: min(380px, 92vw); height: 100%;
+  background: #fff; border-left: 1px solid var(--color-border);
+  box-shadow: -8px 0 24px rgba(15, 23, 42, 0.10);
+  animation: tutor-panel-in 0.18s var(--ease-out);
+}
+@keyframes tutor-panel-in { from { transform: translateX(12px); opacity: 0.6; } to { transform: none; opacity: 1; } }
+
+/* ---------- 节点条：主次分明 ---------- */
+.tutor-node-eyebrow {
+  font-size: 11px; color: var(--color-text-muted); letter-spacing: 0.04em; flex-shrink: 0;
+}
+.tutor-node-actions { flex-shrink: 0; }
