@@ -19,6 +19,8 @@ export interface ChatRequest {
   image_mime_type?: string; // 图片MIME类型
   conversation_id?: string; // 会话ID（V2.5.1）
   mode?: string; // 学习模式：chat|smart_note|summary|explanation|advice|quiz
+  /** 资料范围（2026-10-06）：仅在这些文件内检索；不传 = 本学科全部资料 */
+  source_files?: string[];
 }
 
 // 学习模式

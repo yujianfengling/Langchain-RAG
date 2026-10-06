@@ -61,7 +61,8 @@ def get_rag_context(
     subject_id: Optional[str] = None,
     top_k: int = 5,
     min_score: Optional[float] = None,
-    viewer_user_id: Optional[str] = None
+    viewer_user_id: Optional[str] = None,
+    source_filter: Optional[List[str]] = None
 ) -> List:
     """
     获取RAG上下文文档
@@ -87,10 +88,13 @@ def get_rag_context(
         raise AIServiceError(error_msg)
 
     try:
+        # 选定资料范围时扩大候选池，再按真实来源过滤（2026-10-06）：
+        # 只把用户勾选的资料送进上下文，避免"前端改了文案、检索仍是全量"。
+        fetch_k = max(top_k, top_k * 8) if source_filter else top_k
         context_docs = retrieve_context(
             question=question,
             subject_id=subject_id,
-            top_k=top_k,
+            top_k=fetch_k,
             min_score=min_score
         )
         # 课程资料可见性过滤：必须在进入模型上下文 / "参考来源"之前，
@@ -98,6 +102,30 @@ def get_rag_context(
         from services import teaching_access
         context_docs = teaching_access.filter_visible_documents(
             viewer_user_id, subject_id, context_docs)
+        if source_filter:
+            import os as _os
+            wanted = {str(s).strip().lower() for s in source_filter if str(s).strip()}
+            wanted_base = {_os.path.basename(w) for w in wanted}
+
+            def _src(doc) -> str:
+                meta = getattr(doc, "metadata", {}) or {}
+                for key in ("source", "file_name", "filename", "name", "doc_name"):
+                    v = meta.get(key)
+                    if v:
+                        return str(v)
+                return ""
+
+            kept = []
+            for d in context_docs:
+                s = _src(d).strip().lower()
+                if not s:
+                    continue
+                if s in wanted or _os.path.basename(s) in wanted_base:
+                    kept.append(d)
+            context_docs = kept[:top_k]
+            logger.info(
+                "按资料范围过滤检索结果: 选中=%d 候选=%d 命中=%d subject=%s",
+                len(source_filter), fetch_k, len(context_docs), subject_id)
         return context_docs
     except Exception as e:
         error_msg = f"RAG检索失败: {str(e)}"

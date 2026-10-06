@@ -21,6 +21,8 @@ class ChatRequest(BaseModel):
     image_mime_type: Optional[str] = None  # 图片MIME类型
     conversation_id: Optional[str] = None  # 会话ID（V2.5.1：服务端持久化上下文）
     mode: Optional[str] = None  # 学习模式：chat|smart_note|summary|explanation|advice|quiz
+    # 资料范围（2026-10-06）：仅在这些文件内检索；None/空 = 本学科全部资料
+    source_files: Optional[List[str]] = None
 
 
 class ChatResponse(BaseModel):

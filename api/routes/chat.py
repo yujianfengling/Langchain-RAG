@@ -56,6 +56,7 @@ async def chat(request: ChatRequest, user_id: str = Depends(get_current_user)):
             request.conversation_id,
             request.mode,
             user_id,
+            request.source_files,  # 资料范围（None/空 = 本学科全部资料）
         )
 
         # 检查是否成功
@@ -124,6 +125,7 @@ async def _chat_stream_async(request: ChatRequest, user_id: Optional[str] = None
                 conversation_id=request.conversation_id,
                 mode=request.mode,
                 user_id=user_id,
+                source_filter=request.source_files,  # 资料范围（None/空 = 全部）
             )
             for event in gen:
                 if stop_event.is_set():

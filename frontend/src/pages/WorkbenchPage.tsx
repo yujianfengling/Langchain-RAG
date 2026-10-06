@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Alert, Button, Card, Input, Select, Space, Spin, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Checkbox, Input, Popover, Select, Space, Spin, Tag, Typography, message } from 'antd';
 import {
   BookOutlined, DatabaseOutlined, BulbOutlined, FormOutlined, ScheduleOutlined,
   LoginOutlined, ReloadOutlined, ArrowRightOutlined,
@@ -8,7 +8,7 @@ import {
 import ChatBox, { ChatPreset } from '../components/ChatBox';
 import { useCourse } from '../context/CourseContext';
 import { useIsNarrow } from '../hooks/useIsNarrow';
-import { joinCourseByCode } from '../api/studentCourses';
+import { joinCourseByCode, listCourseMaterials } from '../api/studentCourses';
 import { getHome } from '../api/student';
 import { isLoggedIn } from '../api/auth';
 import UserAuth from '../components/UserAuth';
@@ -31,6 +31,9 @@ const WorkbenchPage: React.FC = () => {
   const isNarrow = useIsNarrow();
   const [preset, setPreset] = useState<ChatPreset | undefined>(undefined);
   const [todo, setTodo] = useState<{ tasks: number; reviews: number; assignments: number } | null>(null);
+  // 资料范围（2026-10-06）：真实传给后端做检索过滤；切换即换新会话，避免复用另一个范围的结果
+  const [materials, setMaterials] = useState<{ filename: string; status: string }[]>([]);
+  const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [joinCode, setJoinCode] = useState('');
   const [joining, setJoining] = useState(false);
 
@@ -53,6 +56,21 @@ const WorkbenchPage: React.FC = () => {
   }, [ctx.currentSubjectId]);
 
   useEffect(() => { loadTodo(); }, [loadTodo]);
+
+  // 载入当前课程可选资料（个人资料学科暂无单文件范围，按全量处理）
+  useEffect(() => {
+    let alive = true;
+    setSelectedSources([]);
+    if (!ctx.current) { setMaterials([]); return () => { alive = false; }; }
+    listCourseMaterials(ctx.current.course_id)
+      .then((res: any) => {
+        if (!alive) return;
+        const list = (res && res.data && res.data.materials) || [];
+        setMaterials(list.map((m: any) => ({ filename: m.filename || m.name, status: m.status || 'ready' })));
+      })
+      .catch(() => { if (alive) setMaterials([]); });
+    return () => { alive = false; };
+  }, [ctx.current?.course_id]);
 
   // 深链预设（从"作业与复习"进入）：先切到目标课程，再应用模式
   const consumedRef = React.useRef<string>('');
@@ -121,6 +139,50 @@ const WorkbenchPage: React.FC = () => {
     );
   }
 
+  const readyMaterials = materials.filter((m) => m.status === 'ready');
+  const scopeLabel = selectedSources.length === 0
+    ? '基于全部 ' + readyMaterials.length + ' 份资料'
+    : '基于所选 ' + selectedSources.length + ' 份资料';
+  const scopeControl = (
+    <Popover
+      trigger="click"
+      placement="bottomLeft"
+      content={(
+        <div style={{ width: 300 }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>选择回答依据的资料</div>
+          <Checkbox
+            checked={selectedSources.length === 0}
+            onChange={() => setSelectedSources([])}
+          >使用全部资料</Checkbox>
+          <div style={{ maxHeight: 220, overflow: 'auto', marginTop: 6 }}>
+            {readyMaterials.map((m) => (
+              <div key={m.filename}>
+                <Checkbox
+                  checked={selectedSources.includes(m.filename)}
+                  onChange={(e) => {
+                    setSelectedSources((prev) => {
+                      return e.target.checked
+                        ? [...prev, m.filename]
+                        : prev.filter((x) => x !== m.filename);
+                    });
+                  }}
+                >{m.filename}</Checkbox>
+              </div>
+            ))}
+            {readyMaterials.length === 0 && <Text type="secondary">当前课程暂无可选资料</Text>}
+          </div>
+          <div style={{ marginTop: 6 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              切换范围会开启新的对话，避免把另一个范围的结果混在一起。
+            </Text>
+          </div>
+        </div>
+      )}
+    >
+      <Button size="small" icon={<DatabaseOutlined />}>{scopeLabel}</Button>
+    </Popover>
+  );
+
   const header = (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
       <BookOutlined style={{ color: '#0f766e' }} />
@@ -134,6 +196,7 @@ const WorkbenchPage: React.FC = () => {
           课程资料
         </Button>
       )}
+      {ctx.current && scopeControl}
       <div style={{ marginLeft: 'auto', minWidth: 200 }}>
         <Select
           size="middle" style={{ width: '100%' }} value={ctx.current ? ctx.current.course_id : undefined}
@@ -250,12 +313,14 @@ const WorkbenchPage: React.FC = () => {
       </div>
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <ChatBox
+          key={ctx.currentSubjectId + ':' + selectedSources.join(',')}
           subjectId={subjectId}
           subjects={ctx.subjects}
           isCourseSubject={isCourse}
           preset={preset}
           onPresetConsumed={() => setPreset(undefined)}
           headerSlot={hero}
+          sourceFiles={selectedSources}
         />
       </div>
     </div>

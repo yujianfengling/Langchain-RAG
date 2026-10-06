@@ -167,6 +167,7 @@ def chat_with_ai(
     conversation_id: Optional[str] = None,
     mode: Optional[str] = None,
     user_id: Optional[str] = None,
+    source_filter: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     智能问答主函数（非流式）
@@ -326,7 +327,8 @@ def chat_with_ai(
         # 1. RAG检索（通过ai_service公共接口）
         try:
             context_docs = get_rag_context(question, subject_id, _default_top_k(),
-                                           viewer_user_id=user_id)
+                                           viewer_user_id=user_id,
+                                           source_filter=source_filter)
             context_used = len(context_docs) > 0
         except AIServiceError as e:
             response["error"] = str(e)
@@ -449,6 +451,7 @@ def chat_stream(
     conversation_id: Optional[str] = None,
     mode: Optional[str] = None,
     user_id: Optional[str] = None,
+    source_filter: Optional[List[str]] = None,
 ) -> Generator[Dict[str, Any], None, None]:
     """
     智能问答流式接口（SSE，真流式）
@@ -567,7 +570,8 @@ def chat_stream(
         rag_start = time.time()
         try:
             context_docs = get_rag_context(question, subject_id, _default_top_k(),
-                                           viewer_user_id=user_id)
+                                           viewer_user_id=user_id,
+                                           source_filter=source_filter)
             context_used = len(context_docs) > 0
         except AIServiceError as e:
             yield {"type": "error", "message": str(e)}

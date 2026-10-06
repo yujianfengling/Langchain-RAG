@@ -55,6 +55,8 @@ interface ChatBoxProps {
   onPresetConsumed?: () => void;
   /** 首屏引导区（学习工作台注入：提问标题 + 快捷动作），只在还没开始对话时显示 */
   headerSlot?: React.ReactNode;
+  /** 资料范围：只在这些文件内检索（空 = 本学科全部资料）。后端真实过滤。 */
+  sourceFiles?: string[];
 }
 
 /**
@@ -91,7 +93,7 @@ const ENTER_HINT = ' · Enter 发送';
 
 const ChatBox: React.FC<ChatBoxProps> = ({
   subjectId, conversationId, onConversationCreated,
-  isCourseSubject, preset, onPresetConsumed, headerSlot,
+  isCourseSubject, preset, onPresetConsumed, headerSlot, sourceFiles,
 }) => {
   const navigate = useNavigate();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -653,6 +655,8 @@ const ChatBox: React.FC<ChatBoxProps> = ({
         model: selectedModel || undefined,
         conversation_id: targetConvId,
         mode,
+        // 资料范围：只有勾选了具体资料才传（空数组 = 全量）
+        source_files: (sourceFiles && sourceFiles.length) ? sourceFiles : undefined,
       },
       {
         onStart: () => {
