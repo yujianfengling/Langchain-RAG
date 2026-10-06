@@ -153,3 +153,50 @@ powershell -ExecutionPolicy Bypass -File D:\神の文档\Langchain-RAG\tests\_br
   `.rar` 需要外部 unrar/7z。除此之外不需要任何额外安装。
 - 单文件上传上限仍是 20MB（沿用既有规则，未放宽）。
 - 导入任务在内存后台线程执行，进程重启后任务状态保留在库里但不会自动续跑（可重试）。
+
+---
+
+# 第三轮（2026-10-07）：上传限制统一 + 旧格式与 RAR 真正可用
+
+## 1. 上传限制（唯一来源 rag/formats.py，capabilities 全量下发）
+
+| 项 | 默认 | env |
+|---|---|---|
+| 普通文档单文件 | 200 MB | `IMPORT_MAX_DOCUMENT_MB`（兼容旧 `IMPORT_MAX_FILE_MB`） |
+| 压缩包单文件 | 500 MB | `IMPORT_MAX_ARCHIVE_MB` |
+| 展开后单个成员 | 200 MB | `IMPORT_MAX_EXTRACT_FILE_MB` |
+| 单批展开总量 | 1024 MB | `IMPORT_MAX_EXTRACT_TOTAL_MB`（旧 `max_total_mb` 同义） |
+| 文件数量 / 递归深度 / 单任务超时 | 100 / 2 / 300s | `IMPORT_MAX_FILES` / `_DEPTH` / `_SECONDS` |
+
+后端按"是否压缩包"取不同上限；`knowledge_service` 的 20MB 硬编码已删除；
+Vite dev 代理与 uvicorn 本身不限请求体（生产用 Nginx 时需 `client_max_body_size 512m`）。
+超限一律返回"实际大小 / 上限 + 类型"，绝不继续建库。
+
+## 2. 旧格式与 RAR：本机 0 安装即接通
+
+- **旧 .ppt/.doc**：检测顺序 `OFFICE_CONVERTER_PATH` → LibreOffice → **Microsoft Office COM(pywin32)** → 无。
+  本机装了 Office 16，实测 COM 把 pptx 转成真实 107KB .ppt 并转回。
+  `OFFICE_CONVERTER=auto|libreoffice|msoffice|none` 可强制或停用。
+- **.rar**：`rarfile` + 后端探测（unrar/unar/7z/7zz → **系统 `%SystemRoot%\System32\tar.exe`(bsdtar)**）。
+  实测 `seektest.rar` 解出成员并导入；加密/solid/分卷分别给
+  `archive_encrypted` / `archive_unsupported` / `archive_corrupt`（已用外部工具复核，是能力边界不是 bug）。
+- 新依赖：`pywin32==312; sys_platform == "win32"`（COM 转换用，缺失时能力清单如实标 false）。
+
+## 3. 本轮验收
+
+- 大文件（真实 25.8MB PPTX / 47.8MB ZIP）：`tests/_browser/verify_large_import.py` **25/25**
+  —— 均被接受、解析、建库、检索；导入期间 `/health` 与 capabilities 5/5 可用（最慢 0.67s）；
+  引用保留原文件名+幻灯片号；刷新可恢复；重复内容不重复导入；全成功时 retry 明确 400。
+- 旧格式与 RAR：`tests/_browser/verify_legacy_formats.py` **13/13**
+  —— 真实旧 PPT 命中 LEGACY-9241 且引用为 `旧课件.ppt` 第 1 页；真实 RAR 解出成员；加密 RAR 明确失败。
+- 浏览器限制与能力提示：`verify_limits_ui.js` **9/9**（25.8MB/47.8MB 提交前被拒且不发请求，原因精确到文件大小与上限）、
+  `verify_capability_ui.js` **3/3**（`OFFICE_CONVERTER=none` 时列出"暂不可用格式与原因"，拖入 .ppt 被拒）。
+- 后端新增/更新测试：`test_upload_limits.py`、`test_office_converter.py` 等；全量 `pytest tests -n 4` 见提交说明。
+- 顺手修：登录态校验遇到网络/500 时界面会永久停在"正在恢复登录状态…"且无法重试 —— 现在如实提示并提供「重试」。
+
+## 4. 仍存在的边界（如实记录）
+
+- RAR 内**中文目录/同名文件/混合格式**与 ZIP/7z 共用同一套成员映射与去重代码（有单测），
+  但本轮没有用"真实含中文目录的 RAR"验证 —— 机器上没有 RAR 压缩器（RAR 只能由 WinRAR 生成）。
+  需要时装 WinRAR 后可自行打包复验。
+- Office COM 属于桌面自动化：单机演示可用，服务化部署建议改用 LibreOffice CLI（设 `OFFICE_CONVERTER_PATH`）。

@@ -4,6 +4,7 @@
 import logging
 import os
 import re
+from pathlib import Path
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse
@@ -75,10 +76,11 @@ def _kb_exc():
     return KnowledgeServiceError
 
 
-def _max_file_bytes() -> int:
-    """惰性取上传大小上限（避免启动期导入 knowledge_service）"""
-    from services.knowledge_service import MAX_FILE_SIZE_BYTES
-    return MAX_FILE_SIZE_BYTES
+def _max_file_bytes(filename: str = "") -> int:
+    """单文件上传上限（字节）：压缩包与非压缩包按 rag/formats 统一配置分别取"""
+    from rag import formats
+    ext = formats.normalize_ext(Path(filename).suffix) if filename else ""
+    return formats.upload_limit_bytes(ext)
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +123,6 @@ async def import_materials(subject_id: str,
 
     from rag import formats
     limits = formats.limits()
-    max_file_bytes = limits["max_file_mb"] * 1024 * 1024
 
     if len(files) > limits["max_files"]:
         raise ValidationError(f"单批文件数超过限制（最大 {limits['max_files']}）")
@@ -131,9 +132,15 @@ async def import_materials(subject_id: str,
         if not upload.filename:
             continue
         content = await upload.read()
-        if len(content) > max_file_bytes:
+        ext = formats.normalize_ext(Path(upload.filename).suffix)
+        # 压缩包用 max_archive_mb，普通文档用 max_file_mb；超限立刻失败，不进入建库
+        limit_bytes = formats.upload_limit_bytes(ext)
+        if len(content) > limit_bytes:
+            actual_mb = round(len(content) / (1024 * 1024), 2)
+            limit_mb = limit_bytes // (1024 * 1024)
+            kind = "压缩包" if formats.is_archive(ext) else "普通文档"
             raise ValidationError(
-                f"文件 {upload.filename} 超过单文件上限 {limits['max_file_mb']}MB")
+                f"文件 {upload.filename} 实际 {actual_mb}MB，超过{kind}单文件上限 {limit_mb}MB")
         payload.append((upload.filename, content))
 
     if not payload:
@@ -385,7 +392,8 @@ async def upload_file(
     上传文件到知识库
     
     - **subject_id**: 学科ID
-    - **file**: 上传的文件（支持: pdf, docx, txt, md，最大20MB）
+    - **file**: 上传的文件（支持格式见 GET /api/knowledge/capabilities；
+      单文件上限由 capabilities.limits 下发，压缩包与普通文档限额不同）
     """
     try:
         # 1. 参数基本校验
@@ -407,11 +415,13 @@ async def upload_file(
         # 3. 读取文件内容
         file_content = await file.read()
 
-        # 4. 文件大小预检查（避免调用 service 层的额外开销）
-        if len(file_content) > _max_file_bytes():
+        # 4. 文件大小预检查（压缩包/普通文档按统一配置取不同上限）
+        limit_bytes = _max_file_bytes(file.filename)
+        if len(file_content) > limit_bytes:
             size_mb = round(len(file_content) / (1024 * 1024), 2)
+            limit_mb = limit_bytes // (1024 * 1024)
             raise ValidationError(
-                f"文件大小 {size_mb}MB 超过限制（最大 {_max_file_bytes() // (1024*1024)}MB）"
+                f"文件 {file.filename} 实际 {size_mb}MB，超过单文件上限 {limit_mb}MB"
             )
 
         # 5. 调用 service 层处理

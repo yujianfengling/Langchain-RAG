@@ -21,6 +21,7 @@ import hashlib
 import logging
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import uuid
@@ -50,20 +51,71 @@ class ArchiveError(Exception):
 # ==================== 外部工具探测 ====================
 
 
-def rar_tool() -> Optional[str]:
-    """外部 rar 解压工具（unrar/bsdtar/7z）；找不到返回 None"""
+def _kind_for_tool(path: str) -> str:
+    """按可执行文件路径/名称判定后端类型"""
+    name = Path(path).name.lower()
+    if "7zz" in name:
+        return "7zz"
+    if "7z" in name:
+        return "7z"
+    if "bsdtar" in name:
+        return "bsdtar"
+    if name in ("tar", "tar.exe"):
+        # Windows 自带的 C:\Windows\System32\tar.exe 就是 bsdtar
+        return "bsdtar"
+    if "unar" in name:
+        return "unar"
+    return "unrar"
+
+
+def _system_bsdtar() -> Optional[str]:
+    """系统自带 bsdtar（Windows 10+ 的 %SystemRoot%\\System32\\tar.exe）"""
+    root = (os.getenv("SystemRoot") or os.getenv("windir") or r"C:\Windows").strip()
+    candidate = Path(root) / "System32" / "tar.exe"
+    try:
+        if candidate.is_file():
+            return str(candidate)
+    except OSError:
+        return None
+    return None
+
+
+def rar_backend() -> Dict[str, Optional[str]]:
+    """
+    探测可用的 rar 解压后端，返回 {"tool": 路径或 None, "kind": 类型或 None}。
+
+    优先级：env UNRAR_TOOL → PATH 上的 unrar / unar / 7z / 7zz →
+    系统自带 bsdtar（%SystemRoot%\\System32\\tar.exe）。
+    """
     env_tool = (os.getenv("UNRAR_TOOL") or "").strip()
     if env_tool:
         found = shutil.which(env_tool)
-        if not found and Path(env_tool).is_file():
-            found = env_tool
+        if not found:
+            try:
+                if Path(env_tool).is_file():
+                    found = env_tool
+            except OSError:
+                found = None
         if found:
-            return found
-    for name in ("unrar", "bsdtar", "7z", "7zz", "unar"):
+            return {"tool": found, "kind": _kind_for_tool(found)}
+    for name in ("unrar", "unar", "7z", "7zz"):
         found = shutil.which(name)
         if found:
-            return found
-    return None
+            return {"tool": found, "kind": _kind_for_tool(found)}
+    tar = shutil.which("bsdtar") or _system_bsdtar()
+    if tar:
+        return {"tool": tar, "kind": "bsdtar"}
+    return {"tool": None, "kind": None}
+
+
+def rar_tool() -> Optional[str]:
+    """外部 rar 解压工具路径（unrar/unar/7z/bsdtar）；找不到返回 None"""
+    return rar_backend().get("tool")
+
+
+def rar_tool_kind() -> Optional[str]:
+    """当前 rar 后端类型（unrar / unar / 7z / 7zz / bsdtar）；无后端返回 None"""
+    return rar_backend().get("kind")
 
 
 def archive_kind(ext: str) -> Optional[str]:
@@ -74,18 +126,19 @@ def archive_kind(ext: str) -> Optional[str]:
 
 
 def default_limits() -> Dict[str, Any]:
-    """从 formats.limits() 取默认限制（惰性导入，避免循环依赖）"""
+    """从 formats 的单一来源取默认限制（惰性导入，避免循环依赖）"""
     try:
         from rag import formats
-        caps = formats.limits()
+        return formats.extract_limits_bytes()
     except Exception:
-        caps = {"max_total_mb": 1024, "max_files": 100, "max_depth": 2, "max_seconds": 300}
-    return {
-        "max_total_bytes": int(caps.get("max_total_mb", 1024)) * 1024 * 1024,
-        "max_files": int(caps.get("max_files", 100)),
-        "max_depth": int(caps.get("max_depth", 2)),
-        "max_seconds": int(caps.get("max_seconds", 300)),
-    }
+        mb = 1024 * 1024
+        return {
+            "max_total_bytes": 1024 * mb,
+            "max_extract_file_bytes": 200 * mb,
+            "max_files": 100,
+            "max_depth": 2,
+            "max_seconds": 300,
+        }
 
 
 # ==================== 名称处理 ====================
@@ -238,6 +291,17 @@ def extract_archive(archive_path: str, dest_dir: str,
     }
 
 
+def _check_member_size(size: int, member: str, limits: Dict[str, Any]) -> None:
+    """单个成员大小限制（展开后单文件上限，默认 200MB）"""
+    limit = int(limits.get("max_extract_file_bytes") or 0)
+    if limit and size > limit:
+        actual_mb = round(size / (1024 * 1024), 2)
+        limit_mb = limit // (1024 * 1024)
+        raise ArchiveError(
+            f"压缩包内单个文件超过限制：{member} 实际 {actual_mb}MB，上限 {limit_mb}MB",
+            error_type="archive_limit_exceeded")
+
+
 def _check_limits(state: Dict[str, Any], limits: Dict[str, Any],
                   extra_bytes: int = 0, extra_files: int = 0) -> None:
     if time.monotonic() - state["start"] > limits["max_seconds"]:
@@ -249,8 +313,10 @@ def _check_limits(state: Dict[str, Any], limits: Dict[str, Any],
             f"压缩包内文件数超过限制（>{limits['max_files']}），已停止",
             error_type="archive_limit_exceeded")
     if state["bytes"] + extra_bytes > limits["max_total_bytes"]:
+        actual_mb = round((state["bytes"] + extra_bytes) / (1024 * 1024), 2)
+        limit_mb = limits["max_total_bytes"] // (1024 * 1024)
         raise ArchiveError(
-            f"解压总量超过限制（>{limits['max_total_bytes'] // (1024 * 1024)}MB），已停止",
+            f"解压总量超过限制（实际 {actual_mb}MB，上限 {limit_mb}MB），已停止",
             error_type="archive_limit_exceeded")
 
 
@@ -314,6 +380,7 @@ def _extract_one(src: Path, dest_root: Path, origin: str, depth: int,
             except Exception as e:
                 raise ArchiveError(f"读取嵌套压缩包失败: {safe_rel}: {e}",
                                    error_type="archive_corrupt")
+            _check_member_size(len(data), rel_prefix_full, limits)
             _check_limits(state, limits, extra_bytes=len(data), extra_files=1)
             nested_path.write_bytes(data)
             before_e = len(state["entries"])
@@ -336,6 +403,7 @@ def _extract_one(src: Path, dest_root: Path, origin: str, depth: int,
         except Exception as e:
             raise ArchiveError(f"读取压缩包条目失败: {safe_rel}: {e}", error_type="archive_corrupt")
 
+        _check_member_size(len(data), rel_prefix_full, limits)
         _check_limits(state, limits, extra_bytes=len(data), extra_files=1)
 
         out_dir = target_root / uuid.uuid4().hex[:8]
@@ -468,30 +536,115 @@ def _iter_7z(src: Path, password: Optional[str]) -> Iterator[Member]:
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def _rar_tool_error(stderr: str) -> ArchiveError:
+    """把 bsdtar 的失败输出翻译成结构化原因（不假成功）"""
+    text = (stderr or "").lower()
+    if "encryption is not supported" in text or "password" in text or "encrypted" in text:
+        return ArchiveError(
+            "RAR 压缩包已加密，当前后端（bsdtar）不支持解密；"
+            "请安装 WinRAR/unrar 或 7-Zip 后重试",
+            error_type="archive_encrypted")
+    if "solid archive" in text:
+        return ArchiveError(
+            "RAR 为 solid（固实）压缩包，当前 bsdtar 后端不支持；"
+            "请安装 unrar/7-Zip 后重试",
+            error_type="archive_unsupported")
+    detail = (stderr or "").strip()[-400:]
+    return ArchiveError(f"bsdtar 解压 RAR 失败：{detail or '未知错误'}",
+                        error_type="archive_corrupt")
+
+
+def _iter_rar_via_bsdtar(src: Path, tool: str, timeout: int) -> Iterator[Member]:
+    """直接用 bsdtar 解压到受控暂存目录再读取（rarfile 的 bsdtar 读取路径实测不可靠）"""
+    staging = tempfile.mkdtemp(prefix="rag_rar_")
+    try:
+        try:
+            proc = subprocess.run([tool, "-xf", str(src), "-C", staging],
+                                  capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise ArchiveError(f"bsdtar 解压 RAR 超时（>{timeout}s）",
+                               error_type="archive_limit_exceeded")
+        except OSError as e:
+            raise ArchiveError(f"无法启动 bsdtar（{tool}）：{e}",
+                               error_type="archive_unsupported")
+        if proc.returncode != 0:
+            raise _rar_tool_error(proc.stderr or proc.stdout or "")
+        for root, _dirs, files in os.walk(staging):
+            for fname in sorted(files):
+                fpath = Path(root) / fname
+                rel = fpath.relative_to(staging).as_posix()
+                size = fpath.stat().st_size
+
+                def _read(_p=fpath) -> bytes:
+                    return _p.read_bytes()
+
+                yield rel, _read, size, None
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _rar_read_error(exc: Exception, name: str) -> ArchiveError:
+    msg = str(exc).lower()
+    if "password" in msg or "encrypt" in msg:
+        return ArchiveError(f"RAR 条目已加密，无法读取：{name}",
+                            error_type="archive_encrypted")
+    if "solid" in msg:
+        return ArchiveError(f"RAR 为 solid 压缩包，当前后端不支持：{name}",
+                            error_type="archive_unsupported")
+    return ArchiveError(f"读取 RAR 条目失败: {name}: {exc}", error_type="archive_corrupt")
+
+
 def _iter_rar(src: Path, password: Optional[str]) -> Iterator[Member]:
     try:
         import rarfile
     except ImportError:
         raise ArchiveError("缺少 rarfile，无法解压 .rar", error_type="archive_unsupported")
 
-    tool = rar_tool()
+    backend = rar_backend()
+    tool = backend.get("tool")
+    kind = backend.get("kind")
     if not tool:
         raise ArchiveError(
-            "缺少外部 unrar/bsdtar/7z 工具，无法解压 .rar；"
-            "请安装 WinRAR/unrar 并加入 PATH",
+            "缺少外部解压后端（unrar/unar/7z/7zz 或系统 bsdtar），无法解压 .rar；"
+            "Windows 10+ 自带 System32 下的 tar.exe（bsdtar），"
+            "若缺失请安装 WinRAR/unrar 并加入 PATH",
             error_type="archive_unsupported")
-    _configure_rarfile(rarfile, tool)
+    _configure_rarfile(rarfile, tool, kind)
 
     try:
         rf = rarfile.RarFile(str(src))
     except rarfile.BadRarFile as e:
+        msg = str(e).lower()
+        if "encrypt" in msg or "password" in msg:
+            raise ArchiveError("RAR 压缩包已加密，需要密码",
+                               error_type="archive_encrypted")
         raise ArchiveError(f"损坏的 RAR 压缩包: {e}", error_type="archive_corrupt")
     except rarfile.NeedFirstVolume as e:
         raise ArchiveError(f"RAR 分卷不完整: {e}", error_type="archive_corrupt")
     except Exception as e:
+        msg = str(e).lower()
+        if "encrypt" in msg or "password" in msg:
+            raise ArchiveError("RAR 压缩包已加密，需要密码",
+                               error_type="archive_encrypted")
+        if "solid" in msg:
+            raise ArchiveError(f"RAR 为 solid 压缩包，当前后端不支持：{e}",
+                               error_type="archive_unsupported")
         raise ArchiveError(f"无法打开 RAR 压缩包: {e}", error_type="archive_corrupt")
 
     with rf:
+        try:
+            needs_password = bool(rf.needs_password())
+        except Exception:
+            needs_password = False
+        if needs_password and not password:
+            raise ArchiveError("RAR 压缩包已加密，需要密码（当前未提供密码）",
+                               error_type="archive_encrypted")
+
+        if kind == "bsdtar":
+            timeout = int(default_limits()["max_seconds"])
+            yield from _iter_rar_via_bsdtar(src, tool, timeout)
+            return
+
         for info in rf.infolist():
             if info.isdir():
                 yield info.filename.rstrip("/") + "/", _empty_reader, 0, None
@@ -504,18 +657,25 @@ def _iter_rar(src: Path, password: Optional[str]) -> Iterator[Member]:
                 continue
 
             def _read(_info=info, _rf=rf, _pwd=password) -> bytes:
-                return _rf.read(_info, pwd=_pwd)
+                try:
+                    return _rf.read(_info, pwd=_pwd)
+                except Exception as e:  # 读失败要给出准确原因，不能当成成功
+                    raise _rar_read_error(e, _info.filename)
 
             yield info.filename, _read, info.file_size, None
 
 
-def _configure_rarfile(rarfile: Any, tool: str) -> None:
-    name = Path(tool).name.lower()
-    if "bsdtar" in name:
+def _configure_rarfile(rarfile: Any, tool: str,
+                       kind: Optional[str] = None) -> None:
+    """把探测到的后端路径写入 rarfile 的对应外部工具常量"""
+    kind = kind or _kind_for_tool(tool)
+    if kind == "bsdtar":
         rarfile.BSDTAR_TOOL = tool
-    elif "7z" in name:
+    elif kind == "7zz":
+        rarfile.SEVENZIP2_TOOL = tool
+    elif kind == "7z":
         rarfile.SEVENZIP_TOOL = tool
-    elif "unar" in name:
+    elif kind == "unar":
         rarfile.UNAR_TOOL = tool
     else:
         rarfile.UNRAR_TOOL = tool
@@ -555,6 +715,8 @@ __all__ = [
     "extract_archive",
     "is_ignored",
     "normalize_relpath",
+    "rar_backend",
     "rar_tool",
+    "rar_tool_kind",
     "sha256_file",
 ]

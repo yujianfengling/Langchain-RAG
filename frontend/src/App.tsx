@@ -1,9 +1,9 @@
 import React, { Suspense, lazy } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { Layout, Menu, ConfigProvider, Drawer, Button, Spin } from 'antd';
+import { Alert, Layout, Menu, ConfigProvider, Drawer, Button, Spin } from 'antd';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  DatabaseOutlined, CheckSquareOutlined, RobotOutlined,
+  DatabaseOutlined, CheckSquareOutlined, RobotOutlined, ReloadOutlined,
   EditOutlined, FormOutlined, BarChartOutlined, MenuOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
@@ -57,9 +57,25 @@ const PageFallback: React.FC = () => (
  * 也就不会出现"登录提示 + 加载失败 + 暂无数据"同时刷屏；登录成功后自动渲染原页面。
  */
 const Protected: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { status } = useAuth();
+  const { status, bootstrapError, refreshUser } = useAuth();
   if (status === 'authenticated') return <>{children}</>;
-  if (status === 'initializing') return <PageFallback />;
+  if (status === 'initializing') {
+    // 校验登录态时遇到网络/500 等真实故障：不能一直转圈，也不能当成"未登录"清账号，
+    // 要如实说明并提供重试（2026-10-07 修复：此前会永久停在"正在恢复登录状态…"）。
+    if (bootstrapError) {
+      return (
+        <div style={{ maxWidth: 520, margin: '64px auto', padding: 16 }}>
+          <Alert
+            type="warning" showIcon
+            message="暂时无法确认登录状态"
+            description={bootstrapError}
+            action={<Button icon={<ReloadOutlined />} onClick={() => { void refreshUser(); }}>重试</Button>}
+          />
+        </div>
+      );
+    }
+    return <PageFallback />;
+  }
   return <LoginRequired reason={status === 'expired' ? 'expired' : 'anonymous'} />;
 };
 

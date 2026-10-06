@@ -29,6 +29,8 @@ ERROR_PARSE = "parse_error"
 ERROR_EMPTY = "empty_content"
 ERROR_CONVERTER_UNAVAILABLE = "converter_unavailable"
 ERROR_CONVERTER_FAILED = "converter_failed"
+ERROR_CONVERTER_TIMEOUT = "converter_timeout"
+ERROR_CONVERTER_ERROR = "converter_error"
 ERROR_ARCHIVE_ENCRYPTED = "archive_encrypted"
 ERROR_ARCHIVE_CORRUPT = "archive_corrupt"
 ERROR_ARCHIVE_LIMIT = "archive_limit_exceeded"
@@ -96,7 +98,7 @@ def converter_capabilities() -> Dict[str, Any]:
         return {
             "available": False,
             "path": None,
-            "kind": "libreoffice",
+            "kind": None,
             "note": f"转换组件探测失败：{e}",
         }
 
@@ -113,6 +115,11 @@ def _build_specs() -> List[FormatSpec]:
     conv = converter_capabilities()
     conv_ok = bool(conv.get("available"))
     conv_note = conv.get("note")
+    # 转换组件如实对外："libreoffice" / "msoffice"；不可用时 requires 保留历史标识
+    # "libreoffice"（前端据此把失败归类为 converter_unavailable，字段语义稳定）。
+    conv_kind = conv.get("kind")
+    conv_requires = conv_kind if conv_kind else "libreoffice"
+    conv_label = f"{conv_kind or 'libreoffice'} → "
 
     specs: List[FormatSpec] = []
 
@@ -122,7 +129,7 @@ def _build_specs() -> List[FormatSpec]:
                             "python-pptx", None, pptx_ok,
                             None if pptx_ok else _library_note("python-pptx")))
     specs.append(FormatSpec(".ppt", KIND_PRESENTATION, "PowerPoint 97-2003 演示文稿",
-                            "libreoffice → pptx", "libreoffice", conv_ok, conv_note,
+                            conv_label + "pptx", conv_requires, conv_ok, conv_note,
                             direct=False))
 
     # ---------- 文档 ----------
@@ -135,7 +142,7 @@ def _build_specs() -> List[FormatSpec]:
                             "docx2txt", None, docx_ok,
                             None if docx_ok else _library_note("docx2txt")))
     specs.append(FormatSpec(".doc", KIND_DOCUMENT, "Word 97-2003 文档",
-                            "libreoffice → docx", "libreoffice", conv_ok, conv_note,
+                            conv_label + "docx", conv_requires, conv_ok, conv_note,
                             direct=False))
     specs.append(FormatSpec(".txt", KIND_DOCUMENT, "纯文本", "stdlib", None, True))
     specs.append(FormatSpec(".md", KIND_DOCUMENT, "Markdown", "stdlib", None, True))
@@ -178,16 +185,20 @@ def _build_specs() -> List[FormatSpec]:
                             None if sz_ok else _library_note("py7zr"),
                             archive=True, direct=False))
     rar_mod = module_available("rarfile")
-    rar_tool = _rar_tool()
+    rar_backend = _rar_backend()
+    rar_tool = rar_backend.get("tool")
+    rar_kind = rar_backend.get("kind")
     rar_ok = rar_mod and bool(rar_tool)
     if not rar_mod:
         rar_note = _library_note("rarfile")
     elif not rar_tool:
-        rar_note = ("已安装 rarfile，但缺少外部 unrar/bsdtar/7z 可执行文件，"
-                    "无法解压 .rar；请安装 WinRAR/unrar 并加入 PATH")
+        rar_note = ("已安装 rarfile，但缺少外部解压后端（unrar/unar/7z/7zz 或系统 "
+                    "bsdtar）；无法解压 .rar。Windows 10+ 自带 %SystemRoot%\\System32\\tar.exe"
+                    "（bsdtar），若被删除请安装 WinRAR/unrar 或 7-Zip 并加入 PATH")
     else:
-        rar_note = None
-    specs.append(FormatSpec(".rar", KIND_ARCHIVE, "RAR 压缩包", "rarfile + unrar", "unrar",
+        rar_note = f"解压后端：{rar_kind or 'external'}（{rar_tool}）"
+    specs.append(FormatSpec(".rar", KIND_ARCHIVE, "RAR 压缩包",
+                            f"rarfile + {rar_kind or 'unrar'}", "unrar",
                             rar_ok, rar_note, archive=True, direct=False))
 
     return specs
@@ -195,11 +206,17 @@ def _build_specs() -> List[FormatSpec]:
 
 def _rar_tool() -> Optional[str]:
     """外部 rar 解压工具路径（惰性导入 archive_service，避免循环依赖）"""
+    backend = _rar_backend()
+    return backend.get("tool")
+
+
+def _rar_backend() -> Dict[str, Any]:
+    """外部 rar 解压后端 {tool, kind}；探测失败返回空后端（惰性导入）"""
     try:
         from services import archive_service
-        return archive_service.rar_tool()
+        return archive_service.rar_backend()
     except Exception:
-        return None
+        return {"tool": None, "kind": None}
 
 
 # ==================== 对外查询 ====================
@@ -269,30 +286,81 @@ def accept_string() -> str:
     return ",".join(available_extensions())
 
 
+def _env_int(name: str, default: int) -> int:
+    """读取整数型 env；空值/非法值一律回退默认（不因配置写错而放宽限制）"""
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def limits() -> Dict[str, Any]:
     """
-    导入限制（默认值从 env IMPORT_MAX_* 读取）。
+    导入限制的**唯一来源**（默认值可被 env IMPORT_MAX_* 覆盖）。
 
-    与契约字段一致：max_file_mb / max_total_mb / max_files / max_depth / max_seconds。
-    单文件默认沿用既有 20MB 上限，**不放宽**已有安全校验。
+    字段与语义：
+    - max_file_mb          普通文档单文件上限（旧字段，语义保持 = 非压缩包）
+                           默认 200，env IMPORT_MAX_DOCUMENT_MB
+                           （兼容旧 env IMPORT_MAX_FILE_MB 作为回退）
+    - max_archive_mb       压缩包单文件上限，默认 500，env IMPORT_MAX_ARCHIVE_MB
+    - max_extract_file_mb  压缩包展开后**单个成员**上限，默认 200，
+                           env IMPORT_MAX_EXTRACT_FILE_MB
+    - max_extract_total_mb 单批**展开总量**上限，默认 1024，
+                           env IMPORT_MAX_EXTRACT_TOTAL_MB
+    - max_total_mb         旧字段，语义 = 单批展开总量（= max_extract_total_mb），
+                           保留以免前端契约破裂
+    - max_files            文件数量（含展开成员），默认 100，env IMPORT_MAX_FILES
+    - max_depth            递归深度，默认 2，env IMPORT_MAX_DEPTH
+    - max_seconds          单任务超时秒数，默认 300，env IMPORT_MAX_SECONDS
     """
-
-    def _int(name: str, default: int) -> int:
-        raw = os.getenv(name)
-        if raw is None or not str(raw).strip():
-            return default
-        try:
-            return int(str(raw).strip())
-        except (TypeError, ValueError):
-            return default
-
+    # 兼容旧 env：优先新名，未设置时回退旧名 IMPORT_MAX_FILE_MB
+    doc_mb = _env_int("IMPORT_MAX_DOCUMENT_MB", _env_int("IMPORT_MAX_FILE_MB", 200))
+    extract_total_mb = _env_int("IMPORT_MAX_EXTRACT_TOTAL_MB", 1024)
     return {
-        "max_file_mb": _int("IMPORT_MAX_FILE_MB", 20),
-        "max_total_mb": _int("IMPORT_MAX_TOTAL_MB", 1024),
-        "max_files": _int("IMPORT_MAX_FILES", 100),
-        "max_depth": _int("IMPORT_MAX_DEPTH", 2),
-        "max_seconds": _int("IMPORT_MAX_SECONDS", 300),
+        "max_file_mb": doc_mb,
+        "max_archive_mb": _env_int("IMPORT_MAX_ARCHIVE_MB", 500),
+        "max_extract_file_mb": _env_int("IMPORT_MAX_EXTRACT_FILE_MB", 200),
+        "max_extract_total_mb": extract_total_mb,
+        "max_total_mb": extract_total_mb,
+        "max_files": _env_int("IMPORT_MAX_FILES", 100),
+        "max_depth": _env_int("IMPORT_MAX_DEPTH", 2),
+        "max_seconds": _env_int("IMPORT_MAX_SECONDS", 300),
     }
+
+
+def upload_limit_mb(ext: str) -> int:
+    """按扩展名取"单文件上传上限"（MB）：压缩包用 max_archive_mb，其余用 max_file_mb"""
+    spec = get_format(ext)
+    lim = limits()
+    if spec is not None and spec.archive:
+        return int(lim["max_archive_mb"])
+    return int(lim["max_file_mb"])
+
+
+def upload_limit_bytes(ext: str) -> int:
+    """按扩展名取单文件上传上限（字节）"""
+    return upload_limit_mb(ext) * 1024 * 1024
+
+
+def extract_limits_bytes() -> Dict[str, int]:
+    """压缩包展开限制（字节），供 archive_service / import_service 共用"""
+    lim = limits()
+    return {
+        "max_total_bytes": int(lim["max_extract_total_mb"]) * 1024 * 1024,
+        "max_extract_file_bytes": int(lim["max_extract_file_mb"]) * 1024 * 1024,
+        "max_files": int(lim["max_files"]),
+        "max_depth": int(lim["max_depth"]),
+        "max_seconds": int(lim["max_seconds"]),
+    }
+
+
+def requires_office_converter(ext: str) -> bool:
+    """该扩展名是否需要外部 Office 转换组件（.ppt/.doc）"""
+    spec = get_format(ext)
+    return bool(spec is not None and not spec.direct and not spec.archive)
 
 
 def capabilities() -> Dict[str, Any]:
@@ -331,6 +399,8 @@ __all__ = [
     "ERROR_EMPTY",
     "ERROR_CONVERTER_UNAVAILABLE",
     "ERROR_CONVERTER_FAILED",
+    "ERROR_CONVERTER_TIMEOUT",
+    "ERROR_CONVERTER_ERROR",
     "ERROR_ARCHIVE_ENCRYPTED",
     "ERROR_ARCHIVE_CORRUPT",
     "ERROR_ARCHIVE_LIMIT",
@@ -344,10 +414,14 @@ __all__ = [
     "available_extensions",
     "capabilities",
     "converter_capabilities",
+    "extract_limits_bytes",
     "get_format",
     "is_archive",
     "is_available",
     "limits",
+    "requires_office_converter",
+    "upload_limit_bytes",
+    "upload_limit_mb",
     "list_archives",
     "list_formats",
     "module_available",

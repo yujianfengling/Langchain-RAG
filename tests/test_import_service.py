@@ -77,7 +77,8 @@ def test_unsupported_file_rejected(import_env):
 def test_converter_unavailable_rejected_with_instructions(import_env):
     from rag import formats
     if formats.converter_capabilities()["available"]:
-        pytest.skip("本机已安装 LibreOffice，无法验证不可用分支")
+        pytest.skip("本机已有 Office 转换组件（LibreOffice 或 Microsoft Office），"
+                    "无法验证不可用分支；停用分支见 tests/test_office_converter.py")
     svc = import_env["svc"]
     result = svc.create_import_job("学科A", [("旧课件.ppt", b"binary")], "u1")
     assert result["accepted"] == 0

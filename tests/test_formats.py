@@ -55,9 +55,11 @@ def test_office_container_formats_are_not_archives():
 def test_ppt_and_doc_follow_converter_capability():
     conv = formats.converter_capabilities()
     assert set(conv) >= {"available", "path", "kind", "note"}
+    # kind 必须如实反映实际后端（libreoffice / msoffice / None）
+    assert conv["kind"] in ("libreoffice", "msoffice", None)
     for ext in (".ppt", ".doc"):
         spec = formats.get_format(ext)
-        assert spec.requires == "libreoffice"
+        assert spec.requires in ("libreoffice", "msoffice")
         assert spec.available == conv["available"]
         if conv["available"]:
             assert spec.note and conv["path"]
@@ -88,11 +90,55 @@ def test_unavailable_reason_is_readable():
 def test_limits_read_from_env(monkeypatch):
     monkeypatch.setenv("IMPORT_MAX_FILES", "7")
     monkeypatch.setenv("IMPORT_MAX_DEPTH", "3")
-    monkeypatch.setenv("IMPORT_MAX_FILE_MB", "5")
+    monkeypatch.setenv("IMPORT_MAX_DOCUMENT_MB", "5")
+    monkeypatch.setenv("IMPORT_MAX_ARCHIVE_MB", "9")
+    monkeypatch.setenv("IMPORT_MAX_EXTRACT_FILE_MB", "4")
+    monkeypatch.setenv("IMPORT_MAX_EXTRACT_TOTAL_MB", "33")
+    monkeypatch.setenv("IMPORT_MAX_SECONDS", "12")
     caps = formats.limits()
     assert caps["max_files"] == 7
     assert caps["max_depth"] == 3
     assert caps["max_file_mb"] == 5
+    assert caps["max_archive_mb"] == 9
+    assert caps["max_extract_file_mb"] == 4
+    assert caps["max_extract_total_mb"] == 33
+    assert caps["max_total_mb"] == 33  # 旧字段语义 = 单批展开总量
+    assert caps["max_seconds"] == 12
+
+
+def test_limits_defaults(monkeypatch):
+    for name in ("IMPORT_MAX_DOCUMENT_MB", "IMPORT_MAX_FILE_MB",
+                 "IMPORT_MAX_ARCHIVE_MB", "IMPORT_MAX_EXTRACT_FILE_MB",
+                 "IMPORT_MAX_EXTRACT_TOTAL_MB", "IMPORT_MAX_FILES",
+                 "IMPORT_MAX_DEPTH", "IMPORT_MAX_SECONDS"):
+        monkeypatch.delenv(name, raising=False)
+    caps = formats.limits()
+    assert caps["max_file_mb"] == 200
+    assert caps["max_archive_mb"] == 500
+    assert caps["max_extract_file_mb"] == 200
+    assert caps["max_extract_total_mb"] == 1024
+    assert caps["max_total_mb"] == 1024
+    assert caps["max_files"] == 100
+    assert caps["max_depth"] == 2
+    assert caps["max_seconds"] == 300
+
+
+def test_upload_limit_depends_on_archive(monkeypatch):
+    monkeypatch.setenv("IMPORT_MAX_DOCUMENT_MB", "7")
+    monkeypatch.setenv("IMPORT_MAX_ARCHIVE_MB", "11")
+    assert formats.upload_limit_mb(".txt") == 7
+    assert formats.upload_limit_mb(".zip") == 11
+    assert formats.upload_limit_mb(".rar") == 11
+    assert formats.upload_limit_bytes(".txt") == 7 * 1024 * 1024
+    assert formats.upload_limit_bytes(".7z") == 11 * 1024 * 1024
+
+
+def test_requires_office_converter_helper():
+    assert formats.requires_office_converter(".ppt") is True
+    assert formats.requires_office_converter(".doc") is True
+    assert formats.requires_office_converter(".pdf") is False
+    assert formats.requires_office_converter(".zip") is False
+    assert formats.requires_office_converter(".xyz") is False
 
 
 def test_loader_dispatch_matches_parseable_extensions():

@@ -48,8 +48,8 @@ BLOCKED_EXTENSIONS = {'.py', '.exe', '.sh', '.bat', '.cmd', '.ps1', '.js', '.ts'
                       '.php', '.rb', '.pl', '.cgi', '.msi', '.dll', '.com', '.vbs',
                       '.reg', '.inf', '.scr', '.pif', '.jar', '.war'}
 
-# 文件大小限制：20MB
-MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20MB
+# 文件大小上限：唯一来源 rag/formats.limits()（普通文档 max_file_mb、
+# 压缩包 max_archive_mb），业务层不再硬编码 20MB。
 
 # 文件名最大长度
 MAX_FILENAME_LENGTH = 255
@@ -112,12 +112,25 @@ def validate_filename(filename: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def validate_file_size(file_content: bytes) -> Tuple[bool, str]:
+def max_file_size_bytes(filename: Optional[str] = None) -> int:
     """
-    验证文件大小
+    单个文件的上传上限（字节）。
+
+    唯一来源 rag.formats.limits()：压缩包用 max_archive_mb，其余用 max_file_mb。
+    """
+    from rag import formats
+    ext = formats.normalize_ext(Path(filename).suffix) if filename else ""
+    return formats.upload_limit_bytes(ext)
+
+
+def validate_file_size(file_content: bytes,
+                       filename: Optional[str] = None) -> Tuple[bool, str]:
+    """
+    验证文件大小（按"是否压缩包"取不同上限）
 
     Args:
         file_content: 文件内容字节
+        filename: 原始文件名（用于判定压缩包上限）；缺省按普通文档上限
 
     Returns:
         (is_valid, error_message) 元组
@@ -125,9 +138,16 @@ def validate_file_size(file_content: bytes) -> Tuple[bool, str]:
     file_size = len(file_content)
     if file_size == 0:
         return False, "文件内容为空"
-    if file_size > MAX_FILE_SIZE_BYTES:
+
+    from rag import formats
+    ext = formats.normalize_ext(Path(filename).suffix) if filename else ""
+    spec = formats.get_format(ext)
+    limit = formats.upload_limit_bytes(ext)
+    if file_size > limit:
         size_mb = round(file_size / (1024 * 1024), 2)
-        return False, f"文件大小 {size_mb}MB 超过限制（最大 {MAX_FILE_SIZE_BYTES // (1024*1024)}MB）"
+        limit_mb = limit // (1024 * 1024)
+        kind = "压缩包" if (spec is not None and spec.archive) else "普通文档"
+        return False, f"文件大小 {size_mb}MB 超过{kind}上限 {limit_mb}MB"
     return True, ""
 
 
@@ -440,8 +460,8 @@ def upload_file_to_subject(subject_id: str, file_content: bytes, filename: str) 
         # 使用清理后的安全文件名
         safe_filename = Path(filename).name
 
-        # 2. 文件大小校验
-        valid, err_msg = validate_file_size(file_content)
+        # 2. 文件大小校验（按是否压缩包取不同上限）
+        valid, err_msg = validate_file_size(file_content, filename)
         if not valid:
             logger.warning(f"文件大小校验失败: {safe_filename}, 原因: {err_msg}")
             raise KnowledgeServiceError(err_msg)

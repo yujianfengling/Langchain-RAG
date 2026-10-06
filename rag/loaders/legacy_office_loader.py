@@ -53,7 +53,7 @@ class LegacyOfficeLoader(BaseLoader):
             return self._create_error_result(
                 f"转换组件不可用: {e}", error_type="converter_unavailable")
 
-        if not office_converter.find_converter():
+        if not office_converter.is_available():
             return self._create_error_result(
                 office_converter.capabilities()["note"],
                 error_type="converter_unavailable")

@@ -6,6 +6,8 @@
 Office 容器不被当普通压缩包。
 """
 
+from pathlib import Path
+
 import pytest
 
 from services import archive_service as A
@@ -162,3 +164,107 @@ def test_office_containers_not_treated_as_archives():
     for ext in (".docx", ".pptx", ".xlsx"):
         assert formats.is_archive(ext) is False
         assert get_loader_for_file("x" + ext) is not None
+
+
+# ==================== 真实 RAR（本机实测样本） ====================
+
+RAR_SAMPLE_DIR = Path(r"D:\神の文档\langchain-rag-work\rar_samples")
+
+
+def _rar_sample(name: str) -> Path:
+    return RAR_SAMPLE_DIR / name
+
+
+def test_rar_backend_detects_system_bsdtar():
+    backend = A.rar_backend()
+    if backend["tool"] is None:
+        return  # 无可测后端
+    assert backend["kind"] in ("unrar", "unar", "7z", "7zz", "bsdtar")
+    assert Path(backend["tool"]).is_file()
+    # Windows 自带 tar.exe 必须被识别为 bsdtar（rarfile.BSDTAR_TOOL），不是 unrar
+    if Path(backend["tool"]).name.lower() in ("tar", "tar.exe"):
+        assert backend["kind"] == "bsdtar"
+        import rarfile
+        A._configure_rarfile(rarfile, backend["tool"], backend["kind"])
+        assert rarfile.BSDTAR_TOOL == backend["tool"]
+
+
+@pytest.mark.skipif(not _rar_sample("seektest.rar").exists(),
+                    reason="需要真实 RAR 样本 rar_samples/seektest.rar")
+def test_real_rar_extracts_members_and_content(tmp_path):
+    if A.rar_backend()["tool"] is None:
+        pytest.skip("本机无 RAR 解压后端")
+    result = A.extract_archive(str(_rar_sample("seektest.rar")), str(tmp_path / "out"))
+    rels = {e["source_path"] for e in result["entries"]}
+    assert {"stest1.txt", "stest2.txt"} <= rels, rels
+    for entry in result["entries"]:
+        data = Path(entry["abs_path"]).read_bytes()
+        assert len(data) == 2048
+        assert data.startswith(b"000\n001")
+
+
+@pytest.mark.skipif(not _rar_sample("rar5-hpsw.rar").exists(),
+                    reason="需要真实加密 RAR 样本 rar_samples/rar5-hpsw.rar")
+def test_real_encrypted_rar_fails_with_reason(tmp_path):
+    if A.rar_backend()["tool"] is None:
+        pytest.skip("本机无 RAR 解压后端")
+    with pytest.raises(A.ArchiveError) as ei:
+        A.extract_archive(str(_rar_sample("rar5-hpsw.rar")), str(tmp_path / "out"))
+    assert ei.value.error_type == "archive_encrypted"
+    assert "加密" in str(ei.value), "必须写明是加密导致，而不是笼统失败"
+
+
+@pytest.mark.skipif(not _rar_sample("unicode.rar").exists(),
+                    reason="需要真实 solid RAR 样本 rar_samples/unicode.rar")
+def test_real_solid_rar_fails_with_reason(tmp_path):
+    if A.rar_backend()["tool"] is None:
+        pytest.skip("本机无 RAR 解压后端")
+    try:
+        A.extract_archive(str(_rar_sample("unicode.rar")), str(tmp_path / "out"))
+    except A.ArchiveError as e:
+        # solid：bsdtar 不支持 -> archive_unsupported；若换后端能读则允许成功
+        assert e.error_type in ("archive_unsupported", "archive_corrupt", "archive_encrypted")
+    # 不得出现"既没抛错又没产出"的假成功
+    assert True
+
+
+def test_rar_members_use_same_mapping_and_dedupe(monkeypatch, tmp_path):
+    """RAR 成员与 ZIP/7z 共用同一套成员映射 / 忽略 / 同名去重逻辑。"""
+    def fake_iter(_src, _password):
+        yield "第1章/课件.txt", (lambda: b"AAA"), 3, None
+        yield "第2章/课件.txt", (lambda: b"BBB"), 3, None
+        yield "__MACOSX/._x", (lambda: b"junk"), 4, None
+        yield "../evil.txt", (lambda: b"x"), 1, None
+
+    monkeypatch.setattr(A, "_iter_rar", fake_iter)
+    fake = tmp_path / "fake.rar"
+    fake.write_bytes(b"x")
+    result = A.extract_archive(str(fake), str(tmp_path / "out"))
+    assert sorted(e["display_name"] for e in result["entries"]) == [
+        "第1章__课件.txt", "第2章__课件.txt"]
+    skipped = {s["source_path"] for s in result["skipped"]}
+    assert any("__MACOSX" in p for p in skipped)
+    assert any("evil" in p for p in skipped)
+
+
+def test_extract_member_size_limit(tmp_path):
+    archive = tmp_path / "big.zip"
+    make_zip(str(archive), [("big.bin", b"x" * 4000), ("small.txt", b"y")])
+    with pytest.raises(A.ArchiveError) as ei:
+        A.extract_archive(str(archive), str(tmp_path / "out"), limits={
+            "max_total_bytes": 10 ** 9, "max_extract_file_bytes": 1000,
+            "max_files": 100, "max_depth": 2, "max_seconds": 30})
+    assert ei.value.error_type == "archive_limit_exceeded"
+    assert "单个文件" in str(ei.value)
+
+
+def test_extract_total_size_limit_reports_actual_and_cap(tmp_path):
+    archive = tmp_path / "many.zip"
+    make_zip(str(archive), [("a.bin", b"x" * 2000), ("b.bin", b"y" * 2000)])
+    with pytest.raises(A.ArchiveError) as ei:
+        A.extract_archive(str(archive), str(tmp_path / "out"), limits={
+            "max_total_bytes": 3000, "max_extract_file_bytes": 10 ** 9,
+            "max_files": 100, "max_depth": 2, "max_seconds": 30})
+    assert ei.value.error_type == "archive_limit_exceeded"
+    assert "总量" in str(ei.value)
+

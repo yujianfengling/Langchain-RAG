@@ -42,3 +42,5 @@ beautifulsoup4==4.15.0
 striprtf==0.0.33
 odfpy==1.4.1
 EbookLib==0.20
+# 旧版 .ppt/.doc 的 Microsoft Office COM 转换（仅 Windows；缺失时能力清单如实标为不可用）
+pywin32==312; sys_platform == "win32"

@@ -6,8 +6,8 @@ import {
 } from '@ant-design/icons';
 import {
   ImportCapabilities, ImportItem, ImportItemStatus, ImportJob, ImportJobStatus,
-  cancelImport, formatBytes, getImportCapabilities, getImportJob, isTerminalStatus,
-  listImports, retryImport, splitSupported, startImport,
+  cancelImport, capabilityUnavailableReason, formatBytes, getImportCapabilities, getImportJob,
+  isTerminalStatus, listImports, resolveLimits, retryImport, startImport, validateSelection,
 } from '../../api/import';
 import './upload.css';
 
@@ -26,6 +26,7 @@ export interface UploadDropzoneProps {
 }
 
 type RejectedNote = { filename: string; reason: string };
+type UploadError = { message: string; files: File[] };
 
 interface UploadState {
   active: boolean;
@@ -111,6 +112,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   const [localRejected, setLocalRejected] = useState<RejectedNote[]>([]);
   const [backendRejected, setBackendRejected] = useState<RejectedNote[]>([]);
   const [pollError, setPollError] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<UploadError | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
@@ -156,6 +158,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     setLocalRejected([]);
     setBackendRejected([]);
     setPollError(null);
+    setUploadError(null);
     setDetailsOpen(false);
     finishedRef.current = null;
     setUpload({ active: false, pct: 0, count: 0 });
@@ -214,64 +217,30 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     const c = await ensureCaps();
     if (!c) return;
 
-    const { supported, unsupported } = splitSupported(incoming, c);
-    const notes: RejectedNote[] = unsupported.map((u) => ({ filename: u.filename, reason: u.reason }));
-
-    // 数量限制
-    let pool = supported;
-    const maxFiles = c.limits?.max_files ?? 0;
-    if (maxFiles > 0 && pool.length > maxFiles) {
-      pool.slice(maxFiles).forEach((f) => notes.push({
-        filename: f.name, reason: '单次最多 ' + maxFiles + ' 个文件',
-      }));
-      pool = pool.slice(0, maxFiles);
-    }
-    // 单文件体积限制
-    const maxFileMB = c.limits?.max_file_mb ?? 0;
-    if (maxFileMB > 0) {
-      const maxFileBytes = maxFileMB * 1024 * 1024;
-      const tooBig = pool.filter((f) => f.size > maxFileBytes);
-      if (tooBig.length > 0) {
-        tooBig.forEach((f) => notes.push({
-          filename: f.name, reason: '超过单文件上限 ' + maxFileMB + ' MB',
-        }));
-        pool = pool.filter((f) => f.size <= maxFileBytes);
-      }
-    }
-    // 总体积限制
-    const maxTotalMB = c.limits?.max_total_mb ?? 0;
-    if (maxTotalMB > 0) {
-      const maxTotalBytes = maxTotalMB * 1024 * 1024;
-      let acc = 0;
-      const kept: File[] = [];
-      pool.forEach((f) => {
-        if (acc + f.size > maxTotalBytes) {
-          notes.push({ filename: f.name, reason: '超出单次总量上限 ' + maxTotalMB + ' MB' });
-        } else {
-          acc += f.size;
-          kept.push(f);
-        }
-      });
-      pool = kept;
-    }
+    // 统一走 api 层的提交前校验：格式（含不可用格式/需要转换组件的 note）、
+    // 按类型单文件上限（压缩包 max_archive_mb / 其它 max_file_mb）、
+    // 文件数 max_files、本批总量（压缩包按自身大小）。被拒项带具体原因。
+    const { accepted, rejected } = validateSelection(incoming, c);
+    const notes: RejectedNote[] = rejected.map((r) => ({ filename: r.filename, reason: r.reason }));
 
     setLocalRejected(notes);
-    if (pool.length === 0) {
+    if (accepted.length === 0) {
       if (notes.length > 0) message.warning('所选文件都不符合导入要求');
       return;
     }
 
     setJob(null);
     setBackendRejected([]);
+    setUploadError(null);
     setDetailsOpen(false);
     finishedRef.current = null;
-    setUpload({ active: true, pct: 0, count: pool.length });
+    setUpload({ active: true, pct: 0, count: accepted.length });
 
     try {
-      const res = await startImport(subjectId, pool, (pct) => {
+      const res = await startImport(subjectId, accepted, (pct) => {
         setUpload((u) => ({ ...u, pct }));
       });
-      setBackendRejected(res.rejected || []);
+      setBackendRejected((res.rejected || []).map((r) => ({ filename: r.filename, reason: r.reason })));
       setUpload({ active: false, pct: 100, count: 0 });
       if (res.job_id) {
         const initial = await getImportJob(res.job_id);
@@ -279,7 +248,10 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
       }
     } catch (e) {
       setUpload({ active: false, pct: 0, count: 0 });
-      message.error(describeError(e, '导入失败，请重试'));
+      const msg = describeError(e, '导入失败，请重试');
+      // 保留这批文件，给出可点的重试入口（不静默丢弃）
+      setUploadError({ message: msg, files: accepted });
+      message.error(msg);
     }
   }, [writable, upload.active, ensureCaps, subjectId]);
 
@@ -342,6 +314,15 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   const subText = words.length > 0
     ? '支持 ' + joinWords(words) + '，可多选或整包拖入'
     : (caps ? '暂未检测到可导入格式，请查看下方说明' : '正在获取支持的格式…');
+
+  // 限制与格式清单全部来自 capabilities，不写死数字
+  const limits = useMemo(() => resolveLimits(caps), [caps]);
+  const allFormats = useMemo(
+    () => (caps ? [...(caps.formats || []), ...(caps.archives || [])] : []),
+    [caps],
+  );
+  const availableFormats = useMemo(() => allFormats.filter((f) => f.available), [allFormats]);
+  const unavailableFormats = useMemo(() => allFormats.filter((f) => !f.available), [allFormats]);
 
   const items = job?.items || [];
   const terminal = job ? isTerminalStatus(job.status) : false;
@@ -455,6 +436,19 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
         </div>
       )}
 
+      {/* 上传失败：保留本批文件，给出可点的重试入口 */}
+      {uploadError && (
+        <div className="udz-upload-error">
+          <span className="udz-upload-error-msg">{uploadError.message}</span>
+          <Button
+            size="small" type="primary" ghost icon={<ReloadOutlined />}
+            onClick={() => void submit(uploadError.files)}
+          >
+            重试上传
+          </Button>
+        </div>
+      )}
+
       {pollError && <div className="udz-poll-error">{pollError}</div>}
 
       {/* 队列面板 */}
@@ -532,7 +526,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
         </div>
       )}
 
-      {/* 不受支持 / 被拒绝的文件：提交前就给出原因 */}
+      {/* 不受支持 / 超限 / 被拒绝的文件：提交前就给出具体原因 */}
       {rejected.length > 0 && (
         <div className="udz-rejected">
           {rejected.map((r, i) => (
@@ -541,34 +535,66 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
               <span className="udz-rejected-reason">{r.reason}</span>
             </div>
           ))}
+          <div className="udz-rejected-foot">
+            <span className="udz-rejected-reason">
+              共 {rejected.length} 个文件未提交，可调整后重新选择
+            </span>
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => inputRef.current?.click()}>
+              重新选择文件
+            </Button>
+          </div>
         </div>
       )}
 
-      {/* 长说明按需展开 */}
+      {/* 长说明按需展开：数字全部来自 capabilities（resolveLimits），不写死 */}
       <details className="udz-details">
         <summary>支持格式与大小限制</summary>
         <div className="udz-details-body">
           {caps ? (
             <>
+              <div className="udz-limits-title">大小与数量上限</div>
+              <ul className="udz-limit-list">
+                <li>普通文档：单个文件 ≤ {limits.maxFileMB} MB</li>
+                <li>压缩包：单个 ≤ {limits.maxArchiveMB} MB（按压缩包自身大小）</li>
+                {limits.maxExtractFileMB !== null && (
+                  <li>解压后：单个成员 ≤ {limits.maxExtractFileMB} MB</li>
+                )}
+                <li>
+                  本批：最多 {limits.maxFiles} 个文件
+                  {limits.maxTotalMB > 0 ? ' · 展开总量 ≤ ' + limits.maxTotalMB + ' MB' : ''}
+                </li>
+                <li>
+                  压缩包最多 {limits.maxDepth} 层
+                  {limits.maxSeconds !== null ? ' · 单次处理 ≤ ' + limits.maxSeconds + ' 秒' : ''}
+                </li>
+              </ul>
+
+              <div className="udz-limits-title">可用格式</div>
               <ul className="udz-format-list">
-                {[...(caps.formats || []), ...(caps.archives || [])].map((f) => (
+                {availableFormats.map((f) => (
                   <li key={f.ext + f.kind}>
-                    <span className="udz-format-ext">{f.ext}</span>
+                    <span className="udz-format-ext">.{f.ext}</span>
                     <span>{f.label}</span>
-                    <span className={f.available ? 'udz-ok' : 'udz-off'}>
-                      {f.available ? '可用' : (f.requires ? '需要' + f.requires : '暂不支持')}
-                    </span>
-                    {f.note && <span className="udz-format-note">{f.note}</span>}
+                    <span className="udz-ok">可用</span>
                   </li>
                 ))}
               </ul>
-              {!caps.converter?.available && caps.converter?.note && (
-                <div className="udz-format-note">{caps.converter.note}</div>
+
+              {unavailableFormats.length > 0 && (
+                <>
+                  <div className="udz-limits-title">暂不可用格式与原因</div>
+                  <ul className="udz-format-list udz-format-list--off">
+                    {unavailableFormats.map((f) => (
+                      <li key={f.ext + f.kind}>
+                        <span className="udz-format-ext">.{f.ext}</span>
+                        <span>{f.label}</span>
+                        <span className="udz-off">不可用</span>
+                        <span className="udz-format-note">{capabilityUnavailableReason(f)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
               )}
-              <div className="udz-limits">
-                单文件 ≤ {caps.limits.max_file_mb} MB · 单次总量 ≤ {caps.limits.max_total_mb} MB
-                · 单次 ≤ {caps.limits.max_files} 个文件 · 压缩包最多 {caps.limits.max_depth} 层
-              </div>
             </>
           ) : (
             <div>正在加载格式信息…</div>

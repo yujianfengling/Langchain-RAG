@@ -133,7 +133,9 @@ def _classify_upload(filename: str) -> Tuple[Optional[str], Optional[str], Optio
         return ext, f"不支持的文件类型: {ext}", "unsupported_format"
     if not spec.available:
         reason = formats.unavailable_reason(ext)
-        return ext, reason, "converter_unavailable" if spec.requires == "libreoffice" else "unsupported_format"
+        etype = ("converter_unavailable"
+                 if formats.requires_office_converter(ext) else "unsupported_format")
+        return ext, reason, etype
     return ext, None, None
 
 
@@ -152,8 +154,12 @@ def create_import_job(subject_id: str, files: Sequence[Tuple[str, bytes]],
     """
     _init_db()
     limits = _limits()
-    max_file_bytes = limits["max_file_mb"] * 1024 * 1024
-    max_total_bytes = limits["max_total_mb"] * 1024 * 1024
+    from rag import formats
+    # 单文件上限按"是否压缩包"分流：压缩包 max_archive_mb，普通文档 max_file_mb
+    archive_bytes = int(limits["max_archive_mb"]) * 1024 * 1024
+    doc_bytes = int(limits["max_file_mb"]) * 1024 * 1024
+    max_total_bytes = int(limits.get("max_total_mb",
+                                     limits.get("max_extract_total_mb", 1024))) * 1024 * 1024
 
     rejected: List[Dict[str, Any]] = []
     accepted: List[Tuple[str, bytes]] = []
@@ -169,16 +175,23 @@ def create_import_job(subject_id: str, files: Sequence[Tuple[str, bytes]],
             rejected.append({"filename": filename, "reason": "文件内容为空",
                              "error_type": "empty_content"})
             continue
-        if len(content) > max_file_bytes:
+        is_archive = formats.is_archive(ext) if ext else False
+        limit_bytes = archive_bytes if is_archive else doc_bytes
+        if len(content) > limit_bytes:
+            actual_mb = round(len(content) / (1024 * 1024), 2)
+            limit_mb = limit_bytes // (1024 * 1024)
+            kind = "压缩包" if is_archive else "普通文档"
             rejected.append({
                 "filename": filename,
-                "reason": f"文件超过单文件上限 {limits['max_file_mb']}MB",
+                "reason": f"文件实际 {actual_mb}MB，超过{kind}单文件上限 {limit_mb}MB",
                 "error_type": "size_exceeded"})
             continue
         if total + len(content) > max_total_bytes:
+            actual_mb = round((total + len(content)) / (1024 * 1024), 2)
+            limit_mb = max_total_bytes // (1024 * 1024)
             rejected.append({
                 "filename": filename,
-                "reason": f"本批总量超过上限 {limits['max_total_mb']}MB",
+                "reason": f"本批总量实际 {actual_mb}MB，超过上限 {limit_mb}MB",
                 "error_type": "size_exceeded"})
             continue
         if len(accepted) >= limits["max_files"]:
@@ -544,7 +557,7 @@ def _run_job(job_id: str) -> None:
                 reason = (formats.unavailable_reason(ext) if spec is not None
                           else f"不支持的文件类型: {ext}")
                 etype = ("converter_unavailable"
-                         if spec is not None and spec.requires == "libreoffice"
+                         if formats.requires_office_converter(ext)
                          else "unsupported_format")
                 _update_item(item_id, status="skipped", stage="parsing", progress=1.0,
                              message=reason, error_type=etype,
@@ -633,11 +646,14 @@ def _run_job(job_id: str) -> None:
 def _extract(stored: Path, dest: Path, limits: Dict[str, Any],
              warnings: List[str]) -> Dict[str, Any]:
     from services import archive_service
+    mb = 1024 * 1024
     archive_limits = {
-        "max_total_bytes": limits["max_total_mb"] * 1024 * 1024,
-        "max_files": limits["max_files"],
-        "max_depth": limits["max_depth"],
-        "max_seconds": limits["max_seconds"],
+        "max_total_bytes": int(limits.get("max_extract_total_mb",
+                                          limits.get("max_total_mb", 1024))) * mb,
+        "max_extract_file_bytes": int(limits.get("max_extract_file_mb", 200)) * mb,
+        "max_files": int(limits.get("max_files", 100)),
+        "max_depth": int(limits.get("max_depth", 2)),
+        "max_seconds": int(limits.get("max_seconds", 300)),
     }
     return archive_service.extract_archive(str(stored), str(dest), limits=archive_limits)
 

@@ -222,7 +222,18 @@
   white-space: nowrap;
   max-width: 60%;
 }
-.udz-rejected-reason { color: #b45309; }
+.udz-rejected-reason { color: #b45309; word-break: break-word; }
+.udz-rejected-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed #fde68a;
+}
+.udz-rejected-foot .udz-rejected-reason { flex: 1; min-width: 0; }
 
 /* ============ 按需展开的格式/限制说明 ============ */
 .udz-details {
@@ -261,9 +272,64 @@
   color: var(--color-text);
 }
 .udz-ok { color: var(--color-primary); }
-.udz-off { color: var(--color-text-muted); }
-.udz-format-note { color: var(--color-text-muted); }
+.udz-off { color: #b45309; }
+.udz-format-note {
+  color: var(--color-text-muted);
+  min-width: 0;
+  word-break: break-word;
+}
+/* 不可用格式：原因独占一行，长文本换行不撑破容器 */
+.udz-format-list--off li {
+  flex-basis: 100%;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+.udz-format-list--off .udz-format-note {
+  flex-basis: 100%;
+  line-height: 1.5;
+}
+.udz-limits-title {
+  margin: 8px 0 4px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.udz-limit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--color-text-secondary);
+}
+.udz-limit-list li { padding-left: 10px; position: relative; }
+.udz-limit-list li::before {
+  content: '·';
+  position: absolute;
+  left: 0;
+  color: var(--color-text-muted);
+}
 .udz-limits { margin-top: 4px; color: var(--color-text-muted); }
+
+/* 上传失败：明确原因 + 重试入口 */
+.udz-upload-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-md);
+  background: #fef2f2;
+}
+.udz-upload-error-msg {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: #b91c1c;
+  word-break: break-word;
+}
 
 /* ============ 窄屏（390px 可用） ============ */
 @media (max-width: 480px) {
@@ -277,4 +343,9 @@
   .udz-row { flex-wrap: wrap; }
   .udz-row-state { margin-left: 26px; }
   .udz-rejected-name { max-width: 100%; white-space: normal; word-break: break-all; }
+  .udz-rejected-foot { flex-direction: column; align-items: stretch; }
+  .udz-rejected-foot .ant-btn { width: 100%; }
+  .udz-format-list--off li { flex-direction: column; align-items: flex-start; }
+  .udz-upload-error { flex-direction: column; align-items: stretch; }
+  .udz-upload-error .ant-btn { width: 100%; }
 }

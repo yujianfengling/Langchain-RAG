@@ -15,9 +15,12 @@
     ],
     "archives": [ { "ext": "zip", "label": "ZIP 压缩包", "parser": "zipfile",
                     "requires": null, "available": true, "note": null } ],
-    "converter": { "available": false, "path": null, "kind": "libreoffice",
-                   "note": "旧版 .ppt/.doc/.xls 需要 LibreOffice；未检测到。" },
-    "limits": { "max_file_mb": 20, "max_total_mb": 1024, "max_files": 100,
+    "converter": { "available": true, "path": "C:\\Program Files\\Microsoft Office\\root\\Office16",
+                   "kind": "msoffice",
+                   "note": "已检测到 Microsoft Office；通过 COM 转换，可用应用：PowerPoint/Word" },
+    "limits": { "max_file_mb": 200, "max_archive_mb": 500,
+                "max_extract_file_mb": 200, "max_extract_total_mb": 1024,
+                "max_total_mb": 1024, "max_files": 100,
                 "max_depth": 2, "max_seconds": 300 },
     "accept": ".pptx,.ppt,.pdf,.docx,.doc,.txt,.md,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.webp,.zip,..."
   } }
@@ -43,8 +46,15 @@
 - `rejected` 项在 `filename`/`reason` 之外附带 `error_type`（便于前端区分
   unsupported_format / converter_unavailable / size_exceeded / count_exceeded）；
   这是**附加字段**，不改变既有字段含义。
-- `limits` 的默认值随 `IMPORT_MAX_*` 环境变量变化，前端应读取响应而不是写死。
-  单文件默认 20MB，与既有 `POST /knowledge/upload` 的上限**保持一致，不放宽**。
+- `limits` 的默认值随 `IMPORT_MAX_*` 环境变量变化，前端应读取响应而不是写死：
+  `max_file_mb` = 普通文档单文件（默认 200MB，env `IMPORT_MAX_DOCUMENT_MB`）；
+  `max_archive_mb` = 压缩包单文件（默认 500MB，env `IMPORT_MAX_ARCHIVE_MB`）；
+  `max_extract_file_mb` = 展开后单个成员（默认 200MB，env `IMPORT_MAX_EXTRACT_FILE_MB`）；
+  `max_extract_total_mb` / `max_total_mb` = 单批展开总量（默认 1024MB，env `IMPORT_MAX_EXTRACT_TOTAL_MB`）。
+  `POST /knowledge/upload` 与 `/import` 都按"是否压缩包"取不同上限，二者保持一致。
+- `converter.kind` 如实取值 `"libreoffice"` / `"msoffice"` / `null`（不可用时为 null）；
+  `available=false` 时 `.ppt/.doc` 的 `requires` 仍为 `"libreoffice"`，前端据此归类
+  `converter_unavailable`（字段值稳定，不随后端变化）。
 ```
 
 - 立刻返回，解析与建库在后台线程完成（不得在请求里同步阻塞）。
@@ -73,7 +83,7 @@
     "kb": { "status": "ready", "ready": true, "document_count": 12, "chunk_count": 340 },
     "summary_text": "12 份资料已可学习，2 份未能导入",
     "can_retry": true,
-    "warnings": ["旧版 .ppt 需要 LibreOffice，已跳过 1 个文件"]
+    "warnings": ["旧版 .ppt 需要 Office 转换组件（LibreOffice 或 Microsoft Office），已跳过 1 个文件"]
   } }
 ```
 
