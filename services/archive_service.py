@@ -268,6 +268,8 @@ def extract_archive(archive_path: str, dest_dir: str,
         "entries": [],
         "skipped": [],
         "nested": [],
+        # 目录成员数（任务 4：分类计数；目录不是资料，也不读取、不报错）
+        "directories": 0,
     }
 
     _extract_one(src, dest_root, origin=src.name, depth=0, limits=limits,
@@ -288,6 +290,8 @@ def extract_archive(archive_path: str, dest_dir: str,
         "entries": state["entries"],
         "skipped": state["skipped"],
         "nested": state["nested"],
+        "directories": state["directories"],
+        "containers": 1 + len(state["nested"]),
         "summary": {
             "archive": src.name,
             "kind": kind,
@@ -389,6 +393,9 @@ def _extract_one(src: Path, dest_root: Path, origin: str, depth: int,
 
     for raw_rel, reader, _declared, member_skip in members:
         if raw_rel.endswith("/"):
+            # 目录成员：只计数，绝不当文件读取（真实事故：目录被 read_bytes 抛
+            # Permission denied 并被误判成 archive_corrupt）。
+            state["directories"] += 1
             continue
         safe_rel = normalize_relpath(raw_rel)
         if not safe_rel:
@@ -598,13 +605,13 @@ def _iter_7z(src: Path, password: Optional[str],
             # 12 个目录被当成文件加进 extract targets 并 read_bytes()，
             # 在 Windows 抛 Permission denied，最后被包装成 archive_corrupt。
             file_infos: List[Any] = []
-            dir_count = 0
+            dir_names: List[str] = []
             for info in infos:
                 name = getattr(info, "filename", "") or ""
                 if not name:
                     continue
                 if getattr(info, "is_directory", None) or name.endswith("/"):
-                    dir_count += 1
+                    dir_names.append(name)
                     continue
                 file_infos.append(info)
 
@@ -632,9 +639,9 @@ def _iter_7z(src: Path, password: Optional[str],
                         raise ArchiveError(f"磁盘空间不足: {e}",
                                            error_type="archive_disk_full")
                     raise ArchiveError(f"解压 7z 失败: {e}", error_type="archive_corrupt")
-            if dir_count:
-                logger.info("7z 目录成员已跳过（不计入失败资料）: dirs=%d files=%d",
-                            dir_count, len(file_infos))
+            if dir_names:
+                logger.info("7z 目录成员只计数不读取（不计入失败资料）: dirs=%d files=%d",
+                            len(dir_names), len(file_infos))
 
             for info in file_infos:
                 name = info.filename
@@ -673,6 +680,11 @@ def _iter_7z(src: Path, password: Optional[str],
                             error_type="archive_member_unreadable")
 
                 yield name, _read, size, None
+
+            # 目录成员只如实计数（以 / 结尾 yielded），由 _extract_one 计数后跳过，
+            # 绝不作为文件读取。
+            for dname in dir_names:
+                yield dname.rstrip("/") + "/", _empty_reader, 0, None
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 

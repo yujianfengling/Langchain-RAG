@@ -220,9 +220,57 @@ async def continue_import_job(job_id: str,
     return SuccessResponse(data={"job_id": new_job_id}, message="继续处理任务已创建")
 
 
-@router.delete("/knowledge/imports/{job_id}", response_model=SuccessResponse)
-async def cancel_import_job(job_id: str,
+@router.post("/knowledge/imports/{job_id}/pause", response_model=SuccessResponse)
+async def pause_import_job(job_id: str,
+                           user_id: str = Depends(require_current_user)):
+    """
+    暂停任务：在**下一个批边界**停止，状态置 partial + paused=1，**不自动重启**。
+    已解析的内容仍会建库落库；resume 是唯一恢复入口。
+    """
+    from services import import_service
+    job = await run_in_threadpool(import_service.get_job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    await require_subject_write(job.get("subject_id") or "", user_id)
+    try:
+        found = await run_in_threadpool(import_service.pause_job, job_id)
+    except ValueError as e:
+        raise ValidationError(str(e))
+    if not found:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    return SuccessResponse(data={"job_id": job_id, "paused": True},
+                           message="任务将在当前批次结束后暂停")
+
+
+@router.post("/knowledge/imports/{job_id}/resume", response_model=SuccessResponse)
+async def resume_import_job(job_id: str,
                             user_id: str = Depends(require_current_user)):
+    """
+    继续已暂停的任务：从剩余成员继续自动分批（不要求用户重传，
+    已 ready 的成员按内容哈希 + 解析配置 + embedding 版本复用）。
+    """
+    from services import import_service
+    job = await run_in_threadpool(import_service.get_job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    await require_subject_write(job.get("subject_id") or "", user_id)
+    try:
+        new_job_id = await run_in_threadpool(import_service.resume_job, job_id)
+    except ValueError as e:
+        raise ValidationError(str(e))
+    if new_job_id is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    return SuccessResponse(data={"job_id": new_job_id}, message="任务已继续")
+
+
+@router.post("/knowledge/imports/{job_id}/cancel", response_model=SuccessResponse)
+async def cancel_import_job_post(job_id: str,
+                                 user_id: str = Depends(require_current_user)):
+    """取消任务（POST 别名，与 DELETE 等价）：取消后**不自动重启**。"""
+    return await _cancel_import_job(job_id, user_id)
+
+
+async def _cancel_import_job(job_id: str, user_id: str):
     from services import import_service
     job = await run_in_threadpool(import_service.get_job, job_id)
     if job is None:
@@ -231,11 +279,18 @@ async def cancel_import_job(job_id: str,
 
     prev_status = job.get("status")
     await run_in_threadpool(import_service.cancel_job, job_id)
-    if prev_status in ("queued", "cancelled"):
-        # 未开始的任务可立即清理临时内容；运行中的任务由工作线程自行清理
+    if prev_status in ("queued", "cancelled", "partial", "failed", "succeeded"):
+        # 未开始/已暂停/已终态的任务可立即清理临时内容；运行中的任务由工作线程自行清理
         await run_in_threadpool(import_service.cleanup_job_files, job_id)
     return SuccessResponse(data={"job_id": job_id, "status": "cancelled"},
                            message="任务已取消（已导入的资料不会删除）")
+
+
+@router.delete("/knowledge/imports/{job_id}", response_model=SuccessResponse)
+async def cancel_import_job(job_id: str,
+                            user_id: str = Depends(require_current_user)):
+    """取消任务（DELETE，历史入口）：取消后**不自动重启**。"""
+    return await _cancel_import_job(job_id, user_id)
 
 
 

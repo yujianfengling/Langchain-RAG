@@ -314,7 +314,11 @@ def limits() -> Dict[str, Any]:
                            保留以免前端契约破裂
     - max_files            文件数量（含展开成员），默认 100，env IMPORT_MAX_FILES
     - max_depth            递归深度，默认 2，env IMPORT_MAX_DEPTH
-    - max_seconds          单批**解析预算**秒数，默认 900，env IMPORT_MAX_SECONDS
+    - max_seconds          **整个任务**的墙钟上限（秒），默认 7200，env IMPORT_MAX_SECONDS
+                          2026-10-08 语义变更：此前它是“单批解析预算”（默认 900），到点就 break
+                          把剩余成员丢给用户点“继续”。现在任务内部自动分批（每批边界
+                          IMPORT_BATCH_SECONDS，默认 240s），max_seconds 只作为**整个任务**的
+                          总上限（防失控兜底），不再作为每批边界。
                           2026-10-07 实测（真实 367MB / 16 份 20-30MB 图片型课件）：
                           8 份约 244s。原默认 300s 会让这类正常资料永远导不完，
                           用户只看到"剩余资料未处理"。
@@ -334,7 +338,7 @@ def limits() -> Dict[str, Any]:
         "max_total_mb": extract_total_mb,
         "max_files": _env_int("IMPORT_MAX_FILES", 100),
         "max_depth": _env_int("IMPORT_MAX_DEPTH", 2),
-        "max_seconds": _env_int("IMPORT_MAX_SECONDS", 900),
+        "max_seconds": _env_int("IMPORT_MAX_SECONDS", 7200),
     }
 
 

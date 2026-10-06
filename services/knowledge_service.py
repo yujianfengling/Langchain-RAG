@@ -747,16 +747,34 @@ def _build_index_with_rollback(subject_id: str, documents: List[Any]) -> Dict[st
     backup_dir = persist_directory.parent / f"{persist_directory.name}.bak"
     bm25_backup_dir = bm25_directory.parent / f"{bm25_directory.name}.bak"
 
+    def _count_files(root: Path) -> int:
+        try:
+            return sum(1 for f in root.rglob("*") if f.is_file()) if root.exists() else 0
+        except OSError:
+            return 0
+
     def _backup():
-        """备份现有索引（存在才备份）"""
-        if backup_dir.exists():
-            shutil.rmtree(backup_dir, ignore_errors=True)
-        if persist_directory.exists():
-            shutil.copytree(persist_directory, backup_dir)
-        if bm25_backup_dir.exists():
-            shutil.rmtree(bm25_backup_dir, ignore_errors=True)
-        if bm25_directory.exists():
-            shutil.copytree(bm25_directory, bm25_backup_dir)
+        """备份现存索引（存在才备份）。
+
+        2026-10-07 修复：**绝不用空的线上目录覆盖上一次的有效备份**。
+        此前每次建库都无条件 rmtree(.bak) 再复制线上目录；若上一次建库被中断
+        导致线上目录为空，这次就会把仅存的有效备份也清成空目录——
+        实测 sub-kg5yy0t4 的 .bak 由 3 个文件变成 0 个文件，再无任何可恢复副本。
+        """
+        if _count_files(persist_directory) == 0 and _count_files(backup_dir) > 0:
+            logger.warning(f"线上索引为空但已有有效备份，保留备份不覆盖: {subject_id}")
+        else:
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir, ignore_errors=True)
+            if persist_directory.exists():
+                shutil.copytree(persist_directory, backup_dir)
+        if _count_files(bm25_directory) == 0 and _count_files(bm25_backup_dir) > 0:
+            logger.warning(f"线上 BM25 为空但已有有效备份，保留备份不覆盖: {subject_id}")
+        else:
+            if bm25_backup_dir.exists():
+                shutil.rmtree(bm25_backup_dir, ignore_errors=True)
+            if bm25_directory.exists():
+                shutil.copytree(bm25_directory, bm25_backup_dir)
 
     def _rollback():
         """用备份恢复旧索引"""
@@ -899,3 +917,47 @@ def format_file_size(size_bytes: int) -> str:
         i += 1
     
     return f"{size_bytes:.2f} {size_names[i]}"
+
+def restore_orphaned_index_backups() -> int:
+    """启动时修复"建库被中断"留下的空索引（返回修复的学科数）。
+
+    为什么需要（2026-10-07 真实事故）：
+    _build_index_with_rollback 的顺序是「备份 → **删除现有索引** → 重建 → 成功删备份 / 失败回滚」。
+    删除与重建之间的窗口里，磁盘上索引是空的；如果进程在这段时间被杀（本机内存压力下真实发生），
+    except 分支永远不执行，**回滚不会发生**，于是 .bak 留在磁盘、线上索引永久为空。
+    实测：vector_store/sub-kg5yy0t4 为 0 个文件，而同目录 sub-kg5yy0t4.bak 有 3 个文件，
+    bm25_index/sub-kg5yy0t4 直接不存在 —— 该学科有 25 份"可学习"资料却完全检索不到。
+
+    修复策略（只读判断 + 原子性恢复）：
+    - 线上索引**缺失或为空** 且存在 .bak → 用 .bak 恢复线上索引（这是被中断的那次）；
+    - 线上索引非空 → .bak 只是"构建成功后、清理前"被中断的残留 → 删掉 .bak，保留线上索引。
+    """
+    fixed = 0
+    for rel, name in (("data/vector_store", "vector_store"), ("data/bm25_index", "bm25_index")):
+        base = _resolve_path(rel)
+        if not base.exists():
+            continue
+        for backup in sorted(base.glob("*.bak")):
+            live = base / backup.name[:-4]
+            try:
+                live_files = sum(1 for f in live.rglob("*") if f.is_file()) if live.exists() else 0
+                backup_files = sum(1 for f in backup.rglob("*") if f.is_file())
+                if live_files == 0 and backup_files > 0:
+                    if live.exists():
+                        shutil.rmtree(live, ignore_errors=True)
+                    shutil.copytree(backup, live)
+                    shutil.rmtree(backup, ignore_errors=True)
+                    fixed += 1
+                    logger.warning(
+                        f"[index-recovery] {name}: 线上索引为空，已从备份恢复 {live.name}"
+                        f"（{backup_files} 个文件）")
+                    try:
+                        _invalidate_subject_index(live.name)
+                    except Exception:
+                        pass
+                elif live_files > 0:
+                    # 线上索引完整：.bak 是成功后未清理的残留
+                    shutil.rmtree(backup, ignore_errors=True)
+            except Exception as e:      # 恢复失败不能阻塞启动
+                logger.warning(f"[index-recovery] {name}/{backup.name} 恢复失败: {e}")
+    return fixed

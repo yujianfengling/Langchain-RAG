@@ -68,6 +68,223 @@ def _item_max_seconds() -> float:
     return value if value > 0 else 180.0
 
 
+# ==================== 自动分批 / 重试 / 执行者 / 资源 配置 ====================
+#
+# 2026-10-08：把“人工分批”改成“后台自动分批”。
+#   - IMPORT_BATCH_SECONDS（默认 240s）是**单批**的墙钟边界：到边界就保存进度、
+#     让出资源、自动进入下一批，直到没有剩余成员；不再要求用户点“继续”。
+#   - IMPORT_MAX_SECONDS（formats.limits()，默认 7200s）是**整个任务**的总上限，
+#     仅作防失控兜底，不再当作每批边界。
+#   - IMPORT_BATCH_MAX（默认 200）是最大批次数；再加上“无进展检测”与“不可恢复错误
+#     立即停止”，保证绝不无限循环。
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _batch_seconds() -> float:
+    """单批解析的墙钟边界（秒）。默认 240，env IMPORT_BATCH_SECONDS，合法区间 30~3600。"""
+    value = _env_float("IMPORT_BATCH_SECONDS", 240.0)
+    if value <= 0:
+        return 240.0
+    return min(max(value, 30.0), 3600.0)
+
+
+def _batch_max_count() -> int:
+    """单任务最大批次数（防失控）。默认 200，env IMPORT_BATCH_MAX。"""
+    value = _env_int("IMPORT_BATCH_MAX", 200)
+    return value if value > 0 else 200
+
+
+def _batch_sleep_seconds() -> float:
+    """批间让出 CPU 的时间（秒）。默认 0.5，env IMPORT_BATCH_SLEEP_SECONDS。"""
+    value = _env_float("IMPORT_BATCH_SLEEP_SECONDS", 0.5)
+    return max(0.0, min(value, 30.0))
+
+
+def _item_max_retries() -> int:
+    """网络类瞬时错误的最大重试次数（默认 2，env IMPORT_ITEM_MAX_RETRIES）。"""
+    value = _env_int("IMPORT_ITEM_MAX_RETRIES", 2)
+    return max(0, min(value, 5))
+
+
+def _retry_backoff_seconds(attempt: int) -> float:
+    """第 attempt（从 1 开始）次重试前的退避秒数：1s/2s/4s，上限 4s。"""
+    base = _env_float("IMPORT_RETRY_BACKOFF_SECONDS", 1.0)
+    if base <= 0:
+        base = 1.0
+    return min(base * (2 ** max(0, attempt - 1)), 4.0)
+
+
+def _executor_timeout_seconds() -> float:
+    """执行者心跳超时（秒）。超时视为过期，可被接管。默认 300，env IMPORT_EXECUTOR_TIMEOUT_SECONDS。"""
+    value = _env_float("IMPORT_EXECUTOR_TIMEOUT_SECONDS", 300.0)
+    return value if value > 0 else 300.0
+
+
+def _memory_tracking_enabled() -> bool:
+    raw = (os.getenv("IMPORT_MEMORY_TRACK", "1") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+# 网络类瞬时错误：有限次退避重试。凭据失效/不支持/加密/路径穿越一律不在其中。
+# 注意：item_timeout/vision_timeout **不**自动重试 —— 它们已经耗尽了该文件/该图的墙钟
+# 预算，立即重试只会重复等待；单图超时由视觉层自己按张处理。用户仍可主动 retry。
+_TRANSIENT_ERROR_TYPES = frozenset({
+    "timeout", "connection_error", "network", "network_error",
+    "rate_limited", "server_error", "io_error",
+})
+# 明确不重试（重试不会改变结果，只会浪费资源）：
+#   凭据失效(401/403)、明确不支持、加密包、路径穿越、文件过大、缺组件、墙钟超时。
+_NON_RETRYABLE_ERROR_TYPES = frozenset({
+    "invalid_api_key", "auth_invalid", "unauthorized", "forbidden",
+    "unsupported_format", "archive_encrypted", "archive_unsafe_path",
+    "archive_unsupported", "archive_corrupt", "archive_limit_exceeded",
+    "file_too_large", "pil_unavailable", "converter_unavailable",
+    "item_timeout", "vision_timeout",
+})
+
+
+def _is_transient_error(error_type: Optional[str], message: str = "") -> bool:
+    """是否为“值得自动重试”的网络类瞬时错误（有限次、带退避）。"""
+    et = (error_type or "").strip().lower()
+    if et in _TRANSIENT_ERROR_TYPES:
+        return True
+    if et in _NON_RETRYABLE_ERROR_TYPES:
+        return False
+    text = (message or "").lower()
+    markers = ("timeout", "timed out", "超时", "connection", "连接",
+               "reset by peer", "temporarily unavailable", "429", "500",
+               "502", "503", "504")
+    return any(m in text for m in markers)
+
+
+# ---- 内存峰值（任务 6：要测量，不要只写注释）----
+#
+# tracemalloc 记录 Python 分配峰值；RSS 记录进程真实驻留。两者都落库：
+#   item.timings.memory_peak_mb / rss_mb
+#   job.stage_timings.parse_memory_peak_mb / build_memory_peak_mb / rss_peak_mb
+
+
+def _mem_start() -> bool:
+    """启动 tracemalloc 并清零峰值；已启动则不重复。失败返回 False。"""
+    if not _memory_tracking_enabled():
+        return False
+    try:
+        import tracemalloc
+        if not tracemalloc.is_tracing():
+            tracemalloc.start()
+        tracemalloc.reset_peak()
+        return True
+    except Exception:
+        return False
+
+
+def _mem_current_bytes() -> int:
+    try:
+        import tracemalloc
+        if not tracemalloc.is_tracing():
+            return 0
+        return int(tracemalloc.get_traced_memory()[0])
+    except Exception:
+        return 0
+
+
+def _mem_peak_mb(baseline_current: int = 0) -> float:
+    """自上次 reset_peak 以来的额外分配峰值（MB），减去 baseline。"""
+    try:
+        import tracemalloc
+        if not tracemalloc.is_tracing():
+            return 0.0
+        _cur, peak = tracemalloc.get_traced_memory()
+        delta = int(peak) - int(baseline_current or 0)
+        return round(max(0, delta) / (1024 * 1024), 3)
+    except Exception:
+        return 0.0
+
+
+def _mem_reset_peak() -> None:
+    try:
+        import tracemalloc
+        if tracemalloc.is_tracing():
+            tracemalloc.reset_peak()
+    except Exception:
+        pass
+
+
+def _rss_mb() -> float:
+    """进程 RSS（MB）。psutil 优先；否则 Windows ctypes；再否则 0（不假报）。"""
+    try:
+        import psutil
+        return round(psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024), 2)
+    except Exception:
+        pass
+    try:
+        import resource  # 类 Unix
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Linux: KB；macOS: bytes
+        return round(usage / 1024, 2) if usage > 0 else 0.0
+    except Exception:
+        pass
+    if os.name != "nt":
+        return 0.0
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _PMC(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("PageFaultCount", wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        counters = _PMC()
+        counters.cb = ctypes.sizeof(_PMC)
+        handle = ctypes.windll.kernel32.GetCurrentProcess()
+        ok = ctypes.windll.psapi.GetProcessMemoryInfo(
+            handle, ctypes.byref(counters), counters.cb)
+        if ok:
+            return round(counters.WorkingSetSize / (1024 * 1024), 2)
+    except Exception:
+        pass
+    return 0.0
+
+
+# ---- 单文件/单图超时后的协作式中止（任务 6）----
+#
+# Python 无法强杀线程：被放弃的解析线程仍会跑完。为了做到“超时后不再派发新工作”，
+# 这里给每个解析线程挂一个 abort Event；解析线程在**每次派发新的视觉调用前**检查它。
+# 父线程在单文件墙钟超时后置位该 Event，被放弃的线程下一次循环即停止派发。
+_ACTIVE_PARSE_ABORTS: Dict[int, "threading.Event"] = {}
+_ACTIVE_PARSE_ABORTS_LOCK = threading.Lock()
+
+
+def _vision_abort_requested() -> bool:
+    """当前线程所属的解析是否已被放弃（供增强器在派发新视觉工作前检查）。"""
+    with _ACTIVE_PARSE_ABORTS_LOCK:
+        event = _ACTIVE_PARSE_ABORTS.get(threading.get_ident())
+    return bool(event is not None and event.is_set())
+
+
 def _parse_config_signature() -> str:
     """解析配置指纹：用于"内容没变就复用"的幂等判定（视觉提示词版本/模式等）"""
     from rag.enrichment.multimodal_enricher import VISION_PROMPT_VERSION
@@ -191,6 +408,17 @@ _MIGRATIONS = {
         "total_members": "INTEGER",
         # 继续处理来源任务
         "continue_of": "TEXT",
+        # 执行者声明（任务 2）：同一任务只有一个执行者。
+        # executor_id 非空且心跳未超时 → 拒绝重复执行；心跳超时可接管。
+        "executor_id": "TEXT",
+        "executor_heartbeat": "REAL",
+        # 用户意图（任务 3）：暂停/取消后**绝不自动重启**；resume 是唯一清除入口。
+        "pause_requested": "INTEGER DEFAULT 0",
+        "paused": "INTEGER DEFAULT 0",
+        # 自动分批进度（任务 1）：已完成的批次数
+        "batch_index": "INTEGER DEFAULT 0",
+        # 分类计数（任务 4）：members_discovered / containers / directories / materials
+        "discovery_json": "TEXT",
     },
     "import_items": {
         # 单条计时：parse_ms / vision_ms / vision_calls / chunks ...
@@ -474,35 +702,88 @@ def _parse_file(path: Path) -> Tuple[List[Any], Optional[str], Optional[str], Di
     return [], result.error_type or "parse_error", result.error_message or "解析失败", meta
 
 
+def _parse_file_guarded(path: Path, abort: "threading.Event"
+                        ) -> Tuple[List[Any], Optional[str], Optional[str], Dict[str, Any]]:
+    """在解析线程里登记 abort Event，供增强器在派发新视觉工作前检查（任务 6）。"""
+    tid = threading.get_ident()
+    with _ACTIVE_PARSE_ABORTS_LOCK:
+        _ACTIVE_PARSE_ABORTS[tid] = abort
+    try:
+        return _parse_file(path)
+    finally:
+        with _ACTIVE_PARSE_ABORTS_LOCK:
+            _ACTIVE_PARSE_ABORTS.pop(tid, None)
+
+
 def _parse_with_timeout(path: Path, timeout: float
                         ) -> Tuple[List[Any], Optional[str], Optional[str], Dict[str, Any]]:
     """
     在单文件墙钟上限内解析；超时记为 item_timeout 并**继续处理后面的文件**。
 
-    被放弃的解析线程无法强杀，但它受视觉单张超时与 requests 超时约束，
-    不会再无限消耗；这里只保证整批不被它拖死。
+    Python 无法强杀线程：被放弃的解析线程仍会跑完。这里在超时后置位 abort Event，
+    被放弃线程在**每次派发新的视觉调用前**检查它，从而做到“超时后不再派发新工作”。
     """
     start = time.monotonic()
+    _mem_reset_peak()
+    mem_base = _mem_current_bytes()
+    abort = threading.Event()
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="import-parse")
-    future = executor.submit(_parse_file, path)
+    future = executor.submit(_parse_file_guarded, path, abort)
     try:
         docs, error_type, message, meta = future.result(timeout=timeout)
         meta.setdefault("parse_ms", int((time.monotonic() - start) * 1000))
         meta["item_timed_out"] = False
+        meta["memory_peak_mb"] = _mem_peak_mb(mem_base)
+        meta["rss_mb"] = _rss_mb()
+        meta.setdefault("retries", 0)
         return docs, error_type, message, meta
     except FuturesTimeout:
+        # 协作式中止：被放弃的线程下一次派发视觉前会看到该 Event 并停止。
+        abort.set()
         logger.warning(f"单文件解析超时（>{timeout:g}s），跳过并继续: {path.name}")
         return [], "item_timeout", (
             f"单文件解析超时（>{timeout:g}s），已跳过该文件并继续处理其余文件"), {
                 "parse_ms": int((time.monotonic() - start) * 1000),
-                "vision_stats": {}, "item_timed_out": True}
+                "vision_stats": {}, "item_timed_out": True,
+                "memory_peak_mb": _mem_peak_mb(mem_base), "rss_mb": _rss_mb(),
+                "retries": 0}
     except Exception as e:  # 解析线程自身异常也要给出准确原因
         logger.warning(f"单文件解析异常: {path.name}: {e}")
         return [], "parse_error", f"解析异常: {e}", {
             "parse_ms": int((time.monotonic() - start) * 1000),
-            "vision_stats": {}, "item_timed_out": False}
+            "vision_stats": {}, "item_timed_out": False,
+            "memory_peak_mb": _mem_peak_mb(mem_base), "rss_mb": _rss_mb(),
+            "retries": 0}
     finally:
         executor.shutdown(wait=False)
+
+
+def _parse_item_with_retries(path: Path
+                             ) -> Tuple[List[Any], Optional[str], Optional[str], Dict[str, Any]]:
+    """
+    单文件解析 + 网络类瞬时错误的有界退避重试（任务 5）。
+
+    - 只在 _is_transient_error() 为真时重试，最多 IMPORT_ITEM_MAX_RETRIES 次；
+    - 退避 1s/2s/4s（IMPORT_RETRY_BACKOFF_SECONDS，上限 4s）；
+    - 凭据失效(401/403)、明确不支持、加密包、路径穿越一律不重试，立即明确失败。
+    """
+    max_retries = _item_max_retries()
+    attempt = 0
+    while True:
+        docs, error_type, message, meta = _parse_with_timeout(
+            path, _item_max_seconds())
+        if (docs or attempt >= max_retries
+                or not _is_transient_error(error_type, message or "")):
+            meta["retries"] = attempt
+            if attempt:
+                meta["retry_error_type"] = error_type
+            return docs, error_type, message, meta
+        attempt += 1
+        backoff = _retry_backoff_seconds(attempt)
+        logger.warning(
+            f"单文件瞬时错误，第 {attempt}/{max_retries} 次重试（退避 {backoff:g}s）:"
+            f" {path.name}: {error_type}")
+        time.sleep(backoff)
 
 
 # ==================== 解析结果缓存（复用 chunks，不重复解析） ====================
@@ -729,20 +1010,177 @@ def _insert_item(job_id: str, seq: int, **fields: Any) -> str:
     return item_id
 
 
+def _new_executor_id() -> str:
+    """本执行者标识：主机:进程:线程:随机后缀（用于执行者声明与排查）"""
+    import socket
+    host = (socket.gethostname() or "host")[:24]
+    return f"{host}:{os.getpid()}:{threading.get_ident()}:{uuid.uuid4().hex[:6]}"
+
+
+def _claim_executor(job_id: str, executor_id: str) -> bool:
+    """
+    尝试声明执行者（任务 2：同一任务只有一个执行者）。
+
+    True = 获得执行权：任务当前无执行者 / 执行者就是自己（续期）/ 原心跳已超时（可接管）。
+    False = 已有**活跃**执行者；调用方必须拒绝执行，绝不静默重复跑。
+    """
+    now = time.time()
+    timeout = _executor_timeout_seconds()
+    with _DB_LOCK, _connect() as conn:
+        row = _job_row(conn, job_id)
+        if row is None:
+            return False
+        try:
+            current = row["executor_id"]
+            heartbeat = row["executor_heartbeat"]
+        except (IndexError, KeyError):
+            current, heartbeat = None, None
+        stale = (not heartbeat) or (now - float(heartbeat) > timeout)
+        if current and current != executor_id and not stale:
+            return False
+        conn.execute(
+            "UPDATE import_jobs SET executor_id=?, executor_heartbeat=?, updated_at=?"
+            " WHERE job_id=?",
+            (executor_id, now, _now(), job_id))
+        conn.commit()
+    return True
+
+
+def _refresh_executor(job_id: str, executor_id: str) -> None:
+    """续期心跳（批间 / 建库前调用），失败不影响主流程。"""
+    try:
+        with _DB_LOCK, _connect() as conn:
+            conn.execute(
+                "UPDATE import_jobs SET executor_heartbeat=? WHERE job_id=? AND executor_id=?",
+                (time.time(), job_id, executor_id))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"执行者心跳续期失败: {job_id}: {e}")
+
+
+def _release_executor(job_id: str, executor_id: str) -> None:
+    """释放自己的执行者声明（只清自己的，避免误清接管者）。"""
+    try:
+        with _DB_LOCK, _connect() as conn:
+            conn.execute(
+                "UPDATE import_jobs SET executor_id=NULL, executor_heartbeat=NULL"
+                " WHERE job_id=? AND executor_id=?",
+                (job_id, executor_id))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"执行者声明释放失败: {job_id}: {e}")
+
+
+def _is_paused(job_id: str) -> bool:
+    with _DB_LOCK, _connect() as conn:
+        row = conn.execute("SELECT paused FROM import_jobs WHERE job_id=?",
+                           (job_id,)).fetchone()
+    return bool(row and row["paused"])
+
+
+def _is_pause_requested(job_id: str) -> bool:
+    """用户是否要求暂停（pause_requested 或已 paused 且未取消）。"""
+    with _DB_LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT pause_requested, paused, status FROM import_jobs WHERE job_id=?",
+            (job_id,)).fetchone()
+        if row is None:
+            return True
+        if row["status"] == "cancelled":
+            return False
+        return bool(row["pause_requested"]) or bool(row["paused"])
+
+
+def _save_discovery(job_id: str, discovery: Dict[str, Any]) -> None:
+    _set_job_status_values(
+        job_id, discovery_json=json.dumps(discovery, ensure_ascii=False))
+
+
+def _save_batch_index(job_id: str, batch_no: int) -> None:
+    _set_job_status_values(job_id, batch_index=int(batch_no))
+
+
+def _remaining_candidates(job_id: str,
+                          candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """计划里尚未建立 item 的候选。已建 item 的成员（含 failed）不再自动重跑，
+    保证自动分批有界；失败项走用户主动 retry/continue。"""
+    with _DB_LOCK, _connect() as conn:
+        rows = conn.execute(
+            "SELECT origin_archive, source_path FROM import_items WHERE job_id=?",
+            (job_id,)).fetchall()
+    keys = {_member_key(r["origin_archive"], r["source_path"]) for r in rows}
+    return [c for c in candidates
+            if _member_key(c.get("origin_archive"),
+                           c.get("source_path")) not in keys]
+
+
+def _terminal_item_count(job_id: str) -> int:
+    with _DB_LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM import_items WHERE job_id=? AND status IN"
+            " ('ready','failed','skipped')", (job_id,)).fetchone()
+    return int(row[0] if row else 0)
+
+
+def _pause_finish(job_id: str, warnings: List[str],
+                  archive_summaries: List[Dict[str, Any]],
+                  stage_timings: Dict[str, Any]) -> None:
+    """在批边界暂停：置 paused=1、status=partial，**不自动重启**。"""
+    counts = _item_counts(job_id)
+    with _DB_LOCK, _connect() as conn:
+        unprocessed = _unprocessed_count(conn, job_id)
+    summary = (f"已暂停：{counts['ready']} 份可学习，{unprocessed} 份未处理"
+               f"（可继续）")
+    _set_job_status_values(job_id, pause_requested=0, paused=1)
+    _finish_job(job_id, "partial", summary, warnings, archive_summaries, stage_timings)
+
+
+def _clear_interrupted_items(job_id: str) -> None:
+    """删除“服务重启导致中断”的条目，使其重新成为未处理成员而被自动分批重跑。
+
+    reconcile 会把 in-flight 条目记为 failed/error_type=interrupted；若不清掉，
+    _remaining_candidates 会认为它们已处理，自动接续/恢复就永远无法真正继续。
+    只删 error_type='interrupted' 的条目，真实失败（build_failed 等）不受影响。"""
+    try:
+        with _DB_LOCK, _connect() as conn:
+            conn.execute(
+                "DELETE FROM import_items WHERE job_id=? AND error_type='interrupted'",
+                (job_id,))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"清理被中断条目失败（不影响主流程）: {job_id}: {e}")
+
+
 def _run_job(job_id: str, only_keys: Optional[set] = None,
              reuse_job_id: Optional[str] = None) -> None:
     """
-    执行导入任务。
+    执行导入任务（任务 1：后台自动分批；任务 2：单一执行者）。
 
-    Args:
-        only_keys: 仅处理这些成员键（继续处理用）；None=处理全部（已 ready 的按内容哈希复用）
-        reuse_job_id: 复用来源任务的已就绪条目（不重复解析/不重复向量化）
+    - 启动前先 claim 执行者；已被活跃执行者持有则拒绝执行并记日志。
+    - 单批到 IMPORT_BATCH_SECONDS 边界就保存进度、让出资源、自动进入下一批，
+      直到没有剩余成员；整个过程在同一 job 内完成，不要求用户点“继续”。
     """
+    executor_id = _new_executor_id()
+    if not _claim_executor(job_id, executor_id):
+        logger.warning(
+            f"[import] 任务 {job_id} 已被活跃执行者持有，拒绝重复执行"
+            "（不会产生重复资料/重复索引）")
+        return
+    try:
+        _run_job_locked(job_id, executor_id, only_keys=only_keys,
+                        reuse_job_id=reuse_job_id)
+    finally:
+        _release_executor(job_id, executor_id)
+
+
+def _run_job_locked(job_id: str, executor_id: str,
+                    only_keys: Optional[set] = None,
+                    reuse_job_id: Optional[str] = None) -> None:
     # 本函数跑在后台线程里，而知识库构建会在**这里**第一次导入 knowledge_service →
     # "from rag.rag_service import ..."。若此时另一个线程（如启动预热）也在导入 rag，
     # Python 3.14 会抛 deadlock detected by _ModuleLock('rag.rag_service')，
-    # 任务直接以"任务执行异常"失败且 0 条目（2026-10-07 实测 imp_9938303fadb9）。
-    # 统一走 rag_loader 的进程锁，把"第一次导入"串行化。
+    # 任务直接以“任务执行异常”失败且 0 条目（2026-10-07 实测 imp_9938303fadb9）。
+    # 统一走 rag_loader 的进程锁，把“第一次导入”串行化。
     try:
         from services.rag_loader import load_rag_stack
         load_rag_stack()
@@ -754,6 +1192,9 @@ def _run_job(job_id: str, only_keys: Optional[set] = None,
         raw_rows = conn.execute(
             "SELECT * FROM import_raw WHERE job_id=? ORDER BY seq", (job_id,)).fetchall()
     if job is None:
+        return
+    # 用户主动暂停/取消的任务**绝不自动重启**（任务 3）；resume 是唯一清除入口。
+    if _is_paused(job_id) or _is_cancelled(job_id):
         return
     subject_id = job["subject_id"]
     user_id = job["user_id"]
@@ -768,6 +1209,8 @@ def _run_job(job_id: str, only_keys: Optional[set] = None,
     tmp_job_dir.mkdir(parents=True, exist_ok=True)
     stage_timings: Dict[str, Any] = {"extract_ms": 0, "parse_ms": 0,
                                      "build_ms": 0, "vision_ms": 0, "total_ms": 0}
+    _mem_start()
+    stage_timings["rss_start_mb"] = _rss_mb()
 
     parse_cfg = _parse_config_signature()
     embedding_sig = _embedding_signature()
@@ -781,10 +1224,12 @@ def _run_job(job_id: str, only_keys: Optional[set] = None,
             reuse_map[_member_key(row["origin_archive"], row["source_path"])] = dict(row)
 
     try:
-        # ---------- 1) 展开压缩包 / 生成候选资料与计划 ----------
+        # ---------- 1) 展开压缩包 / 生成候选资料与计划 / 分类计数 ----------
         t_extract = time.monotonic()
         candidates: List[Dict[str, Any]] = []
         job_seq = 0
+        discovery: Dict[str, int] = {"members_discovered": 0, "containers": 0,
+                                     "directories": 0, "materials": 0}
         for row in raw_rows:
             if _is_cancelled(job_id):
                 _cancel_finish(job_id, "任务在展开阶段被取消")
@@ -807,9 +1252,10 @@ def _run_job(job_id: str, only_keys: Optional[set] = None,
                     archive_summaries.append({
                         "archive": filename, "extracted": 0, "skipped": 0,
                         "note": f"失败：{reason}"})
+                    discovery["containers"] += 1
+                    discovery["members_discovered"] += 1
                     # 被接受的每个文件都必须在 items 里有终态记录：
-                    # 压缩包自身损坏/加密时也如实失败（带 error_type 与可读原因），
-                    # 绝不能只在 warnings 里留一句话、items 却是空的。
+                    # 压缩包自身损坏/加密时也如实失败（带 error_type 与可读原因）。
                     job_seq += 1
                     _insert_item(
                         job_id, job_seq, display_name=filename, source_path=filename,
@@ -819,6 +1265,12 @@ def _run_job(job_id: str, only_keys: Optional[set] = None,
                         error_type=error_type, retryable=0)
                     continue
                 entries = result["entries"]
+                nested = result.get("nested") or []
+                discovery["containers"] += 1 + len(nested)
+                discovery["directories"] += int(result.get("directories") or 0)
+                # 发现条目 = 解出的文件 + 被跳过的条目 + 嵌套压缩包本身（容器单列）
+                discovery["members_discovered"] += (
+                    len(entries) + len(result["skipped"]) + len(nested))
                 archive_summaries.append({"archive": filename,
                                           "extracted": len(entries),
                                           "skipped": len(result["skipped"]),
@@ -843,6 +1295,7 @@ def _run_job(job_id: str, only_keys: Optional[set] = None,
                         "size": entry["size"],
                     })
             else:
+                discovery["members_discovered"] += 1
                 candidates.append({
                     "display_name": filename,
                     "source_path": filename,
@@ -863,6 +1316,8 @@ def _run_job(job_id: str, only_keys: Optional[set] = None,
                           if _member_key(c.get("origin_archive"),
                                          c.get("source_path")) in only_keys]
 
+        discovery["materials"] = len(candidates)
+        _save_discovery(job_id, discovery)
         plan = [{
             "display_name": c["display_name"],
             "source_path": c["source_path"],
@@ -871,213 +1326,283 @@ def _run_job(job_id: str, only_keys: Optional[set] = None,
         } for c in candidates]
         _save_plan(job_id, plan)
         stage_timings["extract_ms"] = int((time.monotonic() - t_extract) * 1000)
+        stage_timings["members_discovered"] = discovery["members_discovered"]
+        stage_timings["containers"] = discovery["containers"]
+        stage_timings["directories"] = discovery["directories"]
+        stage_timings["materials"] = discovery["materials"]
 
-        # ---------- 2) 解析 + 复制到学科目录 ----------
+        # ---------- 2) 自动分批：解析 + 复制 + 建库 ----------
         subject_dir = _subject_dir(subject_id)
         subject_dir.mkdir(parents=True, exist_ok=True)
-        parsed_docs: List[Any] = []
-        ready_names: set = set()
-        copied_new: List[str] = []
+        copied_all: List[str] = []
+        max_batches = _batch_max_count()
+        total_limit = float(limits.get("max_seconds") or 0)
+        batch_seconds = _batch_seconds()
+        batch_no = 0
         t_parse = time.monotonic()
 
-        for cand in candidates:
+        while True:
             if _is_cancelled(job_id):
-                _remove_copied(subject_dir, copied_new)
-                _cancel_finish(job_id, "任务在解析阶段被取消")
+                _remove_copied(subject_dir, copied_all)
+                _cancel_finish(job_id, "任务已取消（已导入的资料不会删除）")
                 return
-            if _monotonic() - started > limits["max_seconds"]:
-                # 整批预算到：剩余成员不建 item（计划里如实体现为未处理），
-                # job 记为 partial 且可 continue；绝不假装 succeeded。
+            if _is_pause_requested(job_id):
+                stage_timings["parse_ms"] = int((time.monotonic() - t_parse) * 1000)
+                stage_timings["total_ms"] = int((time.monotonic() - t_wall) * 1000)
+                _pause_finish(job_id, warnings, archive_summaries, stage_timings)
+                return
+            if total_limit > 0 and _monotonic() - started > total_limit:
                 warnings.append(
-                    f"整批预算 {limits['max_seconds']}s 已到，剩余成员未处理（可继续处理）")
+                    f"整个任务超过总上限 {int(total_limit)}s，剩余成员未处理（可继续）")
                 break
-            job_seq += 1
-            item_id = _insert_item(
-                job_id, job_seq, display_name=cand["display_name"],
-                source_path=cand["source_path"], origin_archive=cand["origin_archive"],
-                size=cand["size"], status="parsing", stage="parsing",
-                progress=None, retryable=0)
+            if batch_no >= max_batches:
+                warnings.append(
+                    f"已达最大批次数 {max_batches}，停止自动分批（剩余成员可继续处理）")
+                break
+            remaining = _remaining_candidates(job_id, candidates)
+            if not remaining:
+                break
+            batch_no += 1
+            batch_started = _monotonic()
+            term_before = _terminal_item_count(job_id)
+            parsed_docs: List[Any] = []
+            ready_names: set = set()
+            _mem_reset_peak()
+            batch_mem_base = _mem_current_bytes()
 
-            src_path = cand["abs_path"]
-            from rag import formats
-            ext = formats.normalize_ext(src_path.suffix)
-            spec = formats.get_format(ext)
-            if spec is None or not spec.available or formats.is_archive(ext):
-                reason = (formats.unavailable_reason(ext) if spec is not None
-                          else f"不支持的文件类型: {ext}")
-                etype = ("converter_unavailable"
-                         if formats.requires_office_converter(ext)
-                         else "unsupported_format")
-                _update_item(item_id, status="skipped", stage="parsing", progress=1.0,
-                             message=reason, error_type=etype, timings_json="{}",
-                             retryable=1 if etype == "converter_unavailable" else 0)
-                if etype == "converter_unavailable":
-                    warnings.append(f"{cand['display_name']}：{reason}")
-                continue
+            for cand in remaining:
+                if _is_cancelled(job_id):
+                    _remove_copied(subject_dir, copied_all)
+                    _cancel_finish(job_id, "任务已取消（已导入的资料不会删除）")
+                    return
+                if _is_pause_requested(job_id):
+                    break      # 到下一个批边界暂停：本批已解析内容仍会建库落库
+                if _monotonic() - batch_started > batch_seconds:
+                    break      # 批边界：保存进度、让出资源、自动进入下一批
+                if total_limit > 0 and _monotonic() - started > total_limit:
+                    break
+                job_seq += 1
+                item_id = _insert_item(
+                    job_id, job_seq, display_name=cand["display_name"],
+                    source_path=cand["source_path"], origin_archive=cand["origin_archive"],
+                    size=cand["size"], status="parsing", stage="parsing",
+                    progress=None, retryable=0)
 
-            src_sha = _sha256(src_path)
+                src_path = cand["abs_path"]
+                from rag import formats
+                ext = formats.normalize_ext(src_path.suffix)
+                spec = formats.get_format(ext)
+                if spec is None or not spec.available or formats.is_archive(ext):
+                    reason = (formats.unavailable_reason(ext) if spec is not None
+                              else f"不支持的文件类型: {ext}")
+                    etype = ("converter_unavailable"
+                             if formats.requires_office_converter(ext)
+                             else "unsupported_format")
+                    _update_item(item_id, status="skipped", stage="parsing", progress=1.0,
+                                 message=reason, error_type=etype, timings_json="{}",
+                                 retryable=1 if etype == "converter_unavailable" else 0)
+                    if etype == "converter_unavailable":
+                        warnings.append(f"{cand['display_name']}：{reason}")
+                    continue
 
-            # 复用已就绪条目（内容哈希 + 解析配置 + embedding 版本一致）
-            reuse = reuse_map.get(_member_key(cand.get("origin_archive"),
-                                              cand.get("source_path")))
-            if reuse and reuse.get("status") == "ready" and src_sha:
-                reuse_key = _reuse_key(src_sha, parse_cfg, embedding_sig)
-                stored_ready = Path(reuse.get("stored_path") or "")
-                if (reuse.get("content_sha") == src_sha
-                        and stored_ready.exists()
-                        and (not reuse.get("reuse_key")
-                             or reuse.get("reuse_key") == reuse_key)):
-                    docs = _load_docs_cache(src_sha, parse_cfg)
-                    if docs is None:
-                        docs, _et, _msg, _meta = _parse_file(src_path)
+                src_sha = _sha256(src_path)
+
+                # 复用已就绪条目（内容哈希 + 解析配置 + embedding 版本一致）
+                reuse = reuse_map.get(_member_key(cand.get("origin_archive"),
+                                                  cand.get("source_path")))
+                if reuse and reuse.get("status") == "ready" and src_sha:
+                    reuse_key = _reuse_key(src_sha, parse_cfg, embedding_sig)
+                    stored_ready = Path(reuse.get("stored_path") or "")
+                    if (reuse.get("content_sha") == src_sha
+                            and stored_ready.exists()
+                            and (not reuse.get("reuse_key")
+                                 or reuse.get("reuse_key") == reuse_key)):
+                        docs = _load_docs_cache(src_sha, parse_cfg)
+                        if docs is None:
+                            docs, _et, _msg, _meta = _parse_file(src_path)
+                            if docs:
+                                _save_docs_cache(src_sha, parse_cfg, docs)
                         if docs:
-                            _save_docs_cache(src_sha, parse_cfg, docs)
-                    if docs:
-                        final_name = stored_ready.name
-                        _rewrite_metadata(docs, final_name, stored_ready)
-                        parsed_docs.extend(docs)
-                        ready_names.add(final_name)
-                        _register_material(subject_id, final_name,
-                                           stored_ready.stat().st_size, user_id)
-                        _update_item(
-                            item_id, status="ready", stage="indexing", progress=1.0,
-                            message="复用已就绪内容（内容哈希一致，未重复解析）",
-                            doc_id=reuse.get("doc_id"), stored_path=str(stored_ready),
-                            content_sha=src_sha, reuse_key=reuse_key,
-                            parse_config=parse_cfg, timings_json=json.dumps(
-                                {"parse_ms": 0, "reused": True}, ensure_ascii=False))
-                        continue
+                            final_name = stored_ready.name
+                            _rewrite_metadata(docs, final_name, stored_ready)
+                            parsed_docs.extend(docs)
+                            ready_names.add(final_name)
+                            _register_material(subject_id, final_name,
+                                               stored_ready.stat().st_size, user_id)
+                            _update_item(
+                                item_id, status="ready", stage="indexing", progress=1.0,
+                                message="复用已就绪内容（内容哈希一致，未重复解析）",
+                                doc_id=reuse.get("doc_id"), stored_path=str(stored_ready),
+                                content_sha=src_sha, reuse_key=reuse_key,
+                                parse_config=parse_cfg, timings_json=json.dumps(
+                                    {"parse_ms": 0, "reused": True},
+                                    ensure_ascii=False))
+                            continue
 
-            docs, error_type, message, meta = _parse_with_timeout(
-                src_path, _item_max_seconds())
-            vision_stats = meta.get("vision_stats") or {}
-            stage_timings["vision_ms"] += int(vision_stats.get("vision_ms") or 0)
-            timings = {
-                "parse_ms": int(meta.get("parse_ms") or 0),
-                "vision_ms": int(vision_stats.get("vision_ms") or 0),
-                "vision_calls": int(vision_stats.get("vision_calls") or 0),
-                "vision_cached": int(vision_stats.get("vision_cached") or 0),
-                "vision_failed": int(vision_stats.get("vision_failed") or 0),
-                "vision_timeout": int(vision_stats.get("vision_timeout") or 0),
-                "images_total": int(vision_stats.get("images_total") or 0),
-                "images_deduped": int(vision_stats.get("images_deduped") or 0),
-                "item_timed_out": bool(meta.get("item_timed_out")),
-            }
-            timings_json = json.dumps(timings, ensure_ascii=False)
+                docs, error_type, message, meta = _parse_item_with_retries(src_path)
+                vision_stats = meta.get("vision_stats") or {}
+                stage_timings["vision_ms"] += int(vision_stats.get("vision_ms") or 0)
+                timings = {
+                    "parse_ms": int(meta.get("parse_ms") or 0),
+                    "vision_ms": int(vision_stats.get("vision_ms") or 0),
+                    "vision_calls": int(vision_stats.get("vision_calls") or 0),
+                    "vision_cached": int(vision_stats.get("vision_cached") or 0),
+                    "vision_failed": int(vision_stats.get("vision_failed") or 0),
+                    "vision_timeout": int(vision_stats.get("vision_timeout") or 0),
+                    "images_total": int(vision_stats.get("images_total") or 0),
+                    "images_deduped": int(vision_stats.get("images_deduped") or 0),
+                    "item_timed_out": bool(meta.get("item_timed_out")),
+                    "retries": int(meta.get("retries") or 0),
+                    # 内存峰值（任务 6）：解析阶段 Python 分配峰值 + 进程 RSS
+                    "memory_peak_mb": float(meta.get("memory_peak_mb") or 0.0),
+                    "rss_mb": float(meta.get("rss_mb") or 0.0),
+                }
+                timings_json = json.dumps(timings, ensure_ascii=False)
 
-            if not docs:
-                retryable = 1 if error_type in (
-                    "converter_unavailable", "io_error", "item_timeout", "parse_error") else 0
-                _update_item(item_id, status="failed", stage="parsing", progress=None,
-                             message=message or "解析失败",
-                             error_type=error_type or "parse_error",
-                             retryable=retryable, timings_json=timings_json)
-                if error_type == "item_timeout":
-                    warnings.append(f"{cand['display_name']}：{message}")
-                continue
+                if not docs:
+                    retryable = 1 if error_type in (
+                        "converter_unavailable", "io_error", "item_timeout",
+                        "parse_error") else 0
+                    _update_item(item_id, status="failed", stage="parsing", progress=None,
+                                 message=message or "解析失败",
+                                 error_type=error_type or "parse_error",
+                                 retryable=retryable, timings_json=timings_json)
+                    if error_type == "item_timeout":
+                        warnings.append(f"{cand['display_name']}：{message}")
+                    continue
 
-            content = src_path.read_bytes()
-            decision = _decide_target(subject_dir, cand["display_name"], content)
-            final_path = subject_dir / decision["name"]
+                content = src_path.read_bytes()
+                decision = _decide_target(subject_dir, cand["display_name"], content)
+                final_path = subject_dir / decision["name"]
 
-            if decision["skip"]:
-                # 同名同内容：不重复落盘、不重复索引，但内容确实可学习 → 记为 ready
+                if decision["skip"]:
+                    # 同名同内容：不重复落盘、不重复索引，但内容确实可学习 → ready
+                    _rewrite_metadata(docs, decision["name"], final_path)
+                    parsed_docs.extend(docs)
+                    ready_names.add(decision["name"])
+                    if src_sha:
+                        _save_docs_cache(src_sha, parse_cfg, docs)
+                    doc_id, _mid = _register_material(subject_id, decision["name"],
+                                                      len(content), user_id)
+                    _update_item(item_id, status="ready", stage="indexing", progress=1.0,
+                                 message=decision["reason"], doc_id=doc_id,
+                                 stored_path=str(final_path), content_sha=src_sha,
+                                 reuse_key=_reuse_key(src_sha, parse_cfg, embedding_sig),
+                                 parse_config=parse_cfg, timings_json=timings_json)
+                    continue
+
+                existed_before = final_path.exists()
+                final_path.write_bytes(content)
+                if not existed_before:
+                    copied_new_name = decision["name"]
+                    copied_all.append(copied_new_name)
+                # 显式释放本项大对象，避免循环内累积（任务 6）
+                del content
+
                 _rewrite_metadata(docs, decision["name"], final_path)
                 parsed_docs.extend(docs)
                 ready_names.add(decision["name"])
                 if src_sha:
                     _save_docs_cache(src_sha, parse_cfg, docs)
-                doc_id, _mid = _register_material(subject_id, decision["name"],
-                                                  len(content), user_id)
-                _update_item(item_id, status="ready", stage="indexing", progress=1.0,
-                             message=decision["reason"], doc_id=doc_id,
-                             stored_path=str(final_path), content_sha=src_sha,
+
+                doc_id, material_id = _register_material(
+                    subject_id, decision["name"], final_path.stat().st_size, user_id)
+                msg = "可学习" if not decision["renamed"] else decision["reason"]
+                _update_item(item_id, status="indexing", stage="indexing", progress=None,
+                             message=msg, doc_id=doc_id, stored_path=str(final_path),
+                             content_sha=src_sha,
                              reuse_key=_reuse_key(src_sha, parse_cfg, embedding_sig),
                              parse_config=parse_cfg, timings_json=timings_json)
-                continue
 
-            existed_before = final_path.exists()
-            final_path.write_bytes(content)
-            if not existed_before:
-                copied_new.append(decision["name"])
+            _refresh_executor(job_id, executor_id)
 
-            _rewrite_metadata(docs, decision["name"], final_path)
-            parsed_docs.extend(docs)
-            ready_names.add(decision["name"])
-            if src_sha:
-                _save_docs_cache(src_sha, parse_cfg, docs)
+            # 本批统一建库（本批 + 既有资料，只建一次）
+            new_indexing = _items_with_status(job_id, "indexing")
+            if parsed_docs or new_indexing:
+                if reuse_job_id:
+                    _include_reused_ready_docs(reuse_job_id, parse_cfg,
+                                               ready_names, parsed_docs)
+                t_build = time.monotonic()
+                _mem_reset_peak()
+                build_base = _mem_current_bytes()
+                existing_docs = _collect_existing_documents(subject_id, ready_names)
+                all_docs = parsed_docs + existing_docs
+                del existing_docs
+                if all_docs:
+                    try:
+                        from services import knowledge_service
+                        # 同一学科串行建库：避免并发“备份→构建→回滚”互相覆盖索引目录
+                        with _subject_build_lock(subject_id):
+                            build_result = knowledge_service.rebuild_subject_knowledge_from_documents(
+                                subject_id, all_docs)
+                    except Exception as e:
+                        logger.error(f"导入建库失败: {job_id}: {e}", exc_info=True)
+                        for iid in new_indexing:
+                            _update_item(iid, status="failed", stage="indexing",
+                                         progress=None, message=f"建库失败：{e}",
+                                         error_type="build_failed", retryable=1)
+                        stage_timings["build_ms"] += int((time.monotonic() - t_build) * 1000)
+                        stage_timings["build_memory_peak_mb"] = max(
+                            float(stage_timings.get("build_memory_peak_mb") or 0.0),
+                            _mem_peak_mb(build_base))
+                        # 不可恢复错误：立即停止自动分批（不无限重试建库）
+                        warnings.append("建库失败（不可恢复错误），已停止自动分批")
+                        break
+                    stage_timings["build_ms"] += int((time.monotonic() - t_build) * 1000)
+                    stage_timings["build_memory_peak_mb"] = max(
+                        float(stage_timings.get("build_memory_peak_mb") or 0.0),
+                        _mem_peak_mb(build_base))
+                    chunk_count = None
+                    try:
+                        chunk_count = (build_result or {}).get("chunk_count")
+                    except Exception:
+                        chunk_count = None
+                    if isinstance(chunk_count, int):
+                        stage_timings["build_chunks"] = chunk_count
+                    for iid in new_indexing:
+                        _update_item(iid, status="ready", stage="indexing", progress=1.0,
+                                     message="可学习", error_type=None, retryable=0)
+                    # 只有本批恰好一份资料时，才能把总 chunk 数如实归到该条目
+                    if len(new_indexing) == 1 and isinstance(chunk_count, int):
+                        _merge_item_timings(new_indexing[0], {"chunks": chunk_count})
+                else:
+                    stage_timings["build_ms"] += int((time.monotonic() - t_build) * 1000)
+                del all_docs, parsed_docs
+            stage_timings["parse_memory_peak_mb"] = max(
+                float(stage_timings.get("parse_memory_peak_mb") or 0.0),
+                _mem_peak_mb(batch_mem_base))
+            _save_batch_index(job_id, batch_no)
 
-            doc_id, material_id = _register_material(subject_id, decision["name"],
-                                                     len(content), user_id)
-            msg = "可学习" if not decision["renamed"] else decision["reason"]
-            _update_item(item_id, status="indexing", stage="indexing", progress=None,
-                         message=msg, doc_id=doc_id, stored_path=str(final_path),
-                         content_sha=src_sha,
-                         reuse_key=_reuse_key(src_sha, parse_cfg, embedding_sig),
-                         parse_config=parse_cfg, timings_json=timings_json)
+            if _is_cancelled(job_id):
+                _remove_copied(subject_dir, copied_all)
+                _cancel_finish(job_id, "任务已取消（已导入的资料不会删除）")
+                return
+            if _is_pause_requested(job_id):
+                stage_timings["parse_ms"] = int((time.monotonic() - t_parse) * 1000)
+                stage_timings["total_ms"] = int((time.monotonic() - t_wall) * 1000)
+                _pause_finish(job_id, warnings, archive_summaries, stage_timings)
+                return
+
+            # 无进展检测（防失控）：本批没有产生任何新 ready/failed/skipped 就停止
+            if _terminal_item_count(job_id) <= term_before:
+                warnings.append(
+                    "本批没有产生任何新 ready/failed/skipped（无进展），已停止自动分批")
+                break
+            if not _remaining_candidates(job_id, candidates):
+                break
+            sleep_s = _batch_sleep_seconds()
+            if sleep_s > 0:
+                time.sleep(sleep_s)
 
         stage_timings["parse_ms"] = int((time.monotonic() - t_parse) * 1000)
-
-        # 继续处理时：已 ready 的资料直接复用缓存文档，不重复解析
-        if reuse_job_id:
-            _include_reused_ready_docs(reuse_job_id, parse_cfg, ready_names, parsed_docs)
-
-        # ---------- 3) 统一建库（本批 + 既有资料，只建一次） ----------
-        if _is_cancelled(job_id):
-            _remove_copied(subject_dir, copied_new)
-            _cancel_finish(job_id, "任务在建库前被取消")
-            return
-
-        indexing_ready = _items_with_status(job_id, "indexing")
-        existing_docs = _collect_existing_documents(subject_id, ready_names)
-        all_docs = parsed_docs + existing_docs
-        if not all_docs:
-            stage_timings["total_ms"] = int((time.monotonic() - t_wall) * 1000)
-            _finalize_without_build(job_id, subject_id, warnings, archive_summaries,
-                                    stage_timings)
-            return
-
-        t_build = time.monotonic()
-        try:
-            from services import knowledge_service
-            # 同一学科串行建库：避免两个任务并发"备份→构建→回滚"互相覆盖索引目录
-            with _subject_build_lock(subject_id):
-                build_result = knowledge_service.rebuild_subject_knowledge_from_documents(
-                    subject_id, all_docs)
-        except Exception as e:
-            logger.error(f"导入建库失败: {job_id}: {e}", exc_info=True)
-            for item_id in indexing_ready:
-                _update_item(item_id, status="failed", stage="indexing", progress=None,
-                             message=f"建库失败：{e}", error_type="build_failed", retryable=1)
-            stage_timings["build_ms"] = int((time.monotonic() - t_build) * 1000)
-            stage_timings["total_ms"] = int((time.monotonic() - t_wall) * 1000)
-            _finish_job(job_id, _derive_status(job_id), _summary(job_id), warnings,
-                        archive_summaries, stage_timings)
-            return
-        stage_timings["build_ms"] = int((time.monotonic() - t_build) * 1000)
-
-        chunk_count = None
-        try:
-            chunk_count = (build_result or {}).get("chunk_count")
-        except Exception:
-            chunk_count = None
-        if isinstance(chunk_count, int):
-            stage_timings["build_chunks"] = chunk_count
-        for item_id in indexing_ready:
-            _update_item(item_id, status="ready", stage="indexing", progress=1.0,
-                         message="可学习", error_type=None, retryable=0)
-        # 只有本批恰好一份资料时，才能把总 chunk 数如实归到该条目
-        if len(indexing_ready) == 1 and isinstance(chunk_count, int):
-            _merge_item_timings(indexing_ready[0], {"chunks": chunk_count})
-
+        stage_timings["rss_peak_mb"] = _rss_mb()
         stage_timings["total_ms"] = int((time.monotonic() - t_wall) * 1000)
         _finish_job(job_id, _derive_status(job_id), _summary(job_id), warnings,
                     archive_summaries, stage_timings)
 
     finally:
-        # 清理本次解包/临时内容（重试/继续所需的上传原文另外保留，见 retry_job/continue_job）
+        # 清理本次解包/临时内容（重试/继续所需的上传原文另外保留）
         shutil.rmtree(tmp_job_dir / "extracted", ignore_errors=True)
-
 
 def _include_reused_ready_docs(reuse_job_id: str, parse_cfg: str,
                                ready_names: set, parsed_docs: List[Any]) -> None:
@@ -1371,6 +1896,16 @@ def _job_to_public(job: Dict[str, Any], items: List[Dict[str, Any]]) -> Dict[str
         totals["total"] = total_members
         totals.setdefault("files", len(items))
         totals.setdefault("bytes", 0)
+        # 分类计数（任务 4）：把“发现的条目”与“有效资料”分开，
+        # 绝不把发现条目数直接当成可学习资料数。字段只增不改。
+        discovery = _load(job.get("discovery_json"), {}) or {}
+        if isinstance(discovery, dict):
+            for key in ("members_discovered", "containers", "directories", "materials"):
+                if key in discovery:
+                    try:
+                        totals[key] = int(discovery.get(key) or 0)
+                    except (TypeError, ValueError):
+                        totals[key] = 0
 
     can_retry = any(it["retryable"] and it["status"] == "failed" for it in public_items)
     # 旧任务（本改动之前创建）没有 plan_json，但 partial + 原包仍在时同样应可继续；
@@ -1399,6 +1934,18 @@ def _job_to_public(job: Dict[str, Any], items: List[Dict[str, Any]]) -> Dict[str
         public_status = "partial"
         if "未处理" not in summary_text:
             summary_text = (summary_text + "；仍有成员未处理（可继续）").lstrip("；")
+    # 用户意图（任务 3）：paused=1 表示用户主动暂停；pause_requested=1 表示“到批边界停”。
+    # 二者都不会自动重启；只有 resume 才清除，且 resume 后 status 回到 running。
+    paused = bool(job.get("paused"))
+    pause_requested = bool(job.get("pause_requested"))
+    can_pause = public_status in ("queued", "running") and not paused
+    can_resume = (paused and public_status != "cancelled"
+                  and bool(job.get("raw_dir")))
+    can_cancel = public_status != "cancelled"
+    try:
+        batch_index = int(job.get("batch_index") or 0)
+    except (TypeError, ValueError):
+        batch_index = 0
     return {
         "job_id": job.get("job_id"),
         "subject_id": job.get("subject_id"),
@@ -1411,10 +1958,17 @@ def _job_to_public(job: Dict[str, Any], items: List[Dict[str, Any]]) -> Dict[str
         "archive_summaries": archive_summaries,
         "kb": kb,
         "summary_text": summary_text,
-        # 阶段计时：extract_ms / parse_ms / build_ms / vision_ms / total_ms
+        # 阶段计时：extract_ms / parse_ms / build_ms / vision_ms / total_ms（+ 分类计数与内存峰值）
         "stage_timings": _load(job.get("stage_timings_json"), {}) or {},
         "can_retry": can_retry,
         "can_continue": can_continue,
+        # 任务 3：暂停/继续/取消入口的状态（只增不改）
+        "paused": paused,
+        "pause_requested": pause_requested,
+        "can_pause": can_pause,
+        "can_resume": can_resume,
+        "can_cancel": can_cancel,
+        "batch_index": batch_index,
         "warnings": warnings,
     }
 
@@ -1553,20 +2107,90 @@ def continue_job(job_id: str, user_id: Optional[str] = None) -> Optional[str]:
 
 
 def cancel_job(job_id: str) -> bool:
-    """请求取消；queued 任务直接置为 cancelled。返回是否找到任务。"""
+    """
+    取消任务（任务 3）：设置 cancel_requested；已暂停/已终态的任务直接置 cancelled。
+
+    - 运行中的任务在**下一个检查点/批边界**停止，且**绝不自动重启**；
+    - 已导入的资料不删除（调用方决定是否清理临时目录）。
+    """
     _init_db()
     with _DB_LOCK, _connect() as conn:
         job = _job_row(conn, job_id)
         if job is None:
             return False
-        conn.execute("UPDATE import_jobs SET cancel_requested=1 WHERE job_id=?", (job_id,))
-        if job["status"] in ("queued",):
+        conn.execute(
+            "UPDATE import_jobs SET cancel_requested=1, pause_requested=0, paused=0"
+            " WHERE job_id=?", (job_id,))
+        if job["status"] in ("queued", "partial", "failed", "succeeded"):
             conn.execute(
                 "UPDATE import_jobs SET status='cancelled', finished_at=?, updated_at=?,"
                 " summary_text=? WHERE job_id=?",
-                (_now(), _now(), "任务已取消", job_id))
+                (_now(), _now(), "任务已取消（已导入的资料不会删除）", job_id))
         conn.commit()
     return True
+
+
+def pause_job(job_id: str) -> bool:
+    """
+    请求暂停（任务 3）：在**下一个批边界**停止，置 partial + paused=1。
+
+    - 幂等；已取消的任务不能暂停；succeeded 的任务无需暂停；
+    - 暂停后**绝不自动重启**，且新来的批次不会自动恢复它；
+    - resume 是唯一恢复入口。
+    """
+    _init_db()
+    with _DB_LOCK, _connect() as conn:
+        job = _job_row(conn, job_id)
+        if job is None:
+            return False
+        if job["status"] == "cancelled":
+            raise ValueError("任务已取消，不能暂停")
+        if job["status"] == "succeeded":
+            raise ValueError("任务已完成，无需暂停")
+        if bool(job["paused"]):
+            return True
+        conn.execute(
+            "UPDATE import_jobs SET pause_requested=1, cancel_requested=0, updated_at=?"
+            " WHERE job_id=?", (_now(), job_id))
+        if job["status"] != "running":
+            # 没有工作线程在跑（queued/partial/failed）：立即置 paused，避免被自动接续；
+            # 运行中的任务由工作线程在批边界调用 _pause_finish 落 paused。
+            conn.execute(
+                "UPDATE import_jobs SET status='partial', paused=1, pause_requested=0,"
+                " finished_at=?, updated_at=?, summary_text=? WHERE job_id=?",
+                (_now(), _now(), "已暂停（可继续）", job_id))
+        conn.commit()
+    return True
+
+
+def resume_job(job_id: str) -> Optional[str]:
+    """
+    从暂停处继续自动分批（任务 3）。清除用户暂停意图，重新 claim 并执行**同一任务**。
+
+    - 只有 paused=1 的任务可 resume；不要求用户重传；
+    - 已 ready 的成员不重复解析（计划/条目已在库），只处理剩余成员。
+    """
+    _init_db()
+    with _DB_LOCK, _connect() as conn:
+        job = _job_row(conn, job_id)
+        if job is None:
+            return None
+        if job["status"] == "cancelled":
+            raise ValueError("任务已取消，不能继续")
+        if not bool(job["paused"]):
+            raise ValueError("任务未处于暂停状态，无需继续")
+        if not job["raw_dir"]:
+            raise ValueError("原包已清理，无法继续")
+        conn.execute(
+            "UPDATE import_jobs SET paused=0, pause_requested=0, cancel_requested=0,"
+            " status='queued', finished_at=NULL, executor_id=NULL,"
+            " executor_heartbeat=NULL, updated_at=? WHERE job_id=?", (_now(), job_id))
+        conn.commit()
+    # 恢复时把“重启中断”的条目清掉，让它们重新被自动分批处理
+    _clear_interrupted_items(job_id)
+    threading.Thread(target=_run_job_thread, args=(job_id,),
+                     name=f"import-{job_id}", daemon=True).start()
+    return job_id
 
 
 def cleanup_job_files(job_id: str) -> None:
@@ -1587,18 +2211,24 @@ __all__ = [
     "ITEM_STATUSES",
     "JOB_STATUSES",
     "TERMINAL_JOB_STATUSES",
+    "auto_resume_interrupted_jobs",
     "cancel_job",
     "cleanup_job_files",
     "continue_job",
     "create_import_job",
     "get_job",
     "list_jobs",
+    "pause_job",
     "reconcile_interrupted_jobs",
+    "resume_job",
     "retry_job",
 ]
 
 
 # ==================== 服务重启后的中断恢复 ====================
+
+
+_LAST_INTERRUPTED_JOB_IDS: List[str] = []
 
 
 def reconcile_interrupted_jobs() -> int:
@@ -1609,20 +2239,24 @@ def reconcile_interrupted_jobs() -> int:
     既没有进度也没有「继续处理」入口，而且这条任务会挡住后续 continue 链。
     任务靠**线程**执行，进程一重启就不可能还有"仍在运行"的任务，
     因此启动时把所有 queued/running 一律收敛为 partial + 可继续。
+
+    2026-10-08：同时清空 executor_id/executor_heartbeat（旧进程的执行者声明已失效，
+    必须能被本进程接管）；并记录本次收敛的任务 id，供 auto_resume_interrupted_jobs
+    在非用户暂停/取消时自动继续自动分批。
     """
     _init_db()
     fixed = 0
+    converged: List[str] = []
     with _DB_LOCK, _connect() as conn:
         # 1) 先收敛"进行中"的条目。任务靠线程执行，进程刚启动时不可能还有线程在跑，
         #    因此任何 pending/parsing/indexing 的条目都是上次进程留下的残骸。
-        #    不收敛的话页面会永远显示"处理中 N"，与"任务并未在跑"自相矛盾
-        #    （2026-10-07 实测：被 reconcile 过一次的 partial 任务仍挂着 25 个 indexing）。
+        #    不收敛的话页面会永远显示"处理中 N"，与"任务并未在跑"自相矛盾。
         stale = conn.execute(
             "UPDATE import_items SET status='failed', stage='parsing', progress=NULL,"
             " message=?, error_type='interrupted', retryable=1"
             " WHERE status IN ('pending','parsing','indexing')",
             ("服务重启导致任务中断，可继续处理",)).rowcount
-        # 2) 再把停在 queued/running 的任务收敛为 partial（可继续）
+        # 2) 再把停在 queued/running 的任务收敛为 partial（可继续），并释放旧执行者声明
         rows = conn.execute(
             "SELECT job_id FROM import_jobs WHERE status IN ('queued','running')"
         ).fetchall()
@@ -1636,15 +2270,54 @@ def reconcile_interrupted_jobs() -> int:
                    f"{unprocessed} 份未处理（可继续处理）")
             conn.execute(
                 "UPDATE import_jobs SET status='partial', updated_at=?, finished_at=?,"
-                " summary_text=?, warnings_json=? WHERE job_id=?",
+                " summary_text=?, warnings_json=?, executor_id=NULL,"
+                " executor_heartbeat=NULL WHERE job_id=?",
                 (_now(), _now(), msg,
                  json.dumps([f"服务重启导致任务中断，剩余 {unprocessed} 份未处理（可继续处理）"],
                             ensure_ascii=False),
                  job_id))
+            converged.append(job_id)
             fixed += 1
         conn.commit()
+    _LAST_INTERRUPTED_JOB_IDS.clear()
+    _LAST_INTERRUPTED_JOB_IDS.extend(converged)
     if fixed or stale:
         logger.warning(
             f"[import] 启动恢复：收敛 {fixed} 个被中断任务为 partial（可继续），"
             f"清理 {stale} 个残留的进行中条目")
     return fixed
+
+
+def auto_resume_interrupted_jobs() -> int:
+    """
+    服务重启后**自动继续自动分批**（任务 1/2/3）：只恢复本次启动收敛的任务，
+    且跳过用户主动暂停/取消的（paused=1 / cancel_requested=1 / status=cancelled）。
+    用户暂停/取消的任务绝不在这里自动重启。返回自动接续的任务数。
+    """
+    flag = (os.getenv("IMPORT_AUTO_RESUME", "1") or "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return 0
+    started = 0
+    for job_id in list(_LAST_INTERRUPTED_JOB_IDS):
+        job = get_job(job_id)
+        if not job:
+            continue
+        if job.get("paused") or job.get("status") == "cancelled":
+            continue
+        if not (job.get("can_continue") or job.get("can_resume")):
+            continue
+        # 让被中断的成员重新成为未处理，从而真正继续自动分批
+        _clear_interrupted_items(job_id)
+        # 同步置为 queued，避免调用方在“线程尚未接管”的窗口里把 partial 当成最终态
+        with _DB_LOCK, _connect() as conn:
+            conn.execute(
+                "UPDATE import_jobs SET status='queued', finished_at=NULL, updated_at=?"
+                " WHERE job_id=?", (_now(), job_id))
+            conn.commit()
+        threading.Thread(target=_run_job_thread, args=(job_id,),
+                         name=f"import-{job_id}", daemon=True).start()
+        started += 1
+    if started:
+        logger.warning(
+            f"[import] 启动恢复：自动继续 {started} 个被中断任务（无需人工点击）")
+    return started

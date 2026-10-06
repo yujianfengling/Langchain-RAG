@@ -160,6 +160,14 @@ export interface ImportTotals {
   unprocessed?: number;
   skipped: number;
   bytes?: number;
+  /** 本次任务发现的条目总数（归档成员 + 跳过项 + 嵌套包本身；不含目录）。不得当成可学习资料数。 */
+  members_discovered?: number;
+  /** 处理的压缩包容器数（外层 + 嵌套），与"资料"分开计数。 */
+  containers?: number;
+  /** 压缩包内目录成员数（只计数，绝不作为资料读取/报错）。 */
+  directories?: number;
+  /** 有效学习资料数（支持格式的候选成员）。缺失时前端回退 total，绝不用 members_discovered 冒充。 */
+  materials?: number;
 }
 
 export interface ImportJob {
@@ -177,6 +185,15 @@ export interface ImportJob {
   can_retry?: boolean;
   /** 后端权威判定：该任务是否可以「继续处理剩余资料」（旧任务也能为 true） */
   can_continue?: boolean;
+  /** 用户是否主动暂停：true 时任务停在批边界，绝不自动重启（resume 是唯一恢复入口） */
+  paused?: boolean;
+  /** 已请求暂停、等待当前批边界生效 */
+  pause_requested?: boolean;
+  can_pause?: boolean;
+  can_resume?: boolean;
+  can_cancel?: boolean;
+  /** 已完成批次数（自动分批进度） */
+  batch_index?: number;
   warnings?: string[];
 }
 
@@ -200,6 +217,14 @@ export interface ResolvedImportTotals {
   skipped: number;
   files: number;
   bytes?: number;
+  /** 有效学习资料数（后端 materials；缺失回退 total，绝不用 members_discovered 冒充） */
+  materials: number;
+  /** 发现条目数（含跳过项/嵌套包；仅诊断展示，不等于资料数） */
+  membersDiscovered: number;
+  /** 压缩包容器数（外层 + 嵌套） */
+  containers: number;
+  /** 目录成员数 */
+  directories: number;
   /** ready + processing + failed + unprocessed + skipped */
   sum: number;
   /** 后端不变式 total === sum 是否成立（不成立时界面明确提示） */
@@ -230,9 +255,16 @@ export const resolveTotals = (job: ImportJob | null | undefined): ResolvedImport
 
   const sum = ready + processing + failed + unprocessed + skipped;
   const total = has(t?.total) ? n(t.total) : sum;
+  // materials 是"有效学习资料"；缺失时回退 total，绝不用 members_discovered 冒充
+  const materials = has(t?.materials) ? n(t.materials) : total;
   return {
     total, ready, processing, failed, unprocessed, skipped, files,
-    bytes: t?.bytes, sum, consistent: total === sum,
+    bytes: t?.bytes,
+    materials,
+    membersDiscovered: has(t?.members_discovered) ? n(t.members_discovered) : 0,
+    containers: has(t?.containers) ? n(t.containers) : 0,
+    directories: has(t?.directories) ? n(t.directories) : 0,
+    sum, consistent: total === sum,
   };
 };
 
@@ -249,6 +281,34 @@ export const effectiveJobStatus = (
   return job.status;
 };
 
+/** 任务是否被用户暂停（paused=true 时停在批边界，绝不自动重启） */
+export const isJobPaused = (job: ImportJob | null | undefined): boolean => job?.paused === true;
+
+/** 是否处于自动分批运行中（queued/running 且未被暂停）；pause_requested 仍算运行中，等批边界生效 */
+export const isJobRunning = (job: ImportJob | null | undefined): boolean => {
+  if (!job || isJobPaused(job)) return false;
+  const s = effectiveJobStatus(job);
+  return s === 'queued' || s === 'running';
+};
+
+/** 运行中才允许暂停（后端未下发 can_pause 时按运行态兜底） */
+export const jobCanPause = (job: ImportJob | null | undefined): boolean => {
+  if (!job || isJobPaused(job)) return false;
+  return isJobRunning(job) && job.can_pause !== false;
+};
+
+/** 仅 paused 可恢复（与后端 resume 约束一致） */
+export const jobCanResume = (job: ImportJob | null | undefined): boolean =>
+  Boolean(job && isJobPaused(job) && job.can_resume !== false);
+
+/** 是否允许取消：未到 succeeded/cancelled/failed 终态时；未下发 can_cancel 时按状态兜底 */
+export const jobCanCancel = (job: ImportJob | null | undefined): boolean => {
+  if (!job) return false;
+  const s = effectiveJobStatus(job);
+  if (s === 'succeeded' || s === 'cancelled' || s === 'failed') return false;
+  return job.can_cancel !== false;
+};
+
 /** 是否存在可重试的失败项 */
 export const hasRetryableFailed = (job: ImportJob | null | undefined): boolean =>
   Boolean(job?.items?.some((it) => it.status === 'failed' && it.retryable));
@@ -263,6 +323,8 @@ export const hasRetryableFailed = (job: ImportJob | null | undefined): boolean =
  */
 export const jobNeedsContinue = (job: ImportJob | null | undefined): boolean => {
   if (!job) return false;
+  // paused 的正确入口是「继续（resume）」，不是「继续处理剩余资料」
+  if (isJobPaused(job)) return false;
   if (job.can_continue === true) return true;
   const t = resolveTotals(job);
   return effectiveJobStatus(job) === 'partial' && (t.unprocessed > 0 || hasRetryableFailed(job));
@@ -331,8 +393,32 @@ export const continueImport = async (jobId: string): Promise<{ job_id: string }>
   return unwrap<{ job_id: string }>(res);
 };
 
+/**
+ * 暂停任务（2026-10-08 新增）：在下一个**批边界**停止，状态置 partial 且 paused=true，
+ * **不会自动重启**；resume 是唯一恢复入口。
+ */
+export const pauseImport = async (
+  jobId: string,
+): Promise<{ job_id: string; paused: boolean }> => {
+  const res = await apiClient.post(`/knowledge/imports/${encodeURIComponent(jobId)}/pause`);
+  return unwrap<{ job_id: string; paused: boolean }>(res);
+};
+
+/**
+ * 继续已暂停的任务（2026-10-08 新增）：仅 paused=true 可 resume，
+ * 同一 job 从剩余成员继续自动分批，已 ready 的成员按内容哈希复用。
+ */
+export const resumeImport = async (jobId: string): Promise<{ job_id: string }> => {
+  const res = await apiClient.post(`/knowledge/imports/${encodeURIComponent(jobId)}/resume`);
+  return unwrap<{ job_id: string }>(res);
+};
+
+/**
+ * 取消任务（2026-10-08：改为契约新增的 POST /cancel，与 DELETE 等价）。
+ * 取消后不自动重启；已导入的资料不会删除。
+ */
 export const cancelImport = async (jobId: string): Promise<boolean> => {
-  const res = await apiClient.delete(`/knowledge/imports/${encodeURIComponent(jobId)}`);
+  const res = await apiClient.post(`/knowledge/imports/${encodeURIComponent(jobId)}/cancel`);
   const body = res as { success?: boolean } | undefined;
   return body?.success !== false;
 };

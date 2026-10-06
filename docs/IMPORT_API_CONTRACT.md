@@ -69,8 +69,13 @@
     "job_id": "imp_xxx", "subject_id": "s1",
     "status": "queued|running|succeeded|partial|failed|cancelled",
     "created_at": "...", "updated_at": "...", "finished_at": null,
+    "paused": false, "pause_requested": false,
+    "can_pause": false, "can_resume": false, "can_cancel": true,
+    "batch_index": 2,
     "totals": { "total": 15, "files": 12, "ready": 10, "processing": 0,
-                "failed": 2, "unprocessed": 0, "skipped": 3, "bytes": 123456 },
+                "failed": 2, "unprocessed": 0, "skipped": 3, "bytes": 123456,
+                "members_discovered": 18, "containers": 1,
+                "directories": 2, "materials": 15 },
     "items": [
       { "item_id": "itm_1", "display_name": "第1章/课件.pptx",
         "source_path": "第1章/课件.pptx", "origin_archive": "资料包.zip",
@@ -106,6 +111,12 @@
 | `unprocessed` | **发现但没有为它建条目的成员数**（整批预算耗尽/继续处理前的剩余） |
 | `skipped` | 明确跳过的成员数（无关文件、不可用格式等） |
 | `files` | 旧字段，语义保持为 `ready + failed + skipped` |
+| `members_discovered` | 本次任务**发现的条目总数**（归档成员 + 跳过项 + 嵌套压缩包本身；不含目录） |
+| `containers` | 处理的压缩包容器数（外层 + 嵌套），与“资料”分开 |
+| `directories` | 压缩包内目录成员数（只计数，绝不作为资料读取/报错） |
+| `materials` | **有效学习资料**数（支持格式的候选成员）。**不得**用 `members_discovered` 冒充 `materials`/`ready` |
+| `paused` | 顶部字段：用户是否主动暂停（`true` 时任务停在批边界，**绝不自动重启**） |
+| `batch_index` | 已完成批次数（自动分批进度） |
 
 **不变量**：`total == ready + processing + failed + unprocessed + skipped`。
 
@@ -141,6 +152,27 @@
 
 - `can_continue`：当任务终态且 `unprocessed > 0`（或存在可重试失败）且保留了原包时为
   `true`。页面据此展示"可继续"。
+
+- **自动分批（2026-10-08 新增行为）**：`POST /knowledge/{subject_id}/import` 创建的任务
+  现在在**同一个 job 内自动分批跑完**，不再要求用户反复点"继续"。每批边界由
+  `IMPORT_BATCH_SECONDS`（默认 240s，env）控制，到边界即保存进度、让出资源、自动进入
+  下一批；`IMPORT_MAX_SECONDS`（默认 7200s）只作为**整个任务**的总上限，
+  `IMPORT_BATCH_MAX`（默认 200）限最大批次数，另有无进展检测与不可恢复错误立即停止。
+  单文件瞬时网络错误在 `IMPORT_ITEM_MAX_RETRIES`（默认 2）内退避重试（1s/2s/4s，上限 4s）；
+  凭据失效(401/403)、明确不支持、加密包、路径穿越**不重试**。
+
+- **单一执行者（2026-10-08）**：同一任务同一时刻只有一个执行者（`executor_id` +
+  `executor_heartbeat`）。重复触发/刷新/服务重启都不会起第二个执行者；心跳超时视为过期
+  可被接管。服务重启时 `reconcile` 收敛为 partial 并清空旧执行者，随后自动接续自动分批。
+
+- `POST /knowledge/imports/{job_id}/pause` → `{ "success": true, "data": { "job_id",
+  "paused": true } }`（2026-10-08 新增）：在**下一个批边界**停止，状态置 `partial` 且
+  `paused=true`，**不得自动重启**；`resume` 是唯一恢复入口。
+- `POST /knowledge/imports/{job_id}/resume` → `{ "success": true, "data": { "job_id" } }`
+  （2026-10-08 新增）：从剩余成员继续自动分批（同一 job，不要求重传；已 ready 的成员
+  按内容哈希 + 解析配置 + embedding 版本复用）。仅 `paused=true` 的任务可 resume。
+- `POST /knowledge/imports/{job_id}/cancel`（2026-10-08 新增的 POST 别名，与既有
+  `DELETE` 等价）：取消任务并**不自动重启**；已导入的资料不删除。
 
 - `POST /api/knowledge/imports/{job_id}/continue` → `{ "success": true, "data": { "job_id": "imp_new" } }`
   （2026-10-07 新增）从**同一个已保留的原包/原始文件**继续，只处理"未处理/失败且可重试"

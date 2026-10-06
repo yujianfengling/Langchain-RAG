@@ -277,10 +277,21 @@ def _start_rag_warmup() -> None:
     # 若不处理会永远停在 'running'，用户既看不到进度也没有「继续处理」入口
     # （2026-10-07 实测：内存压力下进程被杀后残留 status=running 的任务）。
     try:
-        from services.import_service import reconcile_interrupted_jobs
+        from services.import_service import (
+            auto_resume_interrupted_jobs, reconcile_interrupted_jobs)
         reconcile_interrupted_jobs()
+        # 重启后**自动继续自动分批**：只恢复本次收敛、且非用户暂停/取消的任务，
+        # 用户不需要再点一次“继续”（任务 1/2/3）。
+        auto_resume_interrupted_jobs()
     except Exception as e:      # 恢复失败不能阻塞启动
         logger.warning(f"[import] 中断任务收敛失败（不阻塞启动）: {e}")
+    # 建库被中断会留下"线上索引为空 + .bak 尚在"的残局（回滚没机会执行），
+    # 必须在启动时恢复，否则该学科有资料却永远检索不到（2026-10-07 实测）。
+    try:
+        from services.knowledge_service import restore_orphaned_index_backups
+        restore_orphaned_index_backups()
+    except Exception as e:
+        logger.warning(f"[index-recovery] 启动恢复失败（不阻塞启动）: {e}")
     if delay <= 0:
         _RAG_WARM["state"] = "disabled"
         logger.info("[warmup] RAG_WARMUP_DELAY_SECONDS=0，跳过 rag 预热")

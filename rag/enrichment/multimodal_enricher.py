@@ -39,12 +39,23 @@ def _min_content_image_bytes() -> int:
 
 
 def _vision_max_concurrency() -> int:
-    """受控并发的视觉调用数（默认 3）。过大反而会被提供方限流。"""
+    """受控并发的视觉调用数（默认 3）。过大反而会被提供方限流。
+
+    2026-10-08（任务 6）：额外受 IMPORT_MAX_INFLIGHT 约束（若设置），
+    让导入任务可以按“实测内存/提供方限流”统一压这个上限，而不必同时改两处配置。
+    """
     try:
         value = int(os.getenv("VISION_MAX_CONCURRENCY", "3"))
     except (TypeError, ValueError):
-        return 3
-    return max(1, value)
+        value = 3
+    value = max(1, value)
+    try:
+        inflight = int(os.getenv("IMPORT_MAX_INFLIGHT", "0"))
+    except (TypeError, ValueError):
+        inflight = 0
+    if inflight > 0:
+        value = min(value, max(1, inflight))
+    return value
 
 
 def _vision_image_timeout() -> float:
@@ -54,6 +65,19 @@ def _vision_image_timeout() -> float:
     except (TypeError, ValueError):
         return 30.0
     return value if value > 0 else 30.0
+
+
+def _vision_abort_requested() -> bool:
+    """当前解析线程是否已被放弃（导入任务单文件超时后置位）。
+
+    惰性导入 import_service 以避免模块级循环依赖；该模块在导入任务运行时必定已加载。
+    独立使用增强器（不经过导入任务）时没有活动 abort，返回 False。
+    """
+    try:
+        from services import import_service
+        return import_service._vision_abort_requested()
+    except Exception:
+        return False
 
 
 def _zero_vision_stats() -> Dict[str, int]:
@@ -303,6 +327,13 @@ class MultimodalEnricher:
 
         def _run(rep_idx: int):
             doc = image_docs[rep_idx]
+            # 任务 6：单文件墙钟超时后，被放弃的解析线程不再派发新的视觉工作。
+            # （Python 无法强杀线程；这里做协作式中止：下一次派发前检查 abort。）
+            if _vision_abort_requested():
+                doc.metadata["vision_status"] = "skipped"
+                doc.metadata["vision_skip_reason"] = "aborted_after_timeout"
+                doc.page_content = ""
+                return rep_idx, doc, 0.0
             start = time.monotonic()
             try:
                 out = self._enrich_single_document(doc)

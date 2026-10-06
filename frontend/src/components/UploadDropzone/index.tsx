@@ -1,14 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Alert, Button, Progress, Tag, Typography, message } from 'antd';
+import { Alert, Button, Popconfirm, Progress, Tag, Typography, message } from 'antd';
 import {
-  DownOutlined, FileTextOutlined, InboxOutlined, ReloadOutlined, RightOutlined,
+  DownOutlined, FileTextOutlined, InboxOutlined, PauseCircleOutlined, PlayCircleOutlined,
+  ReloadOutlined, RightOutlined,
 } from '@ant-design/icons';
 import {
   ImportCapabilities, ImportItem, ImportItemStatus, ImportItemTimings, ImportJob, ImportJobStatus,
   cancelImport, capabilityUnavailableReason, continueImport, effectiveJobStatus, formatBytes,
-  getImportCapabilities, getImportJob, hasRetryableFailed, isTerminalStatus, jobNeedsContinue,
-  listImports, resolveLimits, resolveTotals, retryImport, startImport, validateSelection,
+  getImportCapabilities, getImportJob, hasRetryableFailed, isJobPaused, isJobRunning, isTerminalStatus,
+  jobCanCancel, jobCanPause, jobCanResume, jobNeedsContinue,
+  listImports, pauseImport, resolveLimits, resolveTotals, resumeImport, retryImport, startImport,
+  validateSelection,
 } from '../../api/import';
 import './upload.css';
 
@@ -28,6 +31,8 @@ export interface UploadDropzoneProps {
 
 type RejectedNote = { filename: string; reason: string };
 type UploadError = { message: string; files: File[] };
+/** 队列主操作互斥：同一时刻只允许一个动作在途 */
+type JobAction = 'pause' | 'resume' | 'continue' | 'cancel';
 
 interface UploadState {
   active: boolean;
@@ -162,7 +167,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   const [pollError, setPollError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<UploadError | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [continuing, setContinuing] = useState(false);
+  const [busy, setBusy] = useState<JobAction | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
@@ -216,8 +221,9 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
         const list = await listImports(subjectId, 5);
         // 恢复最近任务：进行中的任务，以及"部分完成/仍有未处理项"的任务——
         // 刷新或服务重启后必须仍能自动出现「继续处理剩余资料」入口。
-        const activeJob = list.find((j) => !isTerminalStatus(j.status))
-          || list.find((j) => j.status === 'partial' || jobNeedsContinue(j));
+        // paused 任务状态为 partial（终态），必须显式匹配，刷新后才能恢复出「继续」入口
+        const activeJob = list.find((j) => !isTerminalStatus(j.status) || isJobPaused(j))
+          || list.find((j) => j.status === 'partial' || jobNeedsContinue(j) || isJobPaused(j));
         if (alive && activeJob) setJob(activeJob);
       } catch {
         // 没有历史记录时后端可能报错，不打扰用户
@@ -226,9 +232,9 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     return () => { alive = false; };
   }, [subjectId]);
 
-  // 轮询：1.5s，终态停止，卸载清理
+  // 轮询：1.5s，终态或 paused 停止，卸载清理（paused 时绝不每隔几秒打服务端）
   useEffect(() => {
-    if (!job || isTerminalStatus(job.status)) return;
+    if (!job || isTerminalStatus(job.status) || isJobPaused(job)) return;
     const jobId = job.job_id;
     const timer = window.setInterval(async () => {
       try {
@@ -348,9 +354,41 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     }
   };
 
-  /** 继续处理剩余/失败项：拿到新 job_id 后继续轮询（已完成的资料会复用） */
+  /** 暂停：请求后仍在跑，要等下一个批边界才真正 paused，轮询会继续到那一刻 */
+  const handlePause = async (jobId: string) => {
+    setBusy('pause');
+    try {
+      await pauseImport(jobId);
+      setJob(await getImportJob(jobId));
+      message.info('已请求暂停，将在当前批次结束后停止');
+    } catch (e) {
+      message.error(describeError(e, '暂停失败，请稍后重试'));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** 继续已暂停的任务：同一 job 从剩余成员自动分批，已完成的资料复用 */
+  const handleResume = async (jobId: string) => {
+    setBusy('resume');
+    try {
+      const res = await resumeImport(jobId);
+      finishedRef.current = null;
+      setLocalRejected([]);
+      setBackendRejected([]);
+      setUploadError(null);
+      const nextId = res.job_id || jobId;
+      setJob(await getImportJob(nextId));
+    } catch (e) {
+      message.error(describeError(e, '继续失败，请稍后重试'));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** 兜底：终态且仍有未处理/可重试失败时，从保留的原包继续（正常自动分批下不会再出现） */
   const handleContinue = async (jobId: string) => {
-    setContinuing(true);
+    setBusy('continue');
     try {
       const res = await continueImport(jobId);
       finishedRef.current = null;
@@ -361,16 +399,19 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     } catch (e) {
       message.error(describeError(e, '继续处理失败，请稍后重试'));
     } finally {
-      setContinuing(false);
+      setBusy(null);
     }
   };
 
   const handleCancel = async (jobId: string) => {
+    setBusy('cancel');
     try {
       await cancelImport(jobId);
       setJob(await getImportJob(jobId));
     } catch (e) {
       message.error(describeError(e, '取消失败，请稍后重试'));
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -401,8 +442,17 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   // 诚实状态：有未处理/失败项时即使后端误报 succeeded 也按 partial 展示
   const effectiveStatus = effectiveJobStatus(job);
   const showItems = !terminal || detailsOpen;
-  const jobMeta = effectiveStatus ? JOB_STATUS_META[effectiveStatus] : null;
+  // paused 覆盖 tag 文案；它是"停在批边界"而非终态完成
+  const paused = isJobPaused(job);
+  const running = isJobRunning(job);
+  const jobMeta = paused
+    ? { label: '已暂停', color: 'warning' }
+    : (effectiveStatus ? JOB_STATUS_META[effectiveStatus] : null);
   const retryableFailed = hasRetryableFailed(job);
+  const canPause = jobCanPause(job);
+  const canResume = jobCanResume(job);
+  const canCancel = jobCanCancel(job);
+  // jobNeedsContinue 已排除 paused：paused 的正确入口是「继续(resume)」
   const canContinue = jobNeedsContinue(job);
   const processed = totals.ready + totals.failed + totals.skipped;
   const processedPct = totals.total > 0 ? Math.round((processed / totals.total) * 100) : 0;
@@ -447,7 +497,8 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           )}
           {isUnprocessed && (
             <div className="udz-row-msg udz-row-msg--muted">
-              未处理（等待继续）{item.message && item.message !== '未处理' ? '：' + item.message : ''}
+              未处理{paused ? '（已暂停，等待继续）' : '（后台自动分批中）'}
+              {item.message && item.message !== '未处理' ? '：' + item.message : ''}
             </div>
           )}
           {timings && <div className="udz-row-timing">耗时：{timings}</div>}
@@ -547,12 +598,23 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
             <Text strong style={{ fontSize: 13 }}>导入队列</Text>
             {jobMeta && <Tag color={jobMeta.color}>{jobMeta.label}</Tag>}
             <span className="udz-queue-progress">
-              已处理 {processed} / 共 {totals.total} 份
+              已可学习 {totals.ready} / 共 {totals.total}
             </span>
-            {!terminal && (
-              <Button type="link" size="small" className="udz-cancel" onClick={() => void handleCancel(job.job_id)}>
-                取消
-              </Button>
+            {canCancel && (
+              <Popconfirm
+                title="取消本次导入？"
+                description="已完成的资料会保留；未处理的部分需要重新导入。"
+                okText="取消导入" cancelText="再等等"
+                okButtonProps={{ danger: true }}
+                onConfirm={() => void handleCancel(job.job_id)}
+              >
+                <Button
+                  type="link" size="small" className="udz-cancel"
+                  loading={busy === 'cancel'}
+                >
+                  取消
+                </Button>
+              </Popconfirm>
             )}
             {terminal && items.length > 0 && (
               <Button
@@ -564,6 +626,27 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
               </Button>
             )}
           </div>
+
+          {/* 真实计数：有效资料 = materials（缺失回退 total），目录/压缩包为 0 时不显示 */}
+          <div className="udz-meta">
+            <span>有效资料 {totals.materials} 份</span>
+            {totals.directories > 0 && <span>目录 {totals.directories} 个</span>}
+            {totals.containers > 0 && <span>压缩包 {totals.containers} 个</span>}
+          </div>
+
+          {/* 自动分批的真实行为说明：服务端会一直跑到终态，用户可关闭页面 */}
+          {running && (
+            <div className="udz-autobatch">
+              {job.pause_requested
+                ? '已请求暂停，当前批次结束后停止（不会自动继续）。'
+                : '后台自动处理中，可关闭页面；服务端会一直处理到完成。'}
+            </div>
+          )}
+          {paused && (
+            <div className="udz-paused-note">
+              任务已暂停，不会自动继续。点击「继续」会在同一任务上接着处理，已完成的资料会复用。
+            </div>
+          )}
 
           {/* 计数卡片：总数 / 可学习 / 处理中 / 失败 / 未处理 / 已跳过。
               为 0 的隐藏，但 unprocessed 与 failed 不为 0 时必须可见。 */}
@@ -622,7 +705,31 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
             </div>
           )}
 
-          {/* 主操作：partial 且有未处理/可重试失败时，显著位置提供「继续处理」 */}
+          {/* 主操作：运行中「暂停」，暂停后「继续」（取消在头部，需二次确认） */}
+          {(canPause || canResume) && (
+            <div className="udz-controls">
+              {canResume && (
+                <Button
+                  type="primary" icon={<PlayCircleOutlined />} loading={busy === 'resume'}
+                  onClick={() => void handleResume(job.job_id)}
+                >
+                  继续
+                </Button>
+              )}
+              {canPause && (
+                <Button
+                  type="primary" icon={<PauseCircleOutlined />}
+                  loading={busy === 'pause'}
+                  disabled={Boolean(job.pause_requested) || (busy !== null && busy !== 'pause')}
+                  onClick={() => void handlePause(job.job_id)}
+                >
+                  {job.pause_requested ? '暂停中…' : '暂停'}
+                </Button>
+              )}
+            </div>
+          )}
+
+          {/* 兜底：终态且仍有未处理/可重试失败时，显著位置提供「继续处理」（paused 已排除） */}
           {canContinue && (
             <div className="udz-continue">
               <div className="udz-continue-text">
@@ -635,7 +742,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
                 <div className="udz-continue-hint">已完成的资料会复用，不会重复导入。</div>
               </div>
               <Button
-                type="primary" icon={<ReloadOutlined />} loading={continuing}
+                type="primary" icon={<ReloadOutlined />} loading={busy === 'continue'}
                 className="udz-continue-btn"
                 onClick={() => void handleContinue(job.job_id)}
               >

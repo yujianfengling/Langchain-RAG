@@ -70,17 +70,24 @@ def _make_three_txt_zip(tmp_path):
 # ==================== 任务 1：状态与计数 ====================
 
 
-def test_partial_with_unprocessed_counts_and_continue(import_env, monkeypatch):
-    """整批预算耗尽：未处理成员必须可见，job=partial，且可继续到全部 ready。"""
+def test_partial_by_total_limit_then_continue(import_env, monkeypatch):
+    """整个任务总上限到点：未处理成员可见、job=partial、可继续到全部 ready。
+
+    2026-10-08 语义变更：此处改为验证 **IMPORT_MAX_SECONDS（整个任务上限）** 到点的行为；
+    单批边界由 IMPORT_BATCH_SECONDS 控制且会自动接续下一批，不再把剩余丢给用户。
+    """
     svc, tmp = import_env["svc"], import_env["tmp"]
     limits = dict(svc._limits())
-    limits["max_seconds"] = 10
+    limits["max_seconds"] = 200          # 整个任务总上限
     monkeypatch.setattr(svc, "_limits", lambda: limits)
 
     arc = _make_three_txt_zip(tmp)
 
-    # 时钟：started=0，第一份检查=1（处理），第二份检查=100（超预算 → 剩余未处理）
-    monkeypatch.setattr(svc, "_monotonic", _fake_clock([0.0, 1.0, 100.0]))
+    # 时钟：call1 started=0；call2 总检查=1；call3 批起点=2；call4 第1份边界=3；
+    #        call5 第1份总检查=3；call6 第2份边界=300（>240 → 本批结束，仅 1 份）；
+    #        call7 下一轮总检查=300（>200 → 剩余未处理）。
+    monkeypatch.setattr(svc, "_monotonic",
+                        _fake_clock([0.0, 1.0, 2.0, 3.0, 3.0, 300.0]))
 
     result = svc.create_import_job("学科A", [("三份资料.zip", arc.read_bytes())], "u1")
     job = _wait(svc, result["job_id"])
@@ -98,11 +105,12 @@ def test_partial_with_unprocessed_counts_and_continue(import_env, monkeypatch):
     assert len(job["items"]) == 1
     assert "未处理" in job["summary_text"]
     assert job["can_continue"] is True
-    assert any("可继续" in w for w in job["warnings"])
+    assert job["batch_index"] >= 1
+    assert any("总上限" in w for w in job["warnings"])
 
     # ---- 继续处理：恢复正常时钟与预算，只处理剩余 2 份 ----
     monkeypatch.setattr(svc, "_monotonic", time.monotonic)
-    limits["max_seconds"] = 300
+    limits["max_seconds"] = 7200
     new_id = svc.continue_job(result["job_id"], "u1")
     assert new_id and new_id != result["job_id"]
     job2 = _wait(svc, new_id)
@@ -130,9 +138,14 @@ def test_succeeded_requires_no_unprocessed(import_env):
     result = svc.create_import_job("学科A", [("三份资料.zip", arc.read_bytes())], "u1")
     job = _wait(svc, result["job_id"])
     assert job["status"] == "succeeded"
-    assert job["totals"] == {
-        "files": 3, "ready": 3, "processing": 0, "failed": 0,
-        "unprocessed": 0, "skipped": 0, "total": 3, "bytes": job["totals"]["bytes"]}
+    t = job["totals"]
+    assert (t["files"], t["ready"], t["processing"], t["failed"],
+            t["unprocessed"], t["skipped"], t["total"]) == (3, 3, 0, 0, 0, 0, 3)
+    # 任务 4：分类计数（发现条目 / 容器 / 目录 / 有效资料）只增不改
+    assert t["members_discovered"] == 3
+    assert t["materials"] == 3
+    assert t["containers"] == 1
+    assert t["directories"] == 0
     assert job["can_continue"] is False
 
 

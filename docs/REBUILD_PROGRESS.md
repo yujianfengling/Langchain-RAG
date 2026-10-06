@@ -243,3 +243,79 @@ Vite dev 代理与 uvicorn 本身不限请求体（生产用 Nginx 时需 `clien
   按预算分批推进，界面显示"部分完成 16/92"并提供「继续处理剩余资料」。
 - 浏览器实测点击「继续处理剩余资料」→ 真实调用 continue 接口 → 队列继续推进，已完成的 16 份不重复。
 - ruff 0；pytest tests -n 4 全绿；npx tsc --noEmit 0；npm run build 成功。
+
+
+---
+
+# 第六轮（2026-10-07）：上传一次，后台自动完成
+
+本轮唯一目标：用户拖入一个资料包后，系统自动处理到明确的最终结果，不需要反复点「继续」。
+
+## 1. 人工分批 → 后台自动分批
+- `_run_job` 改为**同一 job 内的批循环**：单批预算（`IMPORT_BATCH_SECONDS`，默认 240s）
+  只是"保存进度 + 让出资源"的内部边界，到点自动进入下一批，直到没有剩余成员。
+- 整任务上限 `IMPORT_MAX_SECONDS`（默认 7200s）；`IMPORT_BATCH_MAX`（默认 200）防失控；
+  另有**无进展检测**（某批没有任何新 ready/failed/skipped 即停并写明原因）与
+  不可恢复错误（建库失败）立即停止。绝不无限循环。
+- 用户主动**暂停/取消后不会自动重启**；关闭页面不影响后台；刷新/重启后恢复同一任务。
+
+## 2. 单一执行者与防重复
+- 新增执行者声明（`executor_id` + 心跳，`IMPORT_EXECUTOR_TIMEOUT_SECONDS` 默认 300s）：
+  重复点击/刷新/并发触发时，只有持有者可执行，其余明确拒绝并记日志；心跳过期可被接管。
+- 启动时 `reconcile` 清空声明并 `auto_resume`（`IMPORT_AUTO_RESUME=1`）自动接续。
+- 内容哈希 + 解析缓存保证重复提交不产生重复资料/分块。
+
+## 3. 暂停 / 继续 / 取消（补齐 HTTP 入口）
+`POST /knowledge/imports/{id}/pause`（下一批边界停，`paused=true`）、
+`/resume`（仅 paused 可继续）、`/cancel`（DELETE 为别名）。
+实测（隔离后端，真实大文件）：pause→`partial+paused` 且 20s 后仍未自动重启；
+resume→重新 running；cancel→cancelled 且状态稳定。**10/10 通过**。
+
+## 4. 分类计数（不再把发现条目当资料数）
+`totals` 新增 `members_discovered` / `containers` / `directories` / `materials`。
+莫大物化原包实测：**materials=92、directories=14、containers=2、members_discovered=93**，
+与我用 py7zr 独立解析的结果一致（84 条目 = 12 目录 + 72 文件；嵌套 zip 再 21 个 pptx → 92 份有效资料）。
+
+## 5. 资源与内存（有测量）
+- 新增内存峰值字段：`item.timings.memory_peak_mb / rss_mb`；
+  `stage_timings.parse_memory_peak_mb / build_memory_peak_mb / rss_peak_mb`。
+- `IMPORT_MAX_INFLIGHT` 收紧视觉并发；超时后不再派发新工作（超时协作中止）。
+- 实测（隔离目录，2 份 20–30MB 课件，同文件同条件）：
+
+| 指标 | 冷处理 | 缓存复用 |
+|---|---|---|
+| 墙钟 | **53.1s** | **24.3s** |
+| 首次可检索 | 53.1s | 24.3s |
+| parse_ms | 50.0s | 22.4s |
+| build_ms | 17.7s | **2.5s** |
+| 视觉调用 | **20 次** | **0 次** |
+| 视觉缓存命中 | 1 | **21** |
+| build 内存峰值 | 51.1 MB | 1.5 MB |
+| 进程 RSS 峰值 | 919.6 MB | 962.4 MB |
+
+即：**缓存复用把耗时砍掉约一半，并把视觉调用降为 0**。
+
+## 6. 扫描件解析路线（先实测再决定）
+本机 `tesseract` 未安装 → 直接抽取扫描页得 **0 字**（26–182ms）；
+整页视觉 4.6–5.6s 得到 3258 字题面/正文（含公式文字），`is_content=true`。
+结论：**保持视觉为默认**，不为提速丢图片/公式。要用 OCR 加速需
+`pip install pytesseract` + 安装 Tesseract 及 `chi_sim+eng` 语言包并加入 PATH
+（当前未接线，默认不受影响）。
+
+## 7. 修复了一个真实的数据可用性缺陷（索引回滚边界）
+`_build_index_with_rollback` 的顺序是「备份 → **删除线上索引** → 重建 → 成功清备份/失败回滚」。
+删除与重建之间索引为空；进程若在此窗口被杀，回滚不会执行 → 线上索引永久为空。
+实测 `vector_store/sub-kg5yy0t4` 为 0 文件而 `.bak` 有 3 文件、`bm25_index/sub-kg5yy0t4` 不存在，
+该学科 25 份"可学习"资料完全检索不到。更糟的是下一次建库会用空目录**覆盖掉仅存的有效备份**。
+
+修复：
+1. `restore_orphaned_index_backups()`（启动时执行）：线上为空且有备份 → 从备份恢复；
+   线上完整 → 清掉过时备份。已接进 `api/app.py` 启动流程。
+2. `_backup()` 增加保护：**绝不用空的线上目录覆盖已有的有效备份**。
+两项均有 pytest（`tests/test_index_recovery.py`，4 项）。
+
+## 8. 本轮真实结果（莫大物化原包）
+- 最终：**76/76 ready（本批）+ 之前 16 份 = 92 份有效资料全部可检索**，`build_chunks=13105`。
+- 整批耗时（修复前那次单体运行）：extract 25s / parse 990s / build 424s / **total 1440s（24 分钟）**。
+- 目录维度检索实测：`1/`、`新建文件夹/`、`4/` 与嵌套 zip 成员都能命中，且带真实页码。
+- 重启后自动接续：`auto_resume` 把被中断任务自动跑完，学科目录仍是 **92 个文件**（无重复）。
