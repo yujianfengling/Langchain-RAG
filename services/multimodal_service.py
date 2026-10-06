@@ -18,6 +18,86 @@ logger = logging.getLogger(__name__)
 MAX_IMAGE_DIMENSION = 4096  # 最大边长（像素）
 MAX_IMAGE_PIXELS = 2048 * 2048  # 最大像素数（约400万像素）
 
+# 视觉单次调用超时（秒）。可用 VISION_IMAGE_TIMEOUT_SECONDS 覆盖。
+# 2026-10-07：实测同一份 deck 的 11 张图中只有 1 张未命中缓存，整体仍要 61.8s，
+# 单次真实调用约 40s+。没有超时就会出现"一张图拖死一整份资料"。
+def _vision_image_timeout() -> float:
+    try:
+        value = float(os.getenv("VISION_IMAGE_TIMEOUT_SECONDS", "30"))
+        return value if value > 0 else 30.0
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def _scale_to_limits(width: int, height: int) -> float:
+    """返回把 (width,height) 压到提供方上限内所需的缩放系数（<=1）"""
+    scale = 1.0
+    if width > MAX_IMAGE_DIMENSION or height > MAX_IMAGE_DIMENSION:
+        scale = min(scale,
+                    MAX_IMAGE_DIMENSION / float(width or 1),
+                    MAX_IMAGE_DIMENSION / float(height or 1))
+    pixels = float(width or 1) * float(height or 1)
+    if pixels * scale * scale > MAX_IMAGE_PIXELS:
+        scale = min(scale, (MAX_IMAGE_PIXELS / pixels) ** 0.5)
+    return max(scale, 1e-6)
+
+
+def _cleanup_scaled_copy(path: str) -> None:
+    """删除缩放送审副本（绝不删原图）"""
+    try:
+        p = Path(path)
+        if p.exists() and p.is_file():
+            p.unlink()
+    except Exception as e:
+        logger.warning(f"清理缩放副本失败: {path}: {e}")
+
+
+def _scaled_copy(image_path: str, width: int, height: int) -> Dict[str, Any]:
+    """
+    生成一张等比缩放到提供方上限内的送审副本（原图文件不动）。
+
+    Returns:
+        {"path", "scaled_size", "max_side"} 或 {"error", "error_type"}
+    """
+    import io
+    import uuid
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return {"error": "PIL 未安装，无法缩放超大图", "error_type": "pil_unavailable"}
+
+    scale = _scale_to_limits(width, height)
+    new_w = max(1, int(round(width * scale)))
+    new_h = max(1, int(round(height * scale)))
+    try:
+        with Image.open(image_path) as img:
+            resized = img.resize((new_w, new_h), Image.LANCZOS)
+            fmt = (img.format or "PNG").upper()
+            buf = io.BytesIO()
+            if fmt in ("JPG", "JPEG"):
+                if resized.mode not in ("RGB", "L"):
+                    resized = resized.convert("RGB")
+                resized.save(buf, format="JPEG", quality=85, optimize=True)
+                ext = ".jpg"
+            else:
+                resized.save(buf, format="PNG", optimize=True)
+                ext = ".png"
+        data = buf.getvalue()
+        try:
+            from config.path_config import get_data_dir
+            out_dir = get_data_dir() / "import_tmp" / "vision_scaled"
+        except Exception:
+            out_dir = Path(image_path).parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"{uuid.uuid4().hex[:12]}{ext}"
+        out.write_bytes(data)
+        return {"path": str(out),
+                "scaled_size": f"{new_w}x{new_h}",
+                "max_side": max(new_w, new_h)}
+    except Exception as e:
+        return {"error": f"超大图缩放失败: {e}", "error_type": "resize_failed"}
+
 class MultimodalService:
     """
     多模态服务
@@ -190,9 +270,11 @@ class MultimodalService:
             }
         ]
         
-        # 调用视觉模型（timeout通过provider内部处理）
+        # 调用视觉模型。单次调用超时可配置（VISION_IMAGE_TIMEOUT_SECONDS，默认 30s），
+        # 由 provider 的 requests timeout 强制执行，避免"一张图无限等"。
         try:
-            result = self.vision_provider.vision(messages)
+            result = self.vision_provider.vision(
+                messages, timeout=_vision_image_timeout())
         except Exception as e:
             capability_status.safe_report(
                 capability_status.CAP_VISION, False,
@@ -288,26 +370,35 @@ class MultimodalService:
             result["error_type"] = "file_too_large"
             return result
         
-        # 检查图片尺寸（新增安全限制）
+        # 检查图片尺寸：超大图先等比缩放出送审副本，绝不"必然失败还送"
+        #
+        # 2026-10-07 实测：slide001_img2.png 5439x4501、slide003_img1.jpg 8294400 像素
+        # 之前直接 skipped，用户看到的是"图片白识别了"。现在缩放后送审，
+        # 原图文件不动，并记录原始/缩放尺寸便于说明"内容没丢，是缩小后识别的"。
+        vision_image_path = image_path
+        scaled_copy_path = None
         try:
             from PIL import Image
             with Image.open(image_path) as img:
                 width, height = img.size
-                
-                # 检查最大边长
-                if width > MAX_IMAGE_DIMENSION or height > MAX_IMAGE_DIMENSION:
-                    result["error"] = f"图片尺寸 {width}x{height} 超过限制（最大边长 {MAX_IMAGE_DIMENSION}px）"
+            result["image_original_size"] = f"{width}x{height}"
+            if (width > MAX_IMAGE_DIMENSION or height > MAX_IMAGE_DIMENSION
+                    or width * height > MAX_IMAGE_PIXELS):
+                scaled = _scaled_copy(image_path, width, height)
+                if scaled.get("error"):
+                    result["error"] = scaled["error"]
                     result["vision_status"] = "skipped"
-                    result["error_type"] = "dimension_exceeded"
+                    result["error_type"] = scaled.get("error_type") or "resize_failed"
                     return result
-                
-                # 检查总像素数
-                if width * height > MAX_IMAGE_PIXELS:
-                    result["error"] = f"图片像素数 {width * height} 超过限制（最大 {MAX_IMAGE_PIXELS} 像素）"
-                    result["vision_status"] = "skipped"
-                    result["error_type"] = "pixels_exceeded"
-                    return result
-                
+                vision_image_path = scaled["path"]
+                scaled_copy_path = scaled["path"]
+                result["image_scaled_size"] = scaled["scaled_size"]
+                result["image_max_side"] = scaled["max_side"]
+                result["image_downscaled"] = True
+                logger.info(
+                    f"[Multimodal] 超大图已缩放送审: {Path(image_path).name} "
+                    f"{width}x{height} -> {scaled['scaled_size']}（内容不丢，缩小后识别）")
+            else:
                 logger.info(f"[Multimodal] image={Path(image_path).name}, size={file_size/1024:.1f}KB, dimensions={width}x{height}")
         except ImportError:
             logger.warning("PIL未安装，跳过图片尺寸检查")
@@ -323,9 +414,11 @@ class MultimodalService:
             try:
                 from rag.multimodal.image.extractor import ImageExtractor
                 extractor = ImageExtractor()
-                result["ocr_text"] = extractor.extract_text(image_path)
+                result["ocr_text"] = extractor.extract_text(vision_image_path)
             except Exception as ocr_err:
                 logger.warning(f"[Multimodal] OCR也失败了: {ocr_err}")
+            if scaled_copy_path:
+                _cleanup_scaled_copy(scaled_copy_path)
             return result
         
         # 尝试生成图片描述
@@ -333,7 +426,7 @@ class MultimodalService:
         start_time = time.time()
         
         try:
-            vision_result = self.describe_image(image_path)
+            vision_result = self.describe_image(vision_image_path)
             latency = time.time() - start_time
 
             # 解析结构化JSON响应（description + ocr_text + is_content）
@@ -404,13 +497,15 @@ class MultimodalService:
             try:
                 from rag.multimodal.image.extractor import ImageExtractor
                 extractor = ImageExtractor()
-                result["ocr_text"] = extractor.extract_text(image_path)
+                result["ocr_text"] = extractor.extract_text(vision_image_path)
 
                 if result["ocr_text"]:
                     logger.info(f"[Multimodal] OCR_success, text_length={len(result['ocr_text'])}")
             except Exception as e:
                 logger.warning(f"OCR文本提取失败: {e}")
-        
+
+        if scaled_copy_path:
+            _cleanup_scaled_copy(scaled_copy_path)
         return result
     
     def process_image_to_document(self, image_path: str, source: Optional[str] = None) -> Dict[str, Any]:
@@ -454,6 +549,11 @@ class MultimodalService:
             # 内容判定（2026-10-02）：透传给增强器，供"噪声图不入库"过滤使用
             "is_content": extraction_result.get("is_content"),
             "content_kind": extraction_result.get("kind") or "",
+            # 超大图缩放（2026-10-07）：说明"内容没丢，是缩小后识别的"
+            "image_original_size": extraction_result.get("image_original_size"),
+            "image_scaled_size": extraction_result.get("image_scaled_size"),
+            "image_max_side": extraction_result.get("image_max_side"),
+            "image_downscaled": extraction_result.get("image_downscaled", False),
         }
 
         # 仅在失败时记录error_type

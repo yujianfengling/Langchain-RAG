@@ -217,6 +217,14 @@ def _display_name(rel_path: str) -> str:
 Member = Tuple[str, Callable[[], bytes], int, Optional[str]]
 
 
+class _NameInfo:
+    """py7zr 老版本没有 list() 时的最小成员信息（无法判定目录，交给解压后兜底）"""
+
+    def __init__(self, filename: str):
+        self.filename = filename
+        self.is_directory = False
+
+
 # ==================== 主流程 ====================
 
 
@@ -320,6 +328,49 @@ def _check_limits(state: Dict[str, Any], limits: Dict[str, Any],
             error_type="archive_limit_exceeded")
 
 
+def _make_staging(staging_root: Optional[Path], prefix: str) -> Path:
+    """
+    在**受控目录**下创建解包暂存目录，绝不再用系统 TEMP。
+
+    2026-10-07 实测事故：287MB 的 .7z 因系统 TEMP
+    （C 盘用户目录下的 Temp\rag_7z_xxx）创建中文目录 "新建文件夹" 时报
+    [Errno 13] Permission denied，被误判成 archive_corrupt。
+    系统 TEMP 在多用户/受限环境下 ACL 不可控；本项目的安全约定也只允许写入
+    受控临时目录与学科目录。这里按优先级尝试：
+      1) 调用方给定的受控目录（任务自己的 import_tmp/<job>/extracted）；
+      2) <data_dir>/import_tmp/archive_tmp/；
+      3) 最后才退回系统 TEMP（仅当上面都不可写时，保证功能不因环境差异全坏）。
+    """
+    attempts: List[Path] = []
+    if staging_root is not None:
+        attempts.append(Path(staging_root) / f".{prefix}{uuid.uuid4().hex[:10]}")
+    try:
+        from config.path_config import get_data_dir
+        attempts.append(Path(get_data_dir()) / "import_tmp" / "archive_tmp"
+                        / f".{prefix}{uuid.uuid4().hex[:10]}")
+    except Exception:
+        pass
+
+    for candidate in attempts:
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+            return candidate
+        except FileExistsError:
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                return candidate
+            except Exception as e:  # noqa: PERF203 - 逐个候选尝试
+                logger.warning("受控暂存目录不可用 %s: %s", candidate, e)
+        except Exception as e:
+            logger.warning("受控暂存目录不可用 %s: %s", candidate, e)
+
+    # 兜底：仍使用系统 TEMP，但把失败原因写清楚
+    try:
+        return Path(tempfile.mkdtemp(prefix=prefix))
+    except Exception as e:
+        raise ArchiveError(f"无法创建解包暂存目录: {e}", error_type="archive_corrupt")
+
+
 def _extract_one(src: Path, dest_root: Path, origin: str, depth: int,
                  limits: Dict[str, Any], state: Dict[str, Any],
                  password: Optional[str], rel_prefix: str) -> None:
@@ -327,9 +378,9 @@ def _extract_one(src: Path, dest_root: Path, origin: str, depth: int,
     if kind == "zip":
         members = _iter_zip(src, password)
     elif kind == "7z":
-        members = _iter_7z(src, password)
+        members = _iter_7z(src, password, dest_root)
     elif kind == "rar":
-        members = _iter_rar(src, password)
+        members = _iter_rar(src, password, dest_root)
     else:
         raise ArchiveError(f"不支持的压缩包类型: {src.suffix}", error_type="archive_unsupported")
 
@@ -375,14 +426,31 @@ def _extract_one(src: Path, dest_root: Path, origin: str, depth: int,
             nested_path = target_root / (uuid.uuid4().hex[:8] + ext)
             try:
                 data = reader()
-            except ArchiveError:
-                raise
+            except ArchiveError as e:
+                # 单个嵌套包读不出来只跳过它，其余成员继续（不拖垮整包）
+                state["skipped"].append({
+                    "source_path": rel_prefix_full,
+                    "reason": f"嵌套压缩包读取失败（已跳过，其余继续）：{e}",
+                    "error_type": getattr(e, "error_type", "archive_member_unreadable")})
+                continue
             except Exception as e:
-                raise ArchiveError(f"读取嵌套压缩包失败: {safe_rel}: {e}",
-                                   error_type="archive_corrupt")
+                state["skipped"].append({
+                    "source_path": rel_prefix_full,
+                    "reason": f"嵌套压缩包读取失败（已跳过，其余继续）：{e}",
+                    "error_type": "archive_member_unreadable"})
+                continue
             _check_member_size(len(data), rel_prefix_full, limits)
             _check_limits(state, limits, extra_bytes=len(data), extra_files=1)
-            nested_path.write_bytes(data)
+            try:
+                nested_path.write_bytes(data)
+            except OSError as e:
+                state["skipped"].append({
+                    "source_path": rel_prefix_full,
+                    "reason": f"嵌套压缩包写入失败（已跳过，其余继续）：{e}",
+                    "error_type": ("archive_disk_full"
+                                   if getattr(e, "errno", None) == 28
+                                   else "archive_member_unreadable")})
+                continue
             before_e = len(state["entries"])
             before_s = len(state["skipped"])
             _extract_one(nested_path, target_root, origin=origin, depth=depth + 1,
@@ -398,10 +466,19 @@ def _extract_one(src: Path, dest_root: Path, origin: str, depth: int,
 
         try:
             data = reader()
-        except ArchiveError:
-            raise
+        except ArchiveError as e:
+            # 单成员读取失败：只让该成员 skipped/failed，其余继续，不误报 archive_corrupt
+            state["skipped"].append({
+                "source_path": rel_prefix_full,
+                "reason": f"成员读取失败（已跳过，其余继续）：{e}",
+                "error_type": getattr(e, "error_type", "archive_member_unreadable")})
+            continue
         except Exception as e:
-            raise ArchiveError(f"读取压缩包条目失败: {safe_rel}: {e}", error_type="archive_corrupt")
+            state["skipped"].append({
+                "source_path": rel_prefix_full,
+                "reason": f"成员读取失败（已跳过，其余继续）：{e}",
+                "error_type": "archive_member_unreadable"})
+            continue
 
         _check_member_size(len(data), rel_prefix_full, limits)
         _check_limits(state, limits, extra_bytes=len(data), extra_files=1)
@@ -410,7 +487,16 @@ def _extract_one(src: Path, dest_root: Path, origin: str, depth: int,
         out_dir.mkdir(parents=True, exist_ok=True)
         leaf = Path(safe_rel).name or "file"
         written = out_dir / leaf
-        written.write_bytes(data)
+        try:
+            written.write_bytes(data)
+        except OSError as e:
+            state["skipped"].append({
+                "source_path": rel_prefix_full,
+                "reason": f"成员写入失败（已跳过，其余继续）：{e}",
+                "error_type": ("archive_disk_full"
+                               if getattr(e, "errno", None) == 28
+                               else "archive_member_unreadable")})
+            continue
 
         state["bytes"] += len(data)
         state["files"] += 1
@@ -468,7 +554,8 @@ def _is_zip_symlink(info: zipfile.ZipInfo) -> bool:
     return mode == 0o120000
 
 
-def _iter_7z(src: Path, password: Optional[str]) -> Iterator[Member]:
+def _iter_7z(src: Path, password: Optional[str],
+             staging_root: Optional[Path] = None) -> Iterator[Member]:
     try:
         import py7zr
     except ImportError:
@@ -484,25 +571,50 @@ def _iter_7z(src: Path, password: Optional[str]) -> Iterator[Member]:
 
     # py7zr 1.x 移除了 read()，只能先把**安全**成员解压到临时目录再读取。
     # 不安全/被忽略的成员不进入 extract targets，避免任何落盘。
-    staging = tempfile.mkdtemp(prefix="rag_7z_")
+    #
+    # 2026-10-07：暂存目录不再放系统 TEMP（实测 287MB .7z 在系统 TEMP 下创建中文目录
+    # 报 Permission denied，被误判成 archive_corrupt）。优先用调用方给的受控目录。
+    staging = _make_staging(staging_root, "rag_7z_")
     try:
         with archive:
             try:
-                names = archive.getnames()
+                infos = list(archive.list())
             except Exception as e:
                 msg = str(e).lower()
-                if "password" in msg:
+                if "password" in msg or "encrypted" in msg:
                     raise ArchiveError("7z 压缩包已加密，需要密码",
                                        error_type="archive_encrypted")
-                raise ArchiveError(f"读取 7z 目录失败: {e}", error_type="archive_corrupt")
+                # 老版本 py7zr 没有 list()：退回 getnames；目录判定由解压后的
+                # path.is_dir() 兜底，避免旧环境重新踩"目录被当文件读"的坑。
+                logger.warning("7z list() 不可用，退回 getnames: %s", e)
+                try:
+                    infos = [_NameInfo(n) for n in archive.getnames()]
+                except Exception as e2:
+                    raise ArchiveError(f"读取 7z 目录失败: {e2}",
+                                       error_type="archive_corrupt")
 
-            safe_targets = []
-            for name in names:
-                if name.endswith("/"):
+            # 目录判定必须用**成员元数据**（FileInfo.is_directory），绝不能用
+            # "结尾是否 /"：py7zr 的 getnames() 对目录不带结尾斜杠，真实事故里
+            # 12 个目录被当成文件加进 extract targets 并 read_bytes()，
+            # 在 Windows 抛 Permission denied，最后被包装成 archive_corrupt。
+            file_infos: List[Any] = []
+            dir_count = 0
+            for info in infos:
+                name = getattr(info, "filename", "") or ""
+                if not name:
                     continue
+                if getattr(info, "is_directory", None) or name.endswith("/"):
+                    dir_count += 1
+                    continue
+                file_infos.append(info)
+
+            safe_targets: List[str] = []
+            for info in file_infos:
+                name = info.filename
                 safe_rel = normalize_relpath(name)
                 if safe_rel and not is_ignored(safe_rel):
                     safe_targets.append(name)
+
             if safe_targets:
                 try:
                     archive.extract(path=staging, targets=safe_targets)
@@ -511,25 +623,54 @@ def _iter_7z(src: Path, password: Optional[str]) -> Iterator[Member]:
                     if "password" in msg:
                         raise ArchiveError("7z 压缩包已加密，需要密码",
                                            error_type="archive_encrypted")
+                    if isinstance(e, PermissionError) or "permission denied" in msg:
+                        # 解包目标不可写 ≠ 压缩包损坏：给出准确原因与暂存目录
+                        raise ArchiveError(
+                            f"解包暂存目录不可写（{staging}）：{e}",
+                            error_type="archive_staging_unwritable")
+                    if "no space" in msg or "disk full" in msg:
+                        raise ArchiveError(f"磁盘空间不足: {e}",
+                                           error_type="archive_disk_full")
                     raise ArchiveError(f"解压 7z 失败: {e}", error_type="archive_corrupt")
+            if dir_count:
+                logger.info("7z 目录成员已跳过（不计入失败资料）: dirs=%d files=%d",
+                            dir_count, len(file_infos))
 
-            for name in names:
-                if name.endswith("/"):
-                    yield name, _empty_reader, 0, None
-                    continue
+            for info in file_infos:
+                name = info.filename
                 safe_rel = normalize_relpath(name)
                 if not safe_rel:
                     # 由 _extract_one 统一记为路径穿越
                     yield name, _empty_reader, 0, None
                     continue
                 path = Path(staging) / safe_rel
-                if not path.exists():
-                    yield name, _empty_reader, 0, None
+                try:
+                    # 解压后再挡一层：目录绝不读取
+                    if not path.exists() or path.is_dir():
+                        logger.warning("7z 成员解压后不存在或是目录，跳过: %s", name)
+                        continue
+                    size = path.stat().st_size
+                except OSError as e:
+                    logger.warning("7z 成员状态读取失败，跳过: %s: %s", name, e)
                     continue
-                size = path.stat().st_size
 
-                def _read(_p=path) -> bytes:
-                    return _p.read_bytes()
+                def _read(_p=path, _name=name) -> bytes:
+                    try:
+                        if _p.is_dir():
+                            raise ArchiveError(
+                                f"压缩包成员是目录，不应读取: {_name}",
+                                error_type="archive_member_unreadable")
+                        return _p.read_bytes()
+                    except ArchiveError:
+                        raise
+                    except PermissionError as e:
+                        raise ArchiveError(
+                            f"压缩包成员不可读（权限）: {_name}: {e}",
+                            error_type="archive_member_unreadable")
+                    except OSError as e:
+                        raise ArchiveError(
+                            f"读取压缩包成员失败: {_name}: {e}",
+                            error_type="archive_member_unreadable")
 
                 yield name, _read, size, None
     finally:
@@ -554,9 +695,10 @@ def _rar_tool_error(stderr: str) -> ArchiveError:
                         error_type="archive_corrupt")
 
 
-def _iter_rar_via_bsdtar(src: Path, tool: str, timeout: int) -> Iterator[Member]:
+def _iter_rar_via_bsdtar(src: Path, tool: str, timeout: int,
+                         staging_root: Optional[Path] = None) -> Iterator[Member]:
     """直接用 bsdtar 解压到受控暂存目录再读取（rarfile 的 bsdtar 读取路径实测不可靠）"""
-    staging = tempfile.mkdtemp(prefix="rag_rar_")
+    staging = _make_staging(staging_root, "rag_rar_")
     try:
         try:
             proc = subprocess.run([tool, "-xf", str(src), "-C", staging],
@@ -594,7 +736,8 @@ def _rar_read_error(exc: Exception, name: str) -> ArchiveError:
     return ArchiveError(f"读取 RAR 条目失败: {name}: {exc}", error_type="archive_corrupt")
 
 
-def _iter_rar(src: Path, password: Optional[str]) -> Iterator[Member]:
+def _iter_rar(src: Path, password: Optional[str],
+             staging_root: Optional[Path] = None) -> Iterator[Member]:
     try:
         import rarfile
     except ImportError:
@@ -642,7 +785,7 @@ def _iter_rar(src: Path, password: Optional[str]) -> Iterator[Member]:
 
         if kind == "bsdtar":
             timeout = int(default_limits()["max_seconds"])
-            yield from _iter_rar_via_bsdtar(src, tool, timeout)
+            yield from _iter_rar_via_bsdtar(src, tool, timeout, staging_root)
             return
 
         for info in rf.infolist():

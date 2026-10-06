@@ -198,6 +198,28 @@ async def retry_import_job(job_id: str,
     return SuccessResponse(data={"job_id": new_job_id}, message="重试任务已创建")
 
 
+@router.post("/knowledge/imports/{job_id}/continue", response_model=SuccessResponse)
+async def continue_import_job(job_id: str,
+                              user_id: str = Depends(require_current_user)):
+    """
+    继续处理任务的未处理/可重试成员：从已保留的原包/原始文件重解包，
+    不要求用户重传，也不重复处理已 ready 的资料（内容哈希 + 解析配置 + embedding 版本）。
+    """
+    from services import import_service
+    job = await run_in_threadpool(import_service.get_job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    await require_subject_write(job.get("subject_id") or "", user_id)
+    try:
+        new_job_id = await run_in_threadpool(
+            import_service.continue_job, job_id, user_id)
+    except ValueError as e:
+        raise ValidationError(str(e))
+    if new_job_id is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    return SuccessResponse(data={"job_id": new_job_id}, message="继续处理任务已创建")
+
+
 @router.delete("/knowledge/imports/{job_id}", response_model=SuccessResponse)
 async def cancel_import_job(job_id: str,
                             user_id: str = Depends(require_current_user)):

@@ -80,7 +80,19 @@
 | `IMPORT_MAX_EXTRACT_TOTAL_MB` | 1024 MB | 单批**展开总量**上限（`max_extract_total_mb`，旧字段 `max_total_mb` 同义）|
 | `IMPORT_MAX_FILES` | 100 | 文件数量（含展开成员）|
 | `IMPORT_MAX_DEPTH` | 2 | 递归深度 |
-| `IMPORT_MAX_SECONDS` | 300 | 单任务超时（秒）|
+| `IMPORT_MAX_SECONDS` | 300 | 整批预算（秒）；到时剩余成员记为 `unprocessed`、job=`partial` 且可继续 |
+| `IMPORT_ITEM_MAX_SECONDS` | 180 | 单文件解析墙钟上限（秒）；超时记 `item_timeout` 并继续后面的文件 |
+| `VISION_MAX_CONCURRENCY` | 3 | 同一批图片视觉调用的受控并发数 |
+| `VISION_IMAGE_TIMEOUT_SECONDS` | 30 | 单张图片视觉调用墙钟上限（秒）；超时继续其余图片 |
+
+### 3.1 超大图与图片提速（2026-10-07）
+
+- 超出提供方上限（最大边长 4096px / 最大 4194304 像素）的图片先用 Pillow 等比缩放出
+  **送审副本**再识别（原图文件不动），并记录 `image_original_size` / `image_scaled_size` /
+  `image_max_side`；只有确实无法解码时才 `skipped` 并写明确原因，绝不"必然失败还送"。
+- 同一批内相同内容（MD5）的图片只识别一次（`images_deduped`）。
+- 未命中缓存的图片按 `VISION_MAX_CONCURRENCY` 并发，单张超过
+  `VISION_IMAGE_TIMEOUT_SECONDS` 记 `vision_timeout` 并继续其余图片，不阻塞整份资料。
 
 兼容：仍接受旧 env `IMPORT_MAX_FILE_MB` 作为 `IMPORT_MAX_DOCUMENT_MB` 的回退。
 超限一律返回**准确原因**（哪个限制、实际多大、上限多少），绝不超限后仍继续建库或假成功。

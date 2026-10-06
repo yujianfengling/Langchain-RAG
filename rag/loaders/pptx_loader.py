@@ -284,19 +284,22 @@ class PptxLoader(BaseLoader):
                 ))
 
             # 视觉增强（只对图片文档；文本/幻灯片文档保留既有 modality）
+            #
+            # 2026-10-07：改走批量入口 enrich_images —— 同一批内按内容哈希去重、
+            # 受控并发（VISION_MAX_CONCURRENCY，默认 3）、单张超时（
+            # VISION_IMAGE_TIMEOUT_SECONDS，默认 30s）。此前逐张串行，
+            # 单张 40s+ 的调用会把整份课件拖到分钟级。
+            vision_stats: dict = {}
             if self._enrich_images and image_docs:
                 enricher = self._get_enricher()
                 if enricher is not None:
-                    enriched: List[Any] = []
-                    for doc in image_docs:
-                        try:
-                            out = enricher._enrich_single_document(doc)
-                        except Exception as e:
-                            logger.warning(f"PPTX 图片增强失败，保留原文档: {e}")
-                            out = doc
-                        if out is not None and (out.page_content or "").strip():
-                            enriched.append(out)
-                    image_docs = enriched
+                    try:
+                        image_docs = enricher.enrich_images(image_docs)
+                    except Exception as e:
+                        logger.warning(f"PPTX 图片批量增强失败，保留原文档: {e}")
+                    image_docs = [d for d in image_docs
+                                  if d is not None and (d.page_content or "").strip()]
+                    vision_stats = dict(getattr(enricher, "last_stats", {}) or {})
                     if image_docs:
                         has_any_content = True
 
@@ -316,6 +319,7 @@ class PptxLoader(BaseLoader):
                     "empty_slides": empty_slides,
                     "images": image_total,
                     "images_indexed": len(image_docs),
+                    "vision_stats": vision_stats,
                 },
             )
         finally:

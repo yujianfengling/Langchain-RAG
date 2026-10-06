@@ -120,6 +120,91 @@
 }
 .udz-cancel, .udz-details-toggle { margin-left: auto; padding: 0; }
 
+/* ============ 计数卡片（总数/可学习/处理中/失败/未处理/已跳过） ============ */
+.udz-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border-light);
+}
+.udz-count {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 56px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-card);
+}
+.udz-count-value {
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.2;
+  color: var(--color-text);
+}
+.udz-count-label {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+.udz-count--ok .udz-count-value { color: var(--color-primary); }
+.udz-count--processing .udz-count-value { color: #0ea5e9; }
+.udz-count--error .udz-count-value { color: #dc2626; }
+.udz-count--warn .udz-count-value { color: #d97706; }
+.udz-count--muted .udz-count-value { color: var(--color-text-muted); }
+
+/* ============ 整体进度（体现 total 与已处理） ============ */
+.udz-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-light);
+}
+.udz-progress .ant-progress { flex: 1; min-width: 0; margin: 0; }
+.udz-progress-text {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+/* 自检异常：不能静默，明确展示 */
+.udz-invariant {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-light);
+  font-size: 12px;
+  color: #b45309;
+  background: #fffbeb;
+}
+
+/* ============ 继续处理剩余资料（显著主操作） ============ */
+.udz-continue {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid var(--color-border-light);
+  background: var(--color-primary-50);
+  border-left: 3px solid var(--color-primary);
+}
+.udz-continue-text { min-width: 0; }
+.udz-continue-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.udz-continue-hint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-top: 2px;
+}
+.udz-continue-btn { flex-shrink: 0; }
+
 .udz-summary {
   display: flex;
   align-items: center;
@@ -179,6 +264,14 @@
   word-break: break-word;
 }
 .udz-row-msg--muted { color: var(--color-text-secondary); }
+.udz-row-timing {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .udz-row-retry { padding: 0 4px; height: auto; }
 .udz-row-state { flex-shrink: 0; margin: 0; }
 
@@ -342,6 +435,13 @@
   .udz-actions .ant-btn { flex: 1; }
   .udz-row { flex-wrap: wrap; }
   .udz-row-state { margin-left: 26px; }
+  .udz-counts { gap: 6px; }
+  .udz-count { min-width: 48px; padding: 3px 8px; }
+  .udz-count-value { font-size: 15px; }
+  .udz-progress { flex-direction: column; align-items: stretch; gap: 4px; }
+  .udz-progress-text { white-space: normal; }
+  .udz-continue { flex-direction: column; align-items: stretch; }
+  .udz-continue-btn { width: 100%; }
   .udz-rejected-name { max-width: 100%; white-space: normal; word-break: break-all; }
   .udz-rejected-foot { flex-direction: column; align-items: stretch; }
   .udz-rejected-foot .ant-btn { width: 100%; }

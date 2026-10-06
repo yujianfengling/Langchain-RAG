@@ -200,3 +200,46 @@ Vite dev 代理与 uvicorn 本身不限请求体（生产用 Nginx 时需 `clien
   但本轮没有用"真实含中文目录的 RAR"验证 —— 机器上没有 RAR 压缩器（RAR 只能由 WinRAR 生成）。
   需要时装 WinRAR 后可自行打包复验。
 - Office COM 属于桌面自动化：单机演示可用，服务化部署建议改用 LibreOffice CLI（设 `OFFICE_CONVERTER_PATH`）。
+
+---
+
+# 第四轮（2026-10-07）：真实压缩包导入的可靠、可恢复与可解释
+
+用户真实上传两次都出问题：(a) 367MB 的 16 份课件 zip 只导了 8 份就超时，页面却显示"已完成"；
+(b) 莫大物化.7z 直接失败，页面写"压缩包损坏"。本轮只修导入链路，不扩大重构。
+
+## 1. 为什么超时（实测归因，见 docs/IMPORT_TIMEOUT_RCA.md）
+
+- 逐张图片的**视觉调用串行**，且单次调用约 40s；解析本身只要 0.6s/份。
+- 超大图（5439x4501、8294400 像素）**不缩放着送**，必然被提供方拒绝 —— 又慢又丢内容。
+- 超时判定只在"每个文件开始前"检查整批 300s，单个文件可无限拖住整批；
+  触发后只写一条 warning，状态仍按条目标成功 → "succeeded"。
+- 未处理的 8 个成员**没有 item**，计数与界面完全看不见；也没有继续入口。
+
+## 2. 改了什么
+
+- **状态与计数**：新增 total/processing/unprocessed，保证 total = ready+processing+failed+unprocessed+skipped；
+  有未处理或失败即 partial；未进入索引不得标"可学习"；旧任务用 archive_summaries.extracted 回填（只改视图不改历史行）。
+- **可继续**：`POST /knowledge/imports/{job_id}/continue`，从保留原包重跑剩余成员，
+  已 ready 的按 content_sha + 解析配置 + embedding 版本复用；计划与原包落库，跨重启可恢复；
+  单科建库加锁，避免并发覆盖索引。
+- **超时与卡死**：单文件 `IMPORT_ITEM_MAX_SECONDS=180`（只失败该文件）、
+  单张视觉 `VISION_IMAGE_TIMEOUT_SECONDS=30`、单批预算默认 300→900s（有实测依据）。
+- **提速不丢内容**：超大图先等比缩放再送审、同批图片按内容去重、
+  受控并发 `VISION_MAX_CONCURRENCY=3`；原生文字/表格/备注优先，不整页识图。
+- **计时可解释**：每条目 timings（parse/vision/calls/cached/deduped/timeout），任务 stage_timings。
+- **7z 目录根因**：py7zr 的 getnames() 对目录**不带结尾斜杠**，旧代码按 `endswith("/")` 判目录 →
+  12 个目录被当文件 `read_bytes()` → Windows PermissionError → 被误报 `archive_corrupt`。
+  改为按 `FileInfo.is_directory` 判定 + 解压后 `path.is_dir()` 兜底；目录不进 targets、不读取；
+  单成员失败只跳过该成员（新错误类型 `archive_member_unreadable`）；解包改到受控目录。
+- **顺带**：`services/rag_loader.load_rag_stack()` 修复后台线程导入 rag 与预热线程并发导致的
+  `deadlock detected by _ModuleLock('rag.rag_service')`（曾让第一轮"继续"直接失败、0 条目）。
+
+## 3. 验收结果
+
+- 367MB / 16 份课件：**16 份全部可检索**（753 分块）；8 份剩余用 **244s** 完成；
+  第8章"消隐算法"、第9章"颜色模型"现在命中正确章节（此前只能命中第10章）。
+- 莫大物化.7z：**0 failed / 0 skipped**，92 个成员全部被发现，12 个目录零失败；
+  按预算分批推进，界面显示"部分完成 16/92"并提供「继续处理剩余资料」。
+- 浏览器实测点击「继续处理剩余资料」→ 真实调用 continue 接口 → 队列继续推进，已完成的 16 份不重复。
+- ruff 0；pytest tests -n 4 全绿；npx tsc --noEmit 0；npm run build 成功。

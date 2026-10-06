@@ -5,9 +5,10 @@ import {
   DownOutlined, FileTextOutlined, InboxOutlined, ReloadOutlined, RightOutlined,
 } from '@ant-design/icons';
 import {
-  ImportCapabilities, ImportItem, ImportItemStatus, ImportJob, ImportJobStatus,
-  cancelImport, capabilityUnavailableReason, formatBytes, getImportCapabilities, getImportJob,
-  isTerminalStatus, listImports, resolveLimits, retryImport, startImport, validateSelection,
+  ImportCapabilities, ImportItem, ImportItemStatus, ImportItemTimings, ImportJob, ImportJobStatus,
+  cancelImport, capabilityUnavailableReason, continueImport, effectiveJobStatus, formatBytes,
+  getImportCapabilities, getImportJob, hasRetryableFailed, isTerminalStatus, jobNeedsContinue,
+  listImports, resolveLimits, resolveTotals, retryImport, startImport, validateSelection,
 } from '../../api/import';
 import './upload.css';
 
@@ -42,6 +43,53 @@ const ITEM_STATUS_META: Record<ImportItemStatus, { label: string; color: string 
   ready: { label: '可学习', color: 'success' },
   failed: { label: '失败', color: 'error' },
   skipped: { label: '已跳过', color: 'warning' },
+  unprocessed: { label: '未处理', color: 'warning' },
+};
+
+/** 阶段中文：后端 stage 更细（extracting/parsing/indexing/ready …），未知值原样展示 */
+const STAGE_LABEL: Record<string, string> = {
+  pending: '排队中',
+  uploading: '上传中',
+  extracting: '解包中',
+  parsing: '解析中',
+  indexing: '建库中',
+  ready: '已入库',
+  failed: '失败',
+  skipped: '已跳过',
+  unprocessed: '未处理',
+};
+
+const stageText = (stage?: string | null): string => (stage ? (STAGE_LABEL[stage] || stage) : '');
+
+const formatMs = (ms: number): string =>
+  (ms < 1000 ? Math.round(ms) + 'ms' : (ms / 1000).toFixed(1) + 's');
+
+/** 耗时明细：只用后端真实字段，缺失不编造 */
+const formatTimings = (t?: ImportItemTimings): string => {
+  if (!t) return '';
+  const parts: string[] = [];
+  if (typeof t.parse_ms === 'number') parts.push('解析 ' + formatMs(t.parse_ms));
+  if (typeof t.vision_ms === 'number') parts.push('识图 ' + formatMs(t.vision_ms));
+  if (typeof t.vision_calls === 'number' && t.vision_calls > 0) {
+    parts.push('识图 ' + t.vision_calls + ' 次'
+      + (typeof t.vision_cached === 'number' && t.vision_cached > 0 ? '（缓存 ' + t.vision_cached + '）' : ''));
+  }
+  if (typeof t.images_total === 'number' && t.images_total > 0) {
+    parts.push('图片 ' + t.images_total + ' 张');
+  }
+  return parts.join(' · ');
+};
+
+/** 条目状态：只有 status=ready 才写"可学习"；indexing/建库中单独标示 */
+const itemStatusMeta = (item: ImportItem, terminal: boolean): { label: string; color: string } => {
+  if (item.status === 'indexing' || item.stage === 'indexing') {
+    return { label: '建库中', color: 'processing' };
+  }
+  if (item.status === 'ready') return ITEM_STATUS_META.ready;
+  if (item.status === 'unprocessed' || (item.status === 'pending' && terminal)) {
+    return { label: '未处理', color: 'warning' };
+  }
+  return ITEM_STATUS_META[item.status] || { label: item.status, color: 'default' };
 };
 
 const JOB_STATUS_META: Record<ImportJobStatus, { label: string; color: string }> = {
@@ -114,6 +162,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   const [pollError, setPollError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<UploadError | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [continuing, setContinuing] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
@@ -165,7 +214,10 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     (async () => {
       try {
         const list = await listImports(subjectId, 5);
-        const activeJob = list.find((j) => !isTerminalStatus(j.status));
+        // 恢复最近任务：进行中的任务，以及"部分完成/仍有未处理项"的任务——
+        // 刷新或服务重启后必须仍能自动出现「继续处理剩余资料」入口。
+        const activeJob = list.find((j) => !isTerminalStatus(j.status))
+          || list.find((j) => j.status === 'partial' || jobNeedsContinue(j));
         if (alive && activeJob) setJob(activeJob);
       } catch {
         // 没有历史记录时后端可能报错，不打扰用户
@@ -296,6 +348,23 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     }
   };
 
+  /** 继续处理剩余/失败项：拿到新 job_id 后继续轮询（已完成的资料会复用） */
+  const handleContinue = async (jobId: string) => {
+    setContinuing(true);
+    try {
+      const res = await continueImport(jobId);
+      finishedRef.current = null;
+      setLocalRejected([]);
+      setBackendRejected([]);
+      setUploadError(null);
+      if (res.job_id) setJob(await getImportJob(res.job_id));
+    } catch (e) {
+      message.error(describeError(e, '继续处理失败，请稍后重试'));
+    } finally {
+      setContinuing(false);
+    }
+  };
+
   const handleCancel = async (jobId: string) => {
     try {
       await cancelImport(jobId);
@@ -328,27 +397,41 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   const terminal = job ? isTerminalStatus(job.status) : false;
   const compact = Boolean(compactWhenHasFiles) || items.length > 0;
   const rejected = [...localRejected, ...backendRejected];
-  const readyCount = job?.totals?.ready ?? 0;
+  const totals = resolveTotals(job);
+  // 诚实状态：有未处理/失败项时即使后端误报 succeeded 也按 partial 展示
+  const effectiveStatus = effectiveJobStatus(job);
   const showItems = !terminal || detailsOpen;
-  const jobMeta = job ? JOB_STATUS_META[job.status] : null;
+  const jobMeta = effectiveStatus ? JOB_STATUS_META[effectiveStatus] : null;
+  const retryableFailed = hasRetryableFailed(job);
+  const canContinue = jobNeedsContinue(job);
+  const processed = totals.ready + totals.failed + totals.skipped;
+  const processedPct = totals.total > 0 ? Math.round((processed / totals.total) * 100) : 0;
 
   const renderItem = (item: ImportItem) => {
-    const meta = ITEM_STATUS_META[item.status] || { label: item.status, color: 'default' };
+    const meta = itemStatusMeta(item, terminal);
     const realProgress = typeof item.progress === 'number' ? Math.round(item.progress * 100) : null;
+    const timings = formatTimings(item.timings);
+    const stage = stageText(item.stage);
+    const subParts: string[] = [];
+    if (item.origin_archive) subParts.push('来自 ' + item.origin_archive);
+    if (item.size) subParts.push(formatBytes(item.size));
+    const isUnprocessed = item.status === 'unprocessed' || (item.status === 'pending' && terminal);
     return (
       <div className="udz-row" key={item.item_id}>
         <FileTextOutlined className="udz-row-icon" />
         <div className="udz-row-main">
           <div className="udz-row-name" title={item.display_name}>{item.display_name}</div>
-          <div className="udz-row-sub">
-            {item.origin_archive ? '来自 ' + item.origin_archive : ''}
-            {item.origin_archive && item.size ? ' · ' : ''}
-            {item.size ? formatBytes(item.size) : ''}
-            {item.stage ? ' · ' + item.stage : ''}
+          <div
+            className="udz-row-sub"
+            title={[subParts.join(' · '), stage ? '阶段 ' + stage : ''].filter(Boolean).join(' · ')}
+          >
+            {subParts.join(' · ')}
+            {subParts.length > 0 && stage ? ' · ' : ''}
+            {stage ? '阶段 ' + stage : ''}
           </div>
           {item.status === 'failed' && (
             <div className="udz-row-msg">
-              {item.message || '导入失败'}
+              {item.message || '导入失败'}{item.error_type ? '（' + item.error_type + '）' : ''}
               {item.retryable && (
                 <Button
                   type="link" size="small" className="udz-row-retry"
@@ -362,6 +445,12 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           {item.status === 'skipped' && item.message && (
             <div className="udz-row-msg udz-row-msg--muted">{item.message}</div>
           )}
+          {isUnprocessed && (
+            <div className="udz-row-msg udz-row-msg--muted">
+              未处理（等待继续）{item.message && item.message !== '未处理' ? '：' + item.message : ''}
+            </div>
+          )}
+          {timings && <div className="udz-row-timing">耗时：{timings}</div>}
           {(item.status === 'parsing' || item.status === 'indexing') && realProgress !== null && (
             <Progress percent={realProgress} size="small" showInfo={false} strokeColor="var(--color-primary)" />
           )}
@@ -457,11 +546,9 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           <div className="udz-queue-head">
             <Text strong style={{ fontSize: 13 }}>导入队列</Text>
             {jobMeta && <Tag color={jobMeta.color}>{jobMeta.label}</Tag>}
-            {!terminal && (
-              <span className="udz-queue-progress">
-                {job.totals.ready} 可学习 · {job.totals.failed} 失败 · {job.totals.skipped} 跳过
-              </span>
-            )}
+            <span className="udz-queue-progress">
+              已处理 {processed} / 共 {totals.total} 份
+            </span>
             {!terminal && (
               <Button type="link" size="small" className="udz-cancel" onClick={() => void handleCancel(job.job_id)}>
                 取消
@@ -478,12 +565,92 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
             )}
           </div>
 
+          {/* 计数卡片：总数 / 可学习 / 处理中 / 失败 / 未处理 / 已跳过。
+              为 0 的隐藏，但 unprocessed 与 failed 不为 0 时必须可见。 */}
+          <div className="udz-counts">
+            <div className="udz-count">
+              <span className="udz-count-value">{totals.total}</span>
+              <span className="udz-count-label">总数</span>
+            </div>
+            <div className="udz-count udz-count--ok">
+              <span className="udz-count-value">{totals.ready}</span>
+              <span className="udz-count-label">可学习</span>
+            </div>
+            {totals.processing > 0 && (
+              <div className="udz-count udz-count--processing">
+                <span className="udz-count-value">{totals.processing}</span>
+                <span className="udz-count-label">处理中</span>
+              </div>
+            )}
+            {totals.failed > 0 && (
+              <div className="udz-count udz-count--error">
+                <span className="udz-count-value">{totals.failed}</span>
+                <span className="udz-count-label">失败</span>
+              </div>
+            )}
+            {totals.unprocessed > 0 && (
+              <div className="udz-count udz-count--warn">
+                <span className="udz-count-value">{totals.unprocessed}</span>
+                <span className="udz-count-label">未处理</span>
+              </div>
+            )}
+            {totals.skipped > 0 && (
+              <div className="udz-count udz-count--muted">
+                <span className="udz-count-value">{totals.skipped}</span>
+                <span className="udz-count-label">已跳过</span>
+              </div>
+            )}
+          </div>
+
+          {totals.total > 0 && (
+            <div className="udz-progress">
+              <Progress
+                percent={processedPct} size="small" showInfo={false}
+                strokeColor={effectiveStatus === 'partial' ? '#f59e0b' : 'var(--color-primary)'}
+              />
+              <span className="udz-progress-text">
+                已处理 {processed}/{totals.total} 份
+                {totals.unprocessed > 0 ? '，未处理 ' + totals.unprocessed + ' 份' : ''}
+              </span>
+            </div>
+          )}
+
+          {/* 前端自检：total 必须等于各计数之和，不一致时明确提示（不静默） */}
+          {!totals.consistent && (
+            <div className="udz-invariant">
+              计数自检异常：总数 {totals.total} 与各项之和 {totals.sum} 不一致（按后端 total 展示）
+            </div>
+          )}
+
+          {/* 主操作：partial 且有未处理/可重试失败时，显著位置提供「继续处理」 */}
+          {canContinue && (
+            <div className="udz-continue">
+              <div className="udz-continue-text">
+                <div className="udz-continue-title">
+                  {totals.unprocessed > 0
+                    ? '还有 ' + totals.unprocessed + ' 份资料未处理'
+                    : '还有失败项可继续处理'}
+                  {totals.unprocessed > 0 && retryableFailed ? '，另有可重试的失败项' : ''}
+                </div>
+                <div className="udz-continue-hint">已完成的资料会复用，不会重复导入。</div>
+              </div>
+              <Button
+                type="primary" icon={<ReloadOutlined />} loading={continuing}
+                className="udz-continue-btn"
+                onClick={() => void handleContinue(job.job_id)}
+              >
+                继续处理剩余资料
+              </Button>
+            </div>
+          )}
+
           {terminal && (
             <div className="udz-summary">
               <div className="udz-summary-text">
                 {job.summary_text
-                  || ('共 ' + job.totals.files + ' 份：' + readyCount + ' 可学习，'
-                    + job.totals.failed + ' 失败，' + job.totals.skipped + ' 跳过')}
+                  || ('共 ' + totals.total + ' 份：' + totals.ready + ' 可学习，'
+                    + totals.failed + ' 失败，' + totals.unprocessed + ' 未处理，'
+                    + totals.skipped + ' 跳过')}
               </div>
               <div className="udz-actions">
                 {job.can_retry && (
@@ -494,7 +661,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
                     重试失败项
                   </Button>
                 )}
-                {readyCount > 0 && (
+                {totals.ready > 0 && (
                   <Button type="primary" size="small" onClick={handleOpenSubject}>
                     开始伴学
                   </Button>

@@ -431,9 +431,10 @@ class TestImageEnrichmentIntegration(unittest.TestCase):
     
     def test_multiple_image_documents(self):
         """测试多个 image 文档的增强"""
-        # 创建第二个测试图片
+        # 创建第二个测试图片：内容与第一张不同，
+        # 这样才验证"不同图各自识别"（相同内容的图会被按内容哈希去重，见新用例）
         test_image2 = Path(self.test_dir) / "test_image2.png"
-        test_image2.touch()
+        test_image2.write_bytes(b"distinct-second-image-bytes")
         
         docs = [
             # 第一个 image 文档

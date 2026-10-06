@@ -8,7 +8,10 @@ import json
 import os
 import hashlib
 import logging
+import time
+import threading
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime
@@ -33,6 +36,34 @@ def _min_content_image_bytes() -> int:
         return int(os.getenv("VISION_MIN_IMAGE_BYTES", str(8 * 1024)))
     except (TypeError, ValueError):
         return 8 * 1024
+
+
+def _vision_max_concurrency() -> int:
+    """受控并发的视觉调用数（默认 3）。过大反而会被提供方限流。"""
+    try:
+        value = int(os.getenv("VISION_MAX_CONCURRENCY", "3"))
+    except (TypeError, ValueError):
+        return 3
+    return max(1, value)
+
+
+def _vision_image_timeout() -> float:
+    """单张图片视觉调用的墙钟上限（秒），默认 30；0/无效则回退默认。"""
+    try:
+        value = float(os.getenv("VISION_IMAGE_TIMEOUT_SECONDS", "30"))
+    except (TypeError, ValueError):
+        return 30.0
+    return value if value > 0 else 30.0
+
+
+def _zero_vision_stats() -> Dict[str, int]:
+    return {"images_total": 0, "images_unique": 0, "images_deduped": 0,
+            "vision_calls": 0, "vision_cached": 0, "vision_failed": 0,
+            "vision_skipped": 0, "vision_timeout": 0, "vision_ms": 0}
+
+
+# 图片内容哈希去重用的短锁（同一批内重复图只识别一次）
+_STATS_LOCK = threading.Lock()
 
 # 图片描述缓存目录（与DocumentConverter共享）
 #
@@ -183,7 +214,151 @@ class MultimodalEnricher:
             vision_provider: 视觉增强提供者（依赖注入），默认使用QwenVisionProvider
         """
         self.vision_provider = vision_provider or QwenVisionProvider()
+        # 最近一次批量图片增强的统计（供导入任务计时落库，见 import_service timings_json）
+        self.last_stats: Dict[str, int] = _zero_vision_stats()
         logger.info("MultimodalEnricher初始化完成")
+
+    # ---------- 图片批处理：去重 + 受控并发 + 单张超时 ----------
+
+    @staticmethod
+    def _content_hash(image_path: Optional[str]) -> Optional[str]:
+        """图片内容哈希（用于同批去重）；文件不存在/不可读返回 None（按唯一处理）"""
+        if not image_path:
+            return None
+        try:
+            h = hashlib.md5()
+            with open(image_path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+        except Exception:
+            return None
+
+    def _analyze_with_timeout(self, image_path: str) -> Dict[str, Any]:
+        """
+        在墙钟上限内调用视觉提供方；超时不阻塞整份资料。
+
+        注意：底层 provider 自身也有 requests 超时（VISION_IMAGE_TIMEOUT_SECONDS），
+        这里再包一层是为了兜住"重试循环/连接挂起"等 provider 内部耗时超过单张上限的情形。
+        """
+        timeout = _vision_image_timeout()
+        provider = self.vision_provider
+        provider_name = getattr(provider, "model_name", "") or "qwen-vision"
+        if provider is None:
+            return {"error": "视觉提供方不可用", "vision_status": "failed",
+                    "vision_error_type": "no_vision_provider"}
+
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vision-item")
+        future = executor.submit(provider.analyze_image, image_path)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeout:
+            logger.warning(
+                f"[Multimodal] 单张视觉调用超时（>{timeout:g}s），标记失败并继续: "
+                f"{Path(image_path).name}")
+            return {"error": f"视觉调用超时（>{timeout:g}s）",
+                    "vision_status": "failed",
+                    "vision_error_type": "vision_timeout",
+                    "provider_used": provider_name,
+                    "model_used": provider_name}
+        finally:
+            # 不等待被放弃的调用（它已是 daemon 线程池，最终会被 requests 超时终止）
+            executor.shutdown(wait=False)
+
+    @staticmethod
+    def _copy_vision_result(src_doc: Any, dst_doc: Any) -> None:
+        """把代表图的视觉结果复制到内容相同的重复图上（不重复调用）"""
+        dst_doc.page_content = src_doc.page_content
+        fields = ("description", "ocr_text", "provider_used", "model_used",
+                  "vision_status", "vision_retries", "vision_error_type",
+                  "vision_skip_reason", "is_content", "content_kind",
+                  "image_original_size", "image_scaled_size", "image_max_side",
+                  "image_downscaled")
+        for field in fields:
+            if field in src_doc.metadata:
+                dst_doc.metadata[field] = src_doc.metadata[field]
+
+    def _enrich_image_batch(self, image_docs: List[Any]) -> List[Any]:
+        """
+        批量增强图片文档：按内容哈希去重，同一批内重复图只识别一次；
+        对唯一图按 VISION_MAX_CONCURRENCY 受控并发；顺序保持与输入一致。
+        """
+        stats = _zero_vision_stats()
+        stats["images_total"] = len(image_docs)
+        if not image_docs:
+            self.last_stats = stats
+            return image_docs
+
+        groups: Dict[str, List[int]] = {}
+        for idx, doc in enumerate(image_docs):
+            path = self._extract_image_path(doc)
+            key = self._content_hash(path) if path else None
+            if key is None:
+                key = f"__unique_{idx}"
+            groups.setdefault(key, []).append(idx)
+
+        reps = [members[0] for members in groups.values()]
+        stats["images_unique"] = len(reps)
+        stats["images_deduped"] = len(image_docs) - len(reps)
+
+        def _run(rep_idx: int):
+            doc = image_docs[rep_idx]
+            start = time.monotonic()
+            try:
+                out = self._enrich_single_document(doc)
+            except Exception as e:
+                logger.warning(f"图片增强失败，保留原文档: {e}")
+                out = doc
+            return rep_idx, out, (time.monotonic() - start) * 1000.0
+
+        results: Dict[int, Any] = {}
+        if len(reps) == 1:
+            seq = [_run(reps[0])]
+        else:
+            workers = min(_vision_max_concurrency(), len(reps))
+            with ThreadPoolExecutor(max_workers=workers,
+                                    thread_name_prefix="vision-batch") as pool:
+                seq = list(pool.map(_run, reps))
+
+        for rep_idx, out, elapsed_ms in seq:
+            results[rep_idx] = out
+            stats["vision_ms"] += int(max(0.0, elapsed_ms))
+            status = (getattr(out, "metadata", {}) or {}).get("vision_status", "")
+            err = (getattr(out, "metadata", {}) or {}).get("vision_error_type", "")
+            if err == "vision_timeout":
+                stats["vision_timeout"] += 1
+            if status == "cached":
+                stats["vision_cached"] += 1
+            elif status == "success":
+                stats["vision_calls"] += 1
+            elif status == "failed":
+                stats["vision_failed"] += 1
+            elif status == "skipped":
+                stats["vision_skipped"] += 1
+
+        # 重复图直接复用代表图结果
+        for members in groups.values():
+            rep_idx = members[0]
+            rep_doc = results.get(rep_idx, image_docs[rep_idx])
+            for dup_idx in members[1:]:
+                self._copy_vision_result(rep_doc, image_docs[dup_idx])
+                results[dup_idx] = image_docs[dup_idx]
+
+        self.last_stats = stats
+        logger.info(
+            f"[Multimodal] 图片批处理完成: total={stats['images_total']} "
+            f"unique={stats['images_unique']} deduped={stats['images_deduped']} "
+            f"calls={stats['vision_calls']} cached={stats['vision_cached']} "
+            f"failed={stats['vision_failed']} timeout={stats['vision_timeout']} "
+            f"concurrency={_vision_max_concurrency()}")
+        return [results.get(i, image_docs[i]) for i in range(len(image_docs))]
+
+    def enrich_images(self, documents: List[Any]) -> List[Any]:
+        """公共入口：对**图片文档**批量增强（去重+并发+单张超时）；非图片原样返回。"""
+        if not documents:
+            self.last_stats = _zero_vision_stats()
+            return documents
+        return self._enrich_image_batch(list(documents))
     
     def _compute_cache_key(self, image_path: Path) -> str:
         """
@@ -309,18 +484,40 @@ class MultimodalEnricher:
             增强后的Document对象列表
         """
         if not documents:
+            self.last_stats = _zero_vision_stats()
             return documents
-        
-        enriched_documents = []
-        for doc in documents:
+
+        # 图片走批量路径（内容去重 + 受控并发 + 单张超时），文本/表格逐元素处理。
+        # 顺序保持不变，调用方无需感知内部并发。
+        image_idx = set()
+        for i, d in enumerate(documents):
             try:
-                enriched_doc = self._enrich_single_document(doc)
-                enriched_documents.append(enriched_doc)
+                if self._detect_document_type(d) == "image":
+                    image_idx.add(i)
+            except Exception:
+                # 没有 metadata / metadata=None 的文档交给 _enrich_single_document
+                # （它会先补齐 metadata），不在这里因探测失败而中断整批。
+                continue
+        enriched_documents: List[Any] = list(documents)
+
+        for i, doc in enumerate(documents):
+            if i in image_idx:
+                continue
+            try:
+                enriched_documents[i] = self._enrich_single_document(doc)
             except Exception as e:
                 logger.warning(f"文档增强失败，保留原始文档: {e}")
-                enriched_documents.append(doc)
-        
-        logger.info(f"文档增强完成: {len(documents)} 个文档")
+                enriched_documents[i] = doc
+
+        if image_idx:
+            ordered = [documents[i] for i in sorted(image_idx)]
+            batch_result = self._enrich_image_batch(ordered)
+            for i, out in zip(sorted(image_idx), batch_result):
+                enriched_documents[i] = out
+        else:
+            self.last_stats = _zero_vision_stats()
+
+        logger.info(f"文档增强完成: {len(documents)} 个文档（图片 {len(image_idx)}）")
         return enriched_documents
     
     def _enrich_single_document(self, doc: Any) -> Any:
@@ -479,7 +676,7 @@ class MultimodalEnricher:
         # Step 2: 缓存未命中，调用VisionProvider
         if self.vision_provider:
             try:
-                vision_result = self.vision_provider.analyze_image(image_path)
+                vision_result = self._analyze_with_timeout(image_path)
 
                 # 统一记录 provider_used / model_used（真实值，失败时也不缺失）
                 doc.metadata["provider_used"] = vision_result.get("provider_used") or "qwen-vision"

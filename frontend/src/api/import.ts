@@ -104,10 +104,22 @@ export const getImportCapabilities = async (): Promise<ImportCapabilities> => {
 // ============ 任务与条目 ============
 
 export type ImportItemStatus =
-  | 'pending' | 'parsing' | 'indexing' | 'ready' | 'failed' | 'skipped';
+  | 'pending' | 'parsing' | 'indexing' | 'ready' | 'failed' | 'skipped'
+  /** 后端新增语义：已发现但未处理（等待「继续处理」） */
+  | 'unprocessed';
 
 export type ImportJobStatus =
   | 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | 'cancelled';
+
+/** 单条目的耗时/调用明细（后端新增，字段只增不改，缺失即不展示） */
+export interface ImportItemTimings {
+  parse_ms?: number | null;
+  vision_ms?: number | null;
+  vision_calls?: number | null;
+  vision_cached?: number | null;
+  images_total?: number | null;
+  [key: string]: number | null | undefined;
+}
 
 export interface ImportItem {
   item_id: string;
@@ -116,12 +128,15 @@ export interface ImportItem {
   origin_archive?: string | null;
   size?: number;
   status: ImportItemStatus;
+  /** 更细阶段：extracting / parsing / indexing / ready ... */
   stage?: string;
   progress?: number | null;
   message?: string;
   doc_id?: string | null;
   error_type?: string | null;
   retryable?: boolean;
+  /** 新增字段：耗时明细；缺失时前端不编造 */
+  timings?: ImportItemTimings;
 }
 
 export interface ArchiveSummary {
@@ -131,6 +146,22 @@ export interface ArchiveSummary {
   note?: string;
 }
 
+/** 任务计数（后端新增 total/processing/unprocessed，保留 files 兼容） */
+export interface ImportTotals {
+  /** 兼容旧契约：条目数 */
+  files: number;
+  /** 有效资料总数（新）；缺失时前端按各项之和回退 */
+  total?: number;
+  ready: number;
+  /** 处理中（新）；缺失视为 0 */
+  processing?: number;
+  failed: number;
+  /** 发现但未处理（新）；缺失视为 0 */
+  unprocessed?: number;
+  skipped: number;
+  bytes?: number;
+}
+
 export interface ImportJob {
   job_id: string;
   subject_id: string;
@@ -138,12 +169,14 @@ export interface ImportJob {
   created_at?: string;
   updated_at?: string;
   finished_at?: string | null;
-  totals: { files: number; ready: number; failed: number; skipped: number; bytes?: number };
+  totals: ImportTotals;
   items: ImportItem[];
   archive_summaries?: ArchiveSummary[];
   kb?: { status?: string; ready?: boolean; document_count?: number; chunk_count?: number };
   summary_text?: string;
   can_retry?: boolean;
+  /** 后端权威判定：该任务是否可以「继续处理剩余资料」（旧任务也能为 true） */
+  can_continue?: boolean;
   warnings?: string[];
 }
 
@@ -156,6 +189,84 @@ export interface StartImportResult {
 /** 任务是否已到终态（终态后停止轮询） */
 export const isTerminalStatus = (status: ImportJobStatus | undefined | null): boolean =>
   status === 'succeeded' || status === 'partial' || status === 'failed' || status === 'cancelled';
+
+/** 归一化后的计数；sum 与 consistent 供前端自检不变式 */
+export interface ResolvedImportTotals {
+  total: number;
+  ready: number;
+  processing: number;
+  failed: number;
+  unprocessed: number;
+  skipped: number;
+  files: number;
+  bytes?: number;
+  /** ready + processing + failed + unprocessed + skipped */
+  sum: number;
+  /** 后端不变式 total === sum 是否成立（不成立时界面明确提示） */
+  consistent: boolean;
+}
+
+/**
+ * 归一化 job.totals。缺失的新字段按 0 处理，total 缺失时按各项之和回退；
+ * 绝不编造数据——total 与各项之和不一致时 consistent=false，交由界面提示。
+ */
+export const resolveTotals = (job: ImportJob | null | undefined): ResolvedImportTotals => {
+  const t = job?.totals;
+  const items = job?.items || [];
+  const has = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  const n = (v: unknown): number => (has(v) ? Math.max(0, v) : 0);
+  const fromItems = (pred: (s: ImportItemStatus) => boolean): number =>
+    items.filter((it) => pred(it.status)).length;
+
+  // 新字段缺失（旧后端）时按 items 的真实状态回退计数，不编造也不漏计
+  const ready = has(t?.ready) ? n(t.ready) : fromItems((s) => s === 'ready');
+  const processing = has(t?.processing)
+    ? n(t.processing)
+    : fromItems((s) => s === 'pending' || s === 'parsing' || s === 'indexing');
+  const failed = has(t?.failed) ? n(t.failed) : fromItems((s) => s === 'failed');
+  const unprocessed = has(t?.unprocessed) ? n(t.unprocessed) : fromItems((s) => s === 'unprocessed');
+  const skipped = has(t?.skipped) ? n(t.skipped) : fromItems((s) => s === 'skipped');
+  const files = has(t?.files) ? n(t.files) : items.length;
+
+  const sum = ready + processing + failed + unprocessed + skipped;
+  const total = has(t?.total) ? n(t.total) : sum;
+  return {
+    total, ready, processing, failed, unprocessed, skipped, files,
+    bytes: t?.bytes, sum, consistent: total === sum,
+  };
+};
+
+/**
+ * 诚实状态：只要存在未处理或失败项，就绝不能显示"已完成"。
+ * 后端不变式保证此时 status=partial，此函数是前端兜底，防止旧后端/缓存导致误报。
+ */
+export const effectiveJobStatus = (
+  job: ImportJob | null | undefined,
+): ImportJobStatus | null => {
+  if (!job) return null;
+  const t = resolveTotals(job);
+  if (job.status === 'succeeded' && (t.unprocessed > 0 || t.failed > 0)) return 'partial';
+  return job.status;
+};
+
+/** 是否存在可重试的失败项 */
+export const hasRetryableFailed = (job: ImportJob | null | undefined): boolean =>
+  Boolean(job?.items?.some((it) => it.status === 'failed' && it.retryable));
+
+/**
+ * 是否需要「继续处理剩余资料」。
+ *
+ * 以**后端 can_continue 为准**（后端会为"有未处理成员"或"整体失败但原包仍在、可重跑"的任务置位，
+ * 包括本改动之前创建的旧任务）；缺失该字段时再按前端兜底规则判断。
+ * 2026-10-07 真实事故：被误判 archive_corrupt 的 7z 任务整体 failed、但原包仍在可重跑，
+ * 只按 status=partial 判断会让用户找不到「继续处理」入口。
+ */
+export const jobNeedsContinue = (job: ImportJob | null | undefined): boolean => {
+  if (!job) return false;
+  if (job.can_continue === true) return true;
+  const t = resolveTotals(job);
+  return effectiveJobStatus(job) === 'partial' && (t.unprocessed > 0 || hasRetryableFailed(job));
+};
 
 // ============ 发起 / 查询 / 重试 / 取消 ============
 
@@ -208,6 +319,15 @@ export const listImports = async (subjectId: string, limit = 5): Promise<ImportJ
 
 export const retryImport = async (jobId: string): Promise<{ job_id: string }> => {
   const res = await apiClient.post(`/knowledge/imports/${encodeURIComponent(jobId)}/retry`);
+  return unwrap<{ job_id: string }>(res);
+};
+
+/**
+ * 继续处理剩余/失败项（后端契约 2026-10-07 新增）。
+ * 已完成的资料会复用，不会重复导入；返回新的 job_id 继续轮询。
+ */
+export const continueImport = async (jobId: string): Promise<{ job_id: string }> => {
+  const res = await apiClient.post(`/knowledge/imports/${encodeURIComponent(jobId)}/continue`);
   return unwrap<{ job_id: string }>(res);
 };
 

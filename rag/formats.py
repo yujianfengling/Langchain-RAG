@@ -314,7 +314,14 @@ def limits() -> Dict[str, Any]:
                            保留以免前端契约破裂
     - max_files            文件数量（含展开成员），默认 100，env IMPORT_MAX_FILES
     - max_depth            递归深度，默认 2，env IMPORT_MAX_DEPTH
-    - max_seconds          单任务超时秒数，默认 300，env IMPORT_MAX_SECONDS
+    - max_seconds          单批**解析预算**秒数，默认 900，env IMPORT_MAX_SECONDS
+                          2026-10-07 实测（真实 367MB / 16 份 20-30MB 图片型课件）：
+                          8 份约 244s。原默认 300s 会让这类正常资料永远导不完，
+                          用户只看到"剩余资料未处理"。
+                          注意：这里只把**预算**调到与实测相符；单文件超时
+                          (IMPORT_ITEM_MAX_SECONDS=180) 与单张视觉超时
+                          (VISION_IMAGE_TIMEOUT_SECONDS=30) 同时生效，
+                          所以"单个文件卡死拖住整批"不是靠调大预算修好的。
     """
     # 兼容旧 env：优先新名，未设置时回退旧名 IMPORT_MAX_FILE_MB
     doc_mb = _env_int("IMPORT_MAX_DOCUMENT_MB", _env_int("IMPORT_MAX_FILE_MB", 200))
@@ -327,7 +334,7 @@ def limits() -> Dict[str, Any]:
         "max_total_mb": extract_total_mb,
         "max_files": _env_int("IMPORT_MAX_FILES", 100),
         "max_depth": _env_int("IMPORT_MAX_DEPTH", 2),
-        "max_seconds": _env_int("IMPORT_MAX_SECONDS", 300),
+        "max_seconds": _env_int("IMPORT_MAX_SECONDS", 900),
     }
 
 

@@ -230,7 +230,8 @@ def test_real_solid_rar_fails_with_reason(tmp_path):
 
 def test_rar_members_use_same_mapping_and_dedupe(monkeypatch, tmp_path):
     """RAR 成员与 ZIP/7z 共用同一套成员映射 / 忽略 / 同名去重逻辑。"""
-    def fake_iter(_src, _password):
+    # 2026-10-07：_iter_rar 增加"受控暂存根目录"参数（不再用系统 TEMP）
+    def fake_iter(_src, _password, _staging_root=None):
         yield "第1章/课件.txt", (lambda: b"AAA"), 3, None
         yield "第2章/课件.txt", (lambda: b"BBB"), 3, None
         yield "__MACOSX/._x", (lambda: b"junk"), 4, None

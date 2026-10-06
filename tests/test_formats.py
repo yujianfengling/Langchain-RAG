@@ -120,7 +120,10 @@ def test_limits_defaults(monkeypatch):
     assert caps["max_total_mb"] == 1024
     assert caps["max_files"] == 100
     assert caps["max_depth"] == 2
-    assert caps["max_seconds"] == 300
+    # 2026-10-07：单批预算由 300s 调到 900s。实测真实 367MB/16 份图片型课件，
+    # 8 份就要约 244s；300s 会让这类正常资料永远导不完。单文件/单张视觉超时另有上限，
+    # 所以这不是"靠调大超时解决问题"（见 docs/IMPORT_TIMEOUT_RCA.md）。
+    assert caps["max_seconds"] == 900
 
 
 def test_upload_limit_depends_on_archive(monkeypatch):

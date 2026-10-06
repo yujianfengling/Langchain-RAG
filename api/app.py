@@ -174,8 +174,12 @@ def _load_rag_health_checker() -> bool:
         return False
     if _check_rag_health is None:
         try:
-            from services.rag_loader import load_rag
-            _check_rag_health = getattr(load_rag(), "check_rag_health")
+            # 用 load_rag_stack()：把 rag 子模块（rag.rag_service 等）也在同一把进程锁内定型。
+            # 只导入顶层 rag 时，后台导入任务线程仍会自行进入 "from rag.rag_service import ..."
+            # 的 import 机器，与预热线程并发触发 Python 3.14 的跨线程模块锁死锁
+            # （2026-10-07 实测：继续导入任务直接 failed、0 条目）。
+            from services.rag_loader import load_rag_stack
+            _check_rag_health = getattr(load_rag_stack(), "check_rag_health")
             _rag_available = True
         except Exception as e:      # pragma: no cover - 依赖缺失环境
             _rag_import_error = str(e)
@@ -198,8 +202,8 @@ def _warm_embedding_model() -> bool:
     第一次提问仍要等十几秒——"health 返回快"并不能证明系统已就绪。
     """
     try:
-        from services.rag_loader import load_rag
-        rag = load_rag()
+        from services.rag_loader import load_rag_stack
+        rag = load_rag_stack()
         getter = getattr(rag, "get_embedding_model", None) or getattr(rag, "embedding_model", None)
         if getter is None:
             _RAG_WARM["embedding"] = "unsupported"
@@ -269,6 +273,14 @@ def _start_rag_warmup() -> None:
     except ValueError:
         delay = 15.0
     _RAG_WARM["delay_s"] = delay
+    # 被中断的导入任务必须先收敛：它们靠线程执行，进程重启后不可能还在跑，
+    # 若不处理会永远停在 'running'，用户既看不到进度也没有「继续处理」入口
+    # （2026-10-07 实测：内存压力下进程被杀后残留 status=running 的任务）。
+    try:
+        from services.import_service import reconcile_interrupted_jobs
+        reconcile_interrupted_jobs()
+    except Exception as e:      # 恢复失败不能阻塞启动
+        logger.warning(f"[import] 中断任务收敛失败（不阻塞启动）: {e}")
     if delay <= 0:
         _RAG_WARM["state"] = "disabled"
         logger.info("[warmup] RAG_WARMUP_DELAY_SECONDS=0，跳过 rag 预热")

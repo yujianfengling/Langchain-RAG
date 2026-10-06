@@ -41,7 +41,8 @@ def test_default_limit_values(monkeypatch):
     assert caps["max_total_mb"] == 1024        # 旧字段兼容
     assert caps["max_files"] == 100
     assert caps["max_depth"] == 2
-    assert caps["max_seconds"] == 300
+    # 同上：单批预算默认 900s（实测依据见 docs/IMPORT_TIMEOUT_RCA.md）
+    assert caps["max_seconds"] == 900
 
 
 def test_legacy_env_import_max_file_mb_still_honored(monkeypatch):
