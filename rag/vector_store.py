@@ -48,6 +48,18 @@ META_FILE = "meta.json"
 # 索引 schema 版本：不兼容变更时递增，强制重建
 INDEX_SCHEMA_VERSION = 2
 
+# 索引目录的"旁挂"后缀。它们不是学科，不得出现在学科列表 / 可用性统计里：
+# - .building：独立目录构建中的新版本（staging）
+# - .old：原子发布时线上旧版本的临时位置
+# - .prev：上一次有效版本的可恢复备份
+# - .bak：历史孤儿备份（restore_orphaned_index_backups 兜底）
+INDEX_SIDECAR_SUFFIXES = (".building", ".old", ".prev", ".bak")
+
+
+def is_index_sidecar(name: str) -> bool:
+    """判断目录名是否为索引旁挂目录（非学科本身）"""
+    return name.endswith(INDEX_SIDECAR_SUFFIXES)
+
 
 def _safe_dir_name(subject_id: str) -> str:
     """
@@ -402,6 +414,7 @@ def create_vector_store(
     chunk_size: Optional[int] = None,
     chunk_overlap: Optional[int] = None,
     filter_stats: Optional[Dict[str, Any]] = None,
+    build_id: Optional[str] = None,
 ) -> Any:
     """
     创建FAISS向量存储
@@ -416,6 +429,8 @@ def create_vector_store(
         chunk_overlap: 分块重叠（写入 meta）
         filter_stats: 调用方**已先行过滤**时的统计结果。传入时本函数不再重复过滤，
                       但仍会把真实阈值与丢弃数写入 meta（避免 meta 失真）。
+        build_id: 本次构建的版本标识（可选）。写入 meta，供原子发布时与 BM25
+                  的 bm25_meta.json 做"同一版本"校验；缺省不写。
         
     Returns:
         FAISS向量存储实例
@@ -536,6 +551,7 @@ def create_vector_store(
             "meta_wrapper_dropped": stats.get("meta_wrapper_dropped"),
             "filter_relaxed": stats.get("relaxed"),
             "collection_name": collection_name,
+            "build_id": build_id,
             "built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         })
         

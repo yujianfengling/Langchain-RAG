@@ -100,19 +100,29 @@ class PDFAnalyzer:
             self._formula_detector = FormulaDetector()
         return self._formula_detector
     
-    def analyze(self, pdf_path: Union[str, Path]) -> List[PDFElement]:
+    def analyze(self, pdf_path: Union[str, Path], start_page: int = 0,
+                end_page: Optional[int] = None, page_offset: int = 0) -> List[PDFElement]:
         """
-        分析 PDF 文件
-        
+        分析 PDF 文件（可按页范围分段）。
+
         Args:
             pdf_path: PDF 文件路径
-            
+            start_page: 起始页（0 基，**含**），默认 0
+            end_page: 结束页（0 基，**不含**），None=到末页
+            page_offset: 传给检测器的页码偏移。分段解析时用它把"分段内页码"
+                         还原成**全书真实页码**（例如第 2 段从 200 开始解析时 offset=200），
+                         保证引用里的页码是真实页码而不是段内页码。
+
         Returns:
             检测到的元素列表
-            
+
         Raises:
             FileNotFoundError: 文件不存在
             ValueError: 不支持的文件格式
+
+        2026-10-07：新增分段参数（默认值保持原行为）。
+        背景：实测一本 958 页教材一次性解析需 ~84s 且一次产出 7.4 万个元素；
+        按 200 页分段每段仅 ~17s，任一段失败/超时只丢该段，其余段可继续。
         """
         pdf_path = Path(pdf_path)
         
@@ -135,25 +145,30 @@ class PDFAnalyzer:
             
             all_elements = []
             
-            # 遍历每一页
-            for page_num in range(len(doc)):
+            # 遍历指定页范围（默认全书；分段解析时只处理本段）
+            total_pages = len(doc)
+            first = max(0, int(start_page or 0))
+            last = total_pages if end_page is None else min(int(end_page), total_pages)
+            for page_num in range(first, last):
                 page = doc[page_num]
-                
+                # 传给检测器的页码 = 全书真实页码（0 基），保证元数据 page 正确
+                absolute = page_num + int(page_offset or 0)
+
                 # 检测各种元素
                 if self.detect_text and self.text_detector:
-                    text_elements = self.text_detector.detect(page, page_num)
+                    text_elements = self.text_detector.detect(page, absolute)
                     all_elements.extend(text_elements)
-                
+
                 if self.detect_images and self.image_detector:
-                    image_elements = self.image_detector.detect(page, page_num)
+                    image_elements = self.image_detector.detect(page, absolute)
                     all_elements.extend(image_elements)
-                
+
                 if self.detect_tables and self.table_detector:
-                    table_elements = self.table_detector.detect(page, page_num)
+                    table_elements = self.table_detector.detect(page, absolute)
                     all_elements.extend(table_elements)
-                
+
                 if self.detect_formulas and self.formula_detector:
-                    formula_elements = self.formula_detector.detect(page, page_num)
+                    formula_elements = self.formula_detector.detect(page, absolute)
                     all_elements.extend(formula_elements)
             
             doc.close()

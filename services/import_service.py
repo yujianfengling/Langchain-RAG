@@ -59,13 +59,40 @@ def _subject_build_lock(subject_id: str) -> threading.Lock:
         return lock
 
 
-def _item_max_seconds() -> float:
-    """单个文件解析的墙钟上限（默认 180s，env IMPORT_ITEM_MAX_SECONDS）"""
+def _item_max_seconds(path: Optional[Path] = None) -> float:
+    """单个文件解析的墙钟上限。
+
+    - 默认 180s（env IMPORT_ITEM_MAX_SECONDS）。
+    - 大 PDF 单独放宽（env IMPORT_PDF_ITEM_MAX_SECONDS，默认 600s）：
+      实测一本 958 页教材按 200 页分段解析，冷启约 88s，但后端同时有其它负载时会超过 180s，
+      于是每次都在 180s 被杀、整本重来。按测量只对这类文件放宽，其余仍是 180s。
+      放宽是安全的：解析已按页分段并逐段落盘（PdfLoader._load_pdf_in_ranges），
+      超时/中断只丢当前段，重试从缺失段继续。
+    """
     try:
         value = float(os.getenv("IMPORT_ITEM_MAX_SECONDS", "180"))
     except (TypeError, ValueError):
-        return 180.0
-    return value if value > 0 else 180.0
+        value = 180.0
+    base = value if value > 0 else 180.0
+    if path is not None and str(getattr(path, "suffix", "")).lower() == ".pdf":
+        try:
+            import fitz
+            doc = fitz.open(str(path))
+            pages = doc.page_count
+            doc.close()
+            try:
+                threshold = int(os.getenv("IMPORT_PDF_RANGE_THRESHOLD", "300"))
+            except (TypeError, ValueError):
+                threshold = 300
+            if pages > threshold:
+                try:
+                    big = float(os.getenv("IMPORT_PDF_ITEM_MAX_SECONDS", "600"))
+                except (TypeError, ValueError):
+                    big = 600.0
+                return big if big > 0 else 600.0
+        except Exception as e:      # 读页数失败就用默认上限，不影响其它逻辑
+            logger.debug(f"读取 PDF 页数失败，使用默认单文件上限: {e}")
+    return base
 
 
 # ==================== 自动分批 / 重试 / 执行者 / 资源 配置 ====================
@@ -131,6 +158,20 @@ def _executor_timeout_seconds() -> float:
     """执行者心跳超时（秒）。超时视为过期，可被接管。默认 300，env IMPORT_EXECUTOR_TIMEOUT_SECONDS。"""
     value = _env_float("IMPORT_EXECUTOR_TIMEOUT_SECONDS", 300.0)
     return value if value > 0 else 300.0
+
+
+def _executor_heartbeat_seconds() -> float:
+    """心跳刷新间隔（秒）：默认 30，env IMPORT_EXECUTOR_HEARTBEAT_SECONDS。
+
+    上限取超时阈值的 1/5：即使一次长操作或调度抖动拖了几拍，声明也不会过期。
+    与最长单次操作的关系见 _HeartbeatWatchdog 的说明。
+    """
+    timeout = _executor_timeout_seconds()
+    value = _env_float("IMPORT_EXECUTOR_HEARTBEAT_SECONDS", 30.0)
+    if value <= 0:
+        value = 30.0
+    cap = max(0.05, timeout / 5.0)
+    return max(0.05, min(value, cap))
 
 
 def _memory_tracking_enabled() -> bool:
@@ -412,6 +453,9 @@ _MIGRATIONS = {
         # executor_id 非空且心跳未超时 → 拒绝重复执行；心跳超时可接管。
         "executor_id": "TEXT",
         "executor_heartbeat": "REAL",
+        # 执行者声明代数（围栏/fencing）：每次成功声明 +1。旧执行者的 epoch 必然落后，
+        # 于是"我是否仍是当前执行者"可由 (executor_id, executor_epoch) 精确判断。
+        "executor_epoch": "INTEGER DEFAULT 0",
         # 用户意图（任务 3）：暂停/取消后**绝不自动重启**；resume 是唯一清除入口。
         "pause_requested": "INTEGER DEFAULT 0",
         "paused": "INTEGER DEFAULT 0",
@@ -771,7 +815,7 @@ def _parse_item_with_retries(path: Path
     attempt = 0
     while True:
         docs, error_type, message, meta = _parse_with_timeout(
-            path, _item_max_seconds())
+            path, _item_max_seconds(path))
         if (docs or attempt >= max_retries
                 or not _is_transient_error(error_type, message or "")):
             meta["retries"] = attempt
@@ -895,6 +939,7 @@ def _set_job_status_values(job_id: str, **fields: Any) -> None:
     """只更新字段，不改 status（内部用）"""
     if not fields:
         return
+    _fence_guard()   # 失去执行权：一律不写
     sets = ", ".join(f"{k}=?" for k in fields)
     values = list(fields.values()) + [job_id]
     with _DB_LOCK, _connect() as conn:
@@ -938,6 +983,9 @@ def _run_job_thread(job_id: str, only_keys: Optional[set] = None,
                     reuse_job_id: Optional[str] = None) -> None:
     try:
         _run_job(job_id, only_keys=only_keys, reuse_job_id=reuse_job_id)
+    except _ExecutorLostError as e:
+        # 被接管：新执行者负责收尾。旧执行者绝不写终态、绝不建库。
+        logger.warning(f"[import][fencing] 任务 {job_id} 原执行者已停止并退出：{e}")
     except Exception as e:
         logger.error(f"导入任务异常: {job_id}: {e}", exc_info=True)
         try:
@@ -961,6 +1009,7 @@ def _is_cancelled(job_id: str) -> bool:
 
 
 def _set_job_status(job_id: str, status: str, **fields: Any) -> None:
+    _fence_guard()   # 失去执行权：一律不写
     sets = ["status=?", "updated_at=?"]
     values: List[Any] = [status, _now()]
     for key, value in fields.items():
@@ -975,6 +1024,7 @@ def _set_job_status(job_id: str, status: str, **fields: Any) -> None:
 def _update_item(item_id: str, **fields: Any) -> None:
     if not fields:
         return
+    _fence_guard()   # 失去执行权：一律不写
     sets = ", ".join(f"{k}=?" for k in fields)
     values = list(fields.values()) + [item_id]
     with _DB_LOCK, _connect() as conn:
@@ -999,6 +1049,7 @@ def _merge_item_timings(item_id: str, extra: Dict[str, Any]) -> None:
 
 
 def _insert_item(job_id: str, seq: int, **fields: Any) -> str:
+    _fence_guard()   # 失去执行权：一律不写
     item_id = _new_id("itm")
     cols = ["item_id", "job_id", "seq"] + list(fields)
     values = [item_id, job_id, seq] + list(fields.values())
@@ -1017,6 +1068,40 @@ def _new_executor_id() -> str:
     return f"{host}:{os.getpid()}:{threading.get_ident()}:{uuid.uuid4().hex[:6]}"
 
 
+def _claim_executor_ex(job_id: str, executor_id: str) -> Optional[int]:
+    """
+    尝试声明执行者并返回本次声明的单调递增代数（epoch）；被拒绝返回 None。
+
+    True/False 语义见 _claim_executor。epoch 是围栏（fencing）的核心：
+    同一任务每被成功声明一次就 +1，旧执行者手里的 epoch 必然落后，
+    因此即使旧线程仍在运行，也能在**每次写入/建库前**识别"我已不是当前执行者"。
+
+    判定用**一条条件 UPDATE**（SQL 层原子），而不是"先读后写"：
+    跨进程并发触发（双击/重试/resume/auto_resume）也不会两个都成功。
+    """
+    now = time.time()
+    cutoff = now - _executor_timeout_seconds()
+    with _DB_LOCK, _connect() as conn:
+        if _job_row(conn, job_id) is None:
+            return None
+        cur = conn.execute(
+            "UPDATE import_jobs SET executor_id=?, executor_heartbeat=?,"
+            " executor_epoch=COALESCE(executor_epoch, 0) + 1, updated_at=?"
+            " WHERE job_id=? AND (executor_id IS NULL OR executor_id=?"
+            " OR executor_heartbeat IS NULL OR executor_heartbeat < ?)",
+            (executor_id, now, _now(), job_id, executor_id, cutoff))
+        if cur.rowcount != 1:
+            conn.commit()
+            return None
+        row = conn.execute(
+            "SELECT executor_epoch FROM import_jobs WHERE job_id=?", (job_id,)).fetchone()
+        conn.commit()
+    try:
+        return int(row["executor_epoch"])
+    except (TypeError, ValueError, KeyError, IndexError):
+        return 1
+
+
 def _claim_executor(job_id: str, executor_id: str) -> bool:
     """
     尝试声明执行者（任务 2：同一任务只有一个执行者）。
@@ -1024,48 +1109,156 @@ def _claim_executor(job_id: str, executor_id: str) -> bool:
     True = 获得执行权：任务当前无执行者 / 执行者就是自己（续期）/ 原心跳已超时（可接管）。
     False = 已有**活跃**执行者；调用方必须拒绝执行，绝不静默重复跑。
     """
-    now = time.time()
-    timeout = _executor_timeout_seconds()
-    with _DB_LOCK, _connect() as conn:
-        row = _job_row(conn, job_id)
+    return _claim_executor_ex(job_id, executor_id) is not None
+
+
+def _refresh_executor(job_id: str, executor_id: str,
+                      epoch: Optional[int] = None) -> bool:
+    """续期心跳（看护线程 / 批边界 / 建库前调用）。
+
+    epoch 非空时同时校验代数（围栏）：True = 仍持有声明；False = 已被接管。
+    数据库异常按"暂不确定"处理（返回 True），避免把瞬时错误误判成失活、误杀正常任务。
+    """
+    try:
+        with _DB_LOCK, _connect() as conn:
+            if epoch is None:
+                cur = conn.execute(
+                    "UPDATE import_jobs SET executor_heartbeat=?"
+                    " WHERE job_id=? AND executor_id=?",
+                    (time.time(), job_id, executor_id))
+            else:
+                cur = conn.execute(
+                    "UPDATE import_jobs SET executor_heartbeat=?"
+                    " WHERE job_id=? AND executor_id=? AND executor_epoch=?",
+                    (time.time(), job_id, executor_id, int(epoch)))
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.warning(f"执行者心跳续期失败（按仍持有处理）: {job_id}: {e}")
+        return True
+
+
+# ---- 写入围栏（fencing）：失去执行权的旧线程绝不再写 ----
+#
+# Python 无法强杀线程：心跳过期被接管（或 resume/auto_resume 重新声明）后，
+# 旧执行者线程可能仍在跑。仅靠批边界检查不够——它可能正处在一次长建库/落盘中。
+# 因此每次写入/建库前都核对 (executor_id, executor_epoch) 是否仍属于自己；
+# 一旦失去声明：打明确日志、停止写入并退出，绝不静默继续。
+
+
+class _ExecutorLostError(RuntimeError):
+    """本执行者已失去该任务的执行权（被接管）。用于中止后续所有写入。"""
+
+
+_FENCE_LOCAL = threading.local()
+
+
+def _set_executor_fence(job_id: str, executor_id: str, epoch: int) -> None:
+    _FENCE_LOCAL.fence = (job_id, executor_id, int(epoch))
+
+
+def _clear_executor_fence() -> None:
+    if hasattr(_FENCE_LOCAL, "fence"):
+        del _FENCE_LOCAL.fence
+
+
+def _executor_fence() -> Optional[Tuple[str, str, int]]:
+    return getattr(_FENCE_LOCAL, "fence", None)
+
+
+def _is_executor_current(job_id: str, executor_id: str, epoch: int) -> bool:
+    """我是否仍是该任务的当前执行者（id 与 epoch 都一致）。
+
+    读失败按"已失活"处理（安全优先）：宁可不写，也绝不出现两个执行者同时提交。
+    """
+    try:
+        with _DB_LOCK, _connect() as conn:
+            row = conn.execute(
+                "SELECT executor_id, executor_epoch FROM import_jobs WHERE job_id=?",
+                (job_id,)).fetchone()
         if row is None:
             return False
-        try:
-            current = row["executor_id"]
-            heartbeat = row["executor_heartbeat"]
-        except (IndexError, KeyError):
-            current, heartbeat = None, None
-        stale = (not heartbeat) or (now - float(heartbeat) > timeout)
-        if current and current != executor_id and not stale:
-            return False
-        conn.execute(
-            "UPDATE import_jobs SET executor_id=?, executor_heartbeat=?, updated_at=?"
-            " WHERE job_id=?",
-            (executor_id, now, _now(), job_id))
-        conn.commit()
-    return True
-
-
-def _refresh_executor(job_id: str, executor_id: str) -> None:
-    """续期心跳（批间 / 建库前调用），失败不影响主流程。"""
-    try:
-        with _DB_LOCK, _connect() as conn:
-            conn.execute(
-                "UPDATE import_jobs SET executor_heartbeat=? WHERE job_id=? AND executor_id=?",
-                (time.time(), job_id, executor_id))
-            conn.commit()
+        return (row["executor_id"] == executor_id
+                and int(row["executor_epoch"] or 0) == int(epoch))
     except Exception as e:
-        logger.warning(f"执行者心跳续期失败: {job_id}: {e}")
+        logger.warning(f"[import][fencing] 执行权核对失败，按已失活停止写入: {job_id}: {e}")
+        return False
 
 
-def _release_executor(job_id: str, executor_id: str) -> None:
-    """释放自己的执行者声明（只清自己的，避免误清接管者）。"""
+def _fence_lost() -> bool:
+    """非抛出版本的围栏检查（主循环据此优雅退出）。未登记围栏时恒为 False。"""
+    fence = _executor_fence()
+    if fence is None:
+        return False
+    return not _is_executor_current(*fence)
+
+
+def _fence_guard() -> None:
+    """写入/建库前调用：失去执行权立即抛出，阻断任何落盘/建库/条目写入。"""
+    fence = _executor_fence()
+    if fence is None:
+        return
+    job_id, executor_id, epoch = fence
+    if not _is_executor_current(job_id, executor_id, epoch):
+        raise _ExecutorLostError(
+            f"[import][fencing] 任务 {job_id} 的执行权已被接管"
+            f"（本执行者 {executor_id} epoch={epoch}）；停止写入并退出")
+
+
+class _HeartbeatWatchdog:
+    """独立看护线程：与主工作线程解耦，长解析/长建库期间照常续期心跳。
+
+    为什么必须独立：实测该学科一次建库 build_ms≈424s，远大于默认超时 300s；
+    若只在批边界刷新，长建库期间心跳必过期 → 被误判失活 → 被接管 → 两个执行者。
+    接管判定只基于"心跳是否过期"，与单次操作耗时无关；这里用心跳间隔
+    （默认 30s，且不超过超时阈值的 1/5）保证任何单次长操作期间都有多次续期。
+    """
+
+    def __init__(self, job_id: str, executor_id: str, epoch: int) -> None:
+        self.job_id = job_id
+        self.executor_id = executor_id
+        self.epoch = int(epoch)
+        self.lost = threading.Event()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name=f"import-hb-{job_id}", daemon=True)
+
+    def _run(self) -> None:
+        interval = _executor_heartbeat_seconds()
+        while not self._stop.wait(interval):
+            if not _refresh_executor(self.job_id, self.executor_id, self.epoch):
+                self.lost.set()
+                logger.warning(
+                    f"[import][fencing] 任务 {self.job_id} 心跳续期被拒绝：执行权已被接管"
+                    f"（executor_id={self.executor_id} epoch={self.epoch}）")
+                return
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
+def _release_executor(job_id: str, executor_id: str,
+                      epoch: Optional[int] = None) -> None:
+    """释放自己的执行者声明（只清自己的，避免误清接管者）。
+
+    epoch 非空时一并核对代数：只有"仍是我这一代"才清，防止旧执行者退出时
+    误清掉接管者的声明。
+    """
     try:
         with _DB_LOCK, _connect() as conn:
-            conn.execute(
-                "UPDATE import_jobs SET executor_id=NULL, executor_heartbeat=NULL"
-                " WHERE job_id=? AND executor_id=?",
-                (job_id, executor_id))
+            if epoch is None:
+                conn.execute(
+                    "UPDATE import_jobs SET executor_id=NULL, executor_heartbeat=NULL"
+                    " WHERE job_id=? AND executor_id=?",
+                    (job_id, executor_id))
+            else:
+                conn.execute(
+                    "UPDATE import_jobs SET executor_id=NULL, executor_heartbeat=NULL"
+                    " WHERE job_id=? AND executor_id=? AND executor_epoch=?",
+                    (job_id, executor_id, int(epoch)))
             conn.commit()
     except Exception as e:
         logger.warning(f"执行者声明释放失败: {job_id}: {e}")
@@ -1161,21 +1354,30 @@ def _run_job(job_id: str, only_keys: Optional[set] = None,
       直到没有剩余成员；整个过程在同一 job 内完成，不要求用户点“继续”。
     """
     executor_id = _new_executor_id()
-    if not _claim_executor(job_id, executor_id):
+    epoch = _claim_executor_ex(job_id, executor_id)
+    if epoch is None:
         logger.warning(
             f"[import] 任务 {job_id} 已被活跃执行者持有，拒绝重复执行"
             "（不会产生重复资料/重复索引）")
         return
+    # 围栏：登记"本线程 = 本任务的当前执行者(id+epoch)"，此后每次写入/建库前核对。
+    _set_executor_fence(job_id, executor_id, epoch)
+    # 独立看护线程：长解析/长建库期间持续续期心跳，避免被误判失活而遭接管。
+    watchdog = _HeartbeatWatchdog(job_id, executor_id, epoch)
+    watchdog.start()
     try:
         _run_job_locked(job_id, executor_id, only_keys=only_keys,
-                        reuse_job_id=reuse_job_id)
+                        reuse_job_id=reuse_job_id, epoch=epoch)
     finally:
-        _release_executor(job_id, executor_id)
+        watchdog.stop()
+        _clear_executor_fence()
+        _release_executor(job_id, executor_id, epoch)
 
 
 def _run_job_locked(job_id: str, executor_id: str,
                     only_keys: Optional[set] = None,
-                    reuse_job_id: Optional[str] = None) -> None:
+                    reuse_job_id: Optional[str] = None,
+                    epoch: Optional[int] = None) -> None:
     # 本函数跑在后台线程里，而知识库构建会在**这里**第一次导入 knowledge_service →
     # "from rag.rag_service import ..."。若此时另一个线程（如启动预热）也在导入 rag，
     # Python 3.14 会抛 deadlock detected by _ModuleLock('rag.rag_service')，
@@ -1342,6 +1544,11 @@ def _run_job_locked(job_id: str, executor_id: str,
         t_parse = time.monotonic()
 
         while True:
+            if _fence_lost():
+                logger.warning(
+                    f"[import][fencing] 任务 {job_id} 执行权已被接管，"
+                    "原执行者停止写入并退出（不再产生任何资料/索引）")
+                return
             if _is_cancelled(job_id):
                 _remove_copied(subject_dir, copied_all)
                 _cancel_finish(job_id, "任务已取消（已导入的资料不会删除）")
@@ -1371,6 +1578,11 @@ def _run_job_locked(job_id: str, executor_id: str,
             batch_mem_base = _mem_current_bytes()
 
             for cand in remaining:
+                if _fence_lost():
+                    logger.warning(
+                        f"[import][fencing] 任务 {job_id} 执行权已被接管，"
+                        "原执行者停止写入并退出（不再产生任何资料/索引）")
+                    return
                 if _is_cancelled(job_id):
                     _remove_copied(subject_dir, copied_all)
                     _cancel_finish(job_id, "任务已取消（已导入的资料不会删除）")
@@ -1427,6 +1639,7 @@ def _run_job_locked(job_id: str, executor_id: str,
                             _rewrite_metadata(docs, final_name, stored_ready)
                             parsed_docs.extend(docs)
                             ready_names.add(final_name)
+                            _fence_guard()
                             _register_material(subject_id, final_name,
                                                stored_ready.stat().st_size, user_id)
                             _update_item(
@@ -1482,6 +1695,7 @@ def _run_job_locked(job_id: str, executor_id: str,
                     ready_names.add(decision["name"])
                     if src_sha:
                         _save_docs_cache(src_sha, parse_cfg, docs)
+                    _fence_guard()
                     doc_id, _mid = _register_material(subject_id, decision["name"],
                                                       len(content), user_id)
                     _update_item(item_id, status="ready", stage="indexing", progress=1.0,
@@ -1491,6 +1705,7 @@ def _run_job_locked(job_id: str, executor_id: str,
                                  parse_config=parse_cfg, timings_json=timings_json)
                     continue
 
+                _fence_guard()
                 existed_before = final_path.exists()
                 final_path.write_bytes(content)
                 if not existed_before:
@@ -1505,6 +1720,7 @@ def _run_job_locked(job_id: str, executor_id: str,
                 if src_sha:
                     _save_docs_cache(src_sha, parse_cfg, docs)
 
+                _fence_guard()
                 doc_id, material_id = _register_material(
                     subject_id, decision["name"], final_path.stat().st_size, user_id)
                 msg = "可学习" if not decision["renamed"] else decision["reason"]
@@ -1514,7 +1730,11 @@ def _run_job_locked(job_id: str, executor_id: str,
                              reuse_key=_reuse_key(src_sha, parse_cfg, embedding_sig),
                              parse_config=parse_cfg, timings_json=timings_json)
 
-            _refresh_executor(job_id, executor_id)
+            if not _refresh_executor(job_id, executor_id, epoch):
+                logger.warning(
+                    f"[import][fencing] 任务 {job_id} 执行权已被接管，"
+                    "原执行者停止写入并退出（不再产生任何资料/索引）")
+                return
 
             # 本批统一建库（本批 + 既有资料，只建一次）
             new_indexing = _items_with_status(job_id, "indexing")
@@ -1533,6 +1753,8 @@ def _run_job_locked(job_id: str, executor_id: str,
                         from services import knowledge_service
                         # 同一学科串行建库：避免并发“备份→构建→回滚”互相覆盖索引目录
                         with _subject_build_lock(subject_id):
+                            # 拿到学科锁后再核对一次：绝不能出现两个执行者都在建库
+                            _fence_guard()
                             build_result = knowledge_service.rebuild_subject_knowledge_from_documents(
                                 subject_id, all_docs)
                     except Exception as e:
@@ -1666,6 +1888,7 @@ def _cancel_finish(job_id: str, message: str) -> None:
 
 
 def _set_cancel_flag(job_id: str, value: int) -> None:
+    _fence_guard()   # 失去执行权：一律不写
     with _DB_LOCK, _connect() as conn:
         conn.execute("UPDATE import_jobs SET cancel_requested=? WHERE job_id=?",
                      (value, job_id))
@@ -1737,6 +1960,7 @@ def _finish_job(job_id: str, status: str, summary_text: str,
                 warnings: Optional[List[str]] = None,
                 archive_summaries: Optional[List[Dict[str, Any]]] = None,
                 stage_timings: Optional[Dict[str, Any]] = None) -> None:
+    _fence_guard()   # 失去执行权：绝不写终态，交给接管者收尾
     counts = _item_counts(job_id)
     with _DB_LOCK, _connect() as conn:
         job = _job_row(conn, job_id)

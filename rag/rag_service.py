@@ -34,6 +34,7 @@ _SUBJECTS_DATA_BASE = os.path.join(_DATA_ROOT, "subjects")
 from .vector_store import (  # noqa: E402,F401
     _safe_dir_name,
     _original_subject_id,
+    is_index_sidecar,
 )
 
 # 导入LangChain Document对象
@@ -100,6 +101,12 @@ def build_knowledge_base(
     chunk_size: Optional[int] = None,
     chunk_overlap: Optional[int] = None,
     chunk_min_length: Optional[int] = None,
+    *,
+    persist_dir: Optional[str] = None,
+    bm25_dir: Optional[str] = None,
+    update_cache: bool = True,
+    strict: bool = False,
+    build_id: Optional[str] = None,
 ) -> Any:
     """
     构建学科知识库（向量索引 + BM25索引）
@@ -110,6 +117,14 @@ def build_knowledge_base(
         chunk_size: 文本块大小（None=读配置 CHUNK_SIZE，默认500）
         chunk_overlap: 文本块重叠大小（None=读配置 CHUNK_OVERLAP，默认50）
         chunk_min_length: 最小 chunk 字符数（None=读配置 CHUNK_MIN_LENGTH，默认120）
+        persist_dir: 向量索引输出目录（可选）。原子发布传 staging 目录，
+                     构建期间线上目录保持原样；缺省用默认学科目录。
+        bm25_dir: BM25 输出目录（可选）。同上，原子发布传 staging 目录。
+        update_cache: 是否更新进程内 FAISS/BM25 缓存。原子发布传 False，
+                      避免构建中的新版本提前覆盖正在服务的旧版本。
+        strict: True 时 BM25 构建失败直接抛出（拒绝发布"新 FAISS+缺 BM25"的
+                半版本）；缺省 False 保持既有"BM25 失败不影响向量检索"。
+        build_id: 本次构建版本号（写入 meta.json 与 bm25_meta.json）。
         
     Returns:
         向量存储实例
@@ -172,7 +187,9 @@ def build_knowledge_base(
             f"配置阈值={filter_stats.get('configured_min_length')})")
         
         # 2. 创建向量数据库（按学科目录隔离，使用绝对路径）
-        persist_dir = os.path.join(_VECTOR_STORE_BASE, _safe_dir_name(subject_id))
+        #    原子发布：persist_dir 由调用方指定为 staging 目录；缺省行为不变。
+        target_dir = persist_dir or os.path.join(
+            _VECTOR_STORE_BASE, _safe_dir_name(subject_id))
         
         # 获取嵌入模型
         embeddings = get_embedding_model()
@@ -181,24 +198,36 @@ def build_knowledge_base(
             docs=split_docs,
             embeddings=embeddings,
             collection_name=subject_id,
-            persist_dir=persist_dir,
+            persist_dir=target_dir,
             filter_stats=filter_stats,  # 已在上方过滤，此处只透传统计避免 meta 失真
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            build_id=build_id,
         )
-        # 写入缓存（键用 safe_name，与检索路径一致）
-        GlobalFAISS.put(_safe_dir_name(subject_id), vector_store)
+        if update_cache:
+            # 写入缓存（键用 safe_name，与检索路径一致）
+            GlobalFAISS.put(_safe_dir_name(subject_id), vector_store)
         
-        # 3. 构建BM25索引（如果可用）——使用同一份过滤后文档
+        # 3. 构建BM25索引（如果可用）——与 FAISS 使用**同一份最终文档**，
+        #    保证两个索引条目数严格一致（同一版本）。
+        #    此前用 split_docs：create_vector_store 清洗后可能再丢弃空 chunk，
+        #    FAISS 实际条目数少于 split_docs，会留下"索引与 meta 不一致"的隐患。
         if HYBRID_AVAILABLE:
+            bm25_docs = getattr(vector_store, "documents", None) or split_docs
             try:
                 build_hybrid_index(
                     subject_id=subject_id,
-                    documents=split_docs
+                    documents=bm25_docs,
+                    bm25_dir=bm25_dir,
+                    update_cache=update_cache,
+                    build_id=build_id,
                 )
                 logger.info(f"BM25索引构建完成: subject={subject_id}, "
-                            f"文档={len(split_docs)}")
+                            f"文档={len(bm25_docs)}")
             except Exception as e:
+                if strict:
+                    logger.error(f"BM25索引构建失败（strict，拒绝发布半版本）: {e}")
+                    raise
                 logger.warning(f"BM25索引构建失败（不影响向量检索）: {str(e)}")
         
         return vector_store
@@ -646,7 +675,7 @@ def list_available_subjects() -> List[str]:
     
     try:
         for subject_dir in vector_store_base.iterdir():
-            if subject_dir.is_dir():
+            if subject_dir.is_dir() and not is_index_sidecar(subject_dir.name):
                 subjects.append(_original_subject_id(subject_dir.name))
     except Exception as e:
         logger.warning(f"遍历知识库目录失败: {e}")
@@ -875,7 +904,8 @@ def get_rag_readiness() -> Dict[str, Any]:
     try:
         if vector_store_base.exists():
             faiss_available = any(
-                p.is_dir() and (p / "index.faiss").exists()
+                p.is_dir() and not is_index_sidecar(p.name)
+                and (p / "index.faiss").exists()
                 for p in vector_store_base.iterdir()
             )
     except OSError:
@@ -892,7 +922,8 @@ def get_rag_readiness() -> Dict[str, Any]:
     try:
         if bm25_base.exists():
             bm25_available = any(
-                p.is_dir() and (p / "bm25.pkl").exists()
+                p.is_dir() and not is_index_sidecar(p.name)
+                and (p / "bm25.pkl").exists()
                 for p in bm25_base.iterdir()
             )
     except OSError:

@@ -165,6 +165,15 @@
   `executor_heartbeat`）。重复触发/刷新/服务重启都不会起第二个执行者；心跳超时视为过期
   可被接管。服务重启时 `reconcile` 收敛为 partial 并清空旧执行者，随后自动接续自动分批。
 
+  围栏（fencing）与心跳阈值（2026-10-08 增补）：`import_jobs` 新增 `executor_epoch`
+  （每次成功声明 +1）。执行者在**每次写入/落盘/建库前**核对
+  `(executor_id, executor_epoch)` 仍属于自己；一旦被接管，旧执行者立即停止写入、
+  不落盘、不建库、不写终态，并记 `[import][fencing]` 日志退出（绝不静默继续）。
+  心跳由**独立看护线程**续期（`IMPORT_EXECUTOR_HEARTBEAT_SECONDS`，默认 30s，
+  且不超过 `IMPORT_EXECUTOR_TIMEOUT_SECONDS` 的 1/5）；接管只按“心跳是否过期”
+  （`IMPORT_EXECUTOR_TIMEOUT_SECONDS`，默认 300s）判定，与单次操作耗时无关，
+  因此数分钟的建库不会被误判失活。声明判定用一条条件 UPDATE，跨进程并发触发也只有一个成功。
+
 - `POST /knowledge/imports/{job_id}/pause` → `{ "success": true, "data": { "job_id",
   "paused": true } }`（2026-10-08 新增）：在**下一个批边界**停止，状态置 `partial` 且
   `paused=true`，**不得自动重启**；`resume` 是唯一恢复入口。

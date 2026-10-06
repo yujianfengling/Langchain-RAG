@@ -5,6 +5,7 @@ from config.path_config import get_data_dir
 import os
 import re
 import shutil
+import uuid
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -300,6 +301,9 @@ def delete_subject_knowledge(subject_id: str) -> Dict[str, Any]:
             shutil.rmtree(bm25_directory)
             logger.info(f"BM25索引已删除: {bm25_directory}")
 
+        # 删除索引旁挂目录（.building/.old/.prev/.bak），否则已删除内容仍有备份残留
+        _remove_index_sidecars(subject_id)
+
         # 删除学科资料目录（含上传的原始文件与提取图片）
         subject_data_dir = _resolve_path(f"data/subjects/{subject_id}")
         if subject_data_dir.exists():
@@ -335,6 +339,7 @@ def cleanup_subject_data(subject_id: str) -> None:
                 logger.info(f"清理学科数据: {p}")
         except Exception as e:
             logger.warning(f"清理学科数据失败（不阻断删除）: {rel}, {str(e)}")
+    _remove_index_sidecars(subject_id)
 
 
 def get_vector_store_dir(subject_id: str) -> str:
@@ -726,13 +731,231 @@ def _attach_material_ids(subject_id: str, documents: List[Any]) -> int:
         return 0
 
 
+# ========== 索引的"版本化构建 + 原子发布"（2026-10-08） ==========
+#
+# 问题（已实测）：旧的 _build_index_with_rollback 是「备份 → 删除线上索引 →
+# 重建 → 成功清备份 / 失败回滚」。删除与重建之间（大库可达数分钟）线上索引
+# 是空的，学生检索不到任何资料；进程若在此窗口被杀，回滚不会执行，线上索引
+# 会永久为空（实例：vector_store/sub-kg5yy0t4 为 0 文件、bm25 目录不存在，
+# 而该学科有 25 份"可学习"资料）。
+#
+# 新方案：新版本构建到 staging 目录并校验，再用两次 rename 原子发布。
+# 构建期间线上目录保持原样，检索继续读旧版本；失败只清理 staging，
+# 线上旧版本完全不受影响（不需要回滚，因为没有破坏）。
+_STAGING_SUFFIX = ".building"
+_OLD_SUFFIX = ".old"
+_PREV_SUFFIX = ".prev"
+_INDEX_SIDECAR_SUFFIXES = (".building", ".old", ".prev", ".bak")
+
+
+def _count_index_files(root: Path) -> int:
+    """统计目录下文件数（不存在 / 不可读返回 0）"""
+    try:
+        return sum(1 for f in root.rglob("*") if f.is_file()) if root.exists() else 0
+    except OSError:
+        return 0
+
+
+def _sidecar(base: Path, suffix: str) -> Path:
+    """与索引目录同级的旁挂目录，如 vector_store/<name>.building"""
+    return base.parent / f"{base.name}{suffix}"
+
+
+def _remove_tree(path: Path) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _remove_index_sidecars(subject_id: str) -> None:
+    """删除学科索引的全部旁挂目录（staging/old/prev/bak）。
+
+    删除知识库时必须一并清理：否则"已删除"的资料仍以备份副本留在磁盘上。
+    """
+    for base in (_resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}"),
+                 _resolve_path(f"data/bm25_index/{subject_id}")):
+        for suffix in _INDEX_SIDECAR_SUFFIXES:
+            _remove_tree(base.parent / f"{base.name}{suffix}")
+
+
+def _restore_sidecar_if_live_empty(live: Path, sidecar: Path) -> bool:
+    """发布/构建被中断后：线上缺失或为空而 sidecar 有有效内容 → 用 sidecar 恢复线上。
+
+    典型场景：原子发布刚把「线上 → .old」，进程被杀，尚未执行「staging → 线上」。
+    此时线上为空而 .old 是完整旧版本；下一次建库前先恢复，避免空窗延续。
+    """
+    if _count_index_files(live) > 0 or _count_index_files(sidecar) == 0:
+        return False
+    if live.exists():
+        _remove_tree(live)
+    shutil.move(str(sidecar), str(live))
+    logger.warning(f"[index-publish] 发布中断恢复: {sidecar.name} -> {live.name}")
+    return True
+
+
+def _recover_index_sidecars(subject_id: str, live: Path, old: Path, prev: Path) -> None:
+    """建库前修复上一次被中断的发布残局（.old / .prev → 线上）。"""
+    if _restore_sidecar_if_live_empty(live, old):
+        logger.warning(f"[index-publish] 已从 .old 恢复线上索引: {subject_id}")
+    elif _restore_sidecar_if_live_empty(live, prev):
+        logger.warning(f"[index-publish] 已从 .prev 恢复线上索引: {subject_id}")
+
+
+def _invalidate_memory_index(subject_id: str) -> None:
+    """发布后让进程内缓存失效——**只清内存，不删磁盘**。
+
+    必须区别于 _invalidate_subject_index：后者调用的 hybrid_retriever.clear_index
+    会删除磁盘上的 bm25.pkl/bm25_meta.json。原子发布刚把新索引 rename 到线上，
+    若在此调用 clear_index 会把刚发布的新版本删掉（实测会把 BM25 一起清空）。
+    """
+    try:
+        from rag.vector_store import GlobalFAISS
+        GlobalFAISS.invalidate(_safe_dir_name(subject_id))
+    except Exception as e:
+        logger.warning(f"FAISS 缓存失效失败: {e}")
+    try:
+        from rag.hybrid_retriever import invalidate_index
+        invalidate_index(subject_id)
+    except Exception as e:
+        logger.warning(f"BM25 缓存失效失败: {e}")
+
+
+def _count_faiss_vectors(persist_dir: Path) -> int:
+    """读取 FAISS 索引的真实块数（Windows 中文路径需临时 ASCII 中转）"""
+    import faiss
+    import tempfile
+    index_path = persist_dir / "index.faiss"
+    if not index_path.exists():
+        return -1
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_index = os.path.join(tmp_dir, "index.faiss")
+        shutil.copy2(str(index_path), tmp_index)
+        return int(faiss.read_index(tmp_index).ntotal)
+
+
+def _count_bm25_documents(bm25_dir: Path):
+    """读取 BM25 索引的条目数及其元数据（bm25_meta.json）"""
+    import pickle
+    pkl_path = bm25_dir / "bm25.pkl"
+    if not pkl_path.exists():
+        return -1, {}
+    try:
+        from rag.hybrid_retriever import read_bm25_meta
+        meta = read_bm25_meta(str(bm25_dir))
+    except Exception:
+        meta = {}
+    try:
+        with open(pkl_path, "rb") as f:
+            data = pickle.load(f)
+    except Exception as e:
+        logger.warning(f"读取 staging BM25 索引失败: {e}")
+        return -1, meta
+    return len(data.get("documents", []) or []), meta
+
+
+def _validate_staged_index(subject_id: str, staging_vector: Path,
+                           staging_bm25: Path) -> Dict[str, Any]:
+    """发布前校验 staging 索引：meta 存在、能加载、块数>0，且三者同一版本。
+
+    Returns:
+        {"faiss_count", "bm25_count", "meta", "bm25_meta"}
+
+    Raises:
+        KnowledgeServiceError: 任一校验失败（调用方据此清理 staging 并保留线上）
+    """
+    from rag.vector_store import read_index_meta
+
+    meta = read_index_meta(str(staging_vector))
+    if not meta:
+        raise KnowledgeServiceError(f"staging 索引缺少 meta.json: {subject_id}")
+
+    faiss_count = _count_faiss_vectors(staging_vector)
+    if faiss_count <= 0:
+        raise KnowledgeServiceError(
+            f"staging FAISS 索引无法加载或为空（ntotal={faiss_count}）: {subject_id}")
+
+    bm25_count, bm25_meta = _count_bm25_documents(staging_bm25)
+    if bm25_count <= 0:
+        raise KnowledgeServiceError(
+            f"staging BM25 索引缺失或为空（documents={bm25_count}）: {subject_id}")
+
+    meta_docs = int(meta.get("documents") or 0)
+    if not (meta_docs == faiss_count == bm25_count):
+        raise KnowledgeServiceError(
+            f"staging 索引版本不一致（FAISS={faiss_count} / BM25={bm25_count} / "
+            f"meta.documents={meta_docs}），拒绝发布: {subject_id}")
+
+    build_id = meta.get("build_id")
+    if not build_id or bm25_meta.get("build_id") != build_id:
+        raise KnowledgeServiceError(
+            f"staging 索引 build_id 不一致（meta={build_id!r} / "
+            f"bm25={bm25_meta.get('build_id')!r}），拒绝发布: {subject_id}")
+
+    return {"faiss_count": faiss_count, "bm25_count": bm25_count,
+            "meta": meta, "bm25_meta": bm25_meta}
+
+
+def _publish_index_pair(live_v: Path, staging_v: Path, old_v: Path, prev_v: Path,
+                         live_b: Path, staging_b: Path, old_b: Path, prev_b: Path) -> None:
+    """成对原子发布向量索引与 BM25 索引（全部是同卷 rename，毫秒级窗口）。
+
+    两个目录无法用一次 rename 同时替换，因此分两批：
+    1) 把存在的线上目录统一挪到 .old（旧版本离位）；
+    2) 把 staging 统一切到线上（新版本就位）；
+    3) 把 .old 转存为 .prev（"上一次有效版本"的可恢复备份）。
+    任一步失败都把已挪走的旧版本放回线上，避免留下"新 FAISS + 旧 BM25"
+    或空窗；staging 由调用方清理。
+    """
+    moved: list = []
+    for live, old in ((live_v, old_v), (live_b, old_b)):
+        if _count_index_files(live) > 0:
+            _remove_tree(old)
+            os.replace(str(live), str(old))
+            moved.append((live, old))
+        elif live.exists():
+            # 线上的空目录不参与发布，也不覆盖有效备份
+            _remove_tree(live)
+
+    replaced: list = []
+    try:
+        for live, staging in ((live_v, staging_v), (live_b, staging_b)):
+            os.replace(str(staging), str(live))
+            replaced.append((live, staging))
+    except Exception:
+        # 把本次已切上去的新版本挪回 staging（随后清理）
+        for live, staging in replaced:
+            if not staging.exists() and _count_index_files(live) > 0:
+                os.replace(str(live), str(staging))
+        # 把旧版本放回线上
+        for live, old in moved:
+            if _count_index_files(old) > 0 and _count_index_files(live) == 0:
+                os.replace(str(old), str(live))
+        _remove_tree(staging_v)
+        _remove_tree(staging_b)
+        raise
+
+    # 成功：保留"上一次有效版本"作为可恢复备份
+    for old, prev in ((old_v, prev_v), (old_b, prev_b)):
+        if _count_index_files(old) > 0:
+            _remove_tree(prev)
+            os.replace(str(old), str(prev))
+        else:
+            _remove_tree(old)
+
+
 def _build_index_with_rollback(subject_id: str, documents: List[Any]) -> Dict[str, Any]:
     """
-    备份 → 用给定 documents 构建向量/BM25 索引 → 成功删备份 / 失败回滚。
+    独立目录构建 → 校验 → 原子发布（2026-10-08 重构）。
 
-    这是 rebuild 与批量导入**共用**的唯一建库路径：
-    - 失败绝不让已有知识库变空（回滚到备份）；
-    - 一批资料只建一次库（调用方先把本批资料解析好一并传入）。
+    与旧实现（备份 → 删线上 → 重建 → 失败回滚）的区别：
+    - 新版本构建到 "<name>.building"，构建期间线上目录**保持原样**，
+      检索继续读旧版本，不存在"删除与重建之间的空窗"；
+    - 构建成功后校验（meta 存在 / FAISS 能加载且块数>0 / BM25 存在），
+      再 线上→.old、staging→线上 两次 rename 发布（毫秒级窗口）；
+    - 失败只清理 staging，线上旧版本完全不受影响（无需回滚）；
+    - .old 随后转存为 .prev（上一次有效版本的可恢复备份），
+      空目录绝不会覆盖有效备份；
+    - FAISS / BM25 / meta.json 来自同一次构建，并用 build_id 绑定。
+
+    这是 rebuild 与批量导入**共用**的唯一建库路径。
     """
     if not documents:
         raise KnowledgeServiceError("没有可入库的文档内容")
@@ -742,75 +965,60 @@ def _build_index_with_rollback(subject_id: str, documents: List[Any]) -> Dict[st
     # 且不必依赖文件名匹配（文件名可能被重命名或重名）。
     _attach_material_ids(subject_id, documents)
 
-    persist_directory = _resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}")
+    safe_name = _safe_dir_name(subject_id)
+    persist_directory = _resolve_path(f"data/vector_store/{safe_name}")
     bm25_directory = _resolve_path(f"data/bm25_index/{subject_id}")
-    backup_dir = persist_directory.parent / f"{persist_directory.name}.bak"
-    bm25_backup_dir = bm25_directory.parent / f"{bm25_directory.name}.bak"
 
-    def _count_files(root: Path) -> int:
-        try:
-            return sum(1 for f in root.rglob("*") if f.is_file()) if root.exists() else 0
-        except OSError:
-            return 0
+    staging_vector = _sidecar(persist_directory, _STAGING_SUFFIX)
+    staging_bm25 = _sidecar(bm25_directory, _STAGING_SUFFIX)
+    old_vector = _sidecar(persist_directory, _OLD_SUFFIX)
+    old_bm25 = _sidecar(bm25_directory, _OLD_SUFFIX)
+    prev_vector = _sidecar(persist_directory, _PREV_SUFFIX)
+    prev_bm25 = _sidecar(bm25_directory, _PREV_SUFFIX)
 
-    def _backup():
-        """备份现存索引（存在才备份）。
+    # 0. 修复上一次被中断的发布（线上缺失时先恢复 .old / .prev）
+    _recover_index_sidecars(subject_id, persist_directory, old_vector, prev_vector)
+    _recover_index_sidecars(subject_id, bm25_directory, old_bm25, prev_bm25)
 
-        2026-10-07 修复：**绝不用空的线上目录覆盖上一次的有效备份**。
-        此前每次建库都无条件 rmtree(.bak) 再复制线上目录；若上一次建库被中断
-        导致线上目录为空，这次就会把仅存的有效备份也清成空目录——
-        实测 sub-kg5yy0t4 的 .bak 由 3 个文件变成 0 个文件，再无任何可恢复副本。
-        """
-        if _count_files(persist_directory) == 0 and _count_files(backup_dir) > 0:
-            logger.warning(f"线上索引为空但已有有效备份，保留备份不覆盖: {subject_id}")
-        else:
-            if backup_dir.exists():
-                shutil.rmtree(backup_dir, ignore_errors=True)
-            if persist_directory.exists():
-                shutil.copytree(persist_directory, backup_dir)
-        if _count_files(bm25_directory) == 0 and _count_files(bm25_backup_dir) > 0:
-            logger.warning(f"线上 BM25 为空但已有有效备份，保留备份不覆盖: {subject_id}")
-        else:
-            if bm25_backup_dir.exists():
-                shutil.rmtree(bm25_backup_dir, ignore_errors=True)
-            if bm25_directory.exists():
-                shutil.copytree(bm25_directory, bm25_backup_dir)
+    # 1. 清理上一次残留的 staging（未完成的构建不值得保留）
+    _remove_tree(staging_vector)
+    _remove_tree(staging_bm25)
 
-    def _rollback():
-        """用备份恢复旧索引"""
-        restored = False
-        if backup_dir.exists():
-            if persist_directory.exists():
-                shutil.rmtree(persist_directory, ignore_errors=True)
-            shutil.copytree(backup_dir, persist_directory)
-            restored = True
-        if bm25_backup_dir.exists():
-            if bm25_directory.exists():
-                shutil.rmtree(bm25_directory, ignore_errors=True)
-            shutil.copytree(bm25_backup_dir, bm25_directory)
-            restored = True
-        if restored:
-            _invalidate_subject_index(subject_id)
-            logger.warning(f"知识库重建失败，已从备份回滚: {subject_id}")
-
-    def _cleanup_backup():
-        shutil.rmtree(backup_dir, ignore_errors=True)
-        shutil.rmtree(bm25_backup_dir, ignore_errors=True)
-
-    _backup()
+    build_id = uuid.uuid4().hex
+    vector_store = None
     try:
-        # 删除旧索引后重建（失败会被下面的 except 回滚）
-        if persist_directory.exists():
-            delete_knowledge_base(subject_id=subject_id)
-
+        # 2. 在独立目录里构建新版本——线上目录与内存缓存都不动
         vector_store = build_knowledge_base(
             documents=documents,
             subject_id=subject_id,
+            persist_dir=str(staging_vector),
+            bm25_dir=str(staging_bm25),
+            update_cache=False,
+            strict=True,
+            build_id=build_id,
+        )
+        # 3. 发布前校验：能加载、块数>0、meta 存在，且同一版本
+        _validate_staged_index(subject_id, staging_vector, staging_bm25)
+    except BaseException:
+        # 失败保留旧版本：只清 staging，线上未被触碰
+        _remove_tree(staging_vector)
+        _remove_tree(staging_bm25)
+        raise
+
+    # 4. 原子发布：线上 → .old，staging → 线上，.old → .prev（成对切换）
+    try:
+        _publish_index_pair(
+            persist_directory, staging_vector, old_vector, prev_vector,
+            bm25_directory, staging_bm25, old_bm25, prev_bm25,
         )
     except Exception:
-        _rollback()
+        _remove_tree(staging_vector)
+        _remove_tree(staging_bm25)
+        _invalidate_memory_index(subject_id)
         raise
-    _cleanup_backup()
+
+    # 5. 让进程内缓存失效（仅内存），检索下一次会加载新版本
+    _invalidate_memory_index(subject_id)
 
     # 统计过滤效果（供前端提示"知识库体量"是否异常）
     try:
@@ -826,6 +1034,7 @@ def _build_index_with_rollback(subject_id: str, documents: List[Any]) -> Dict[st
         "chunk_count": getattr(vector_store, "count", lambda: None)(),
         "chunks_before_filter": meta.get("chunks_before_filter"),
         "chunks_dropped": meta.get("chunks_dropped"),
+        "build_id": build_id,
     }
 
 
@@ -922,42 +1131,51 @@ def restore_orphaned_index_backups() -> int:
     """启动时修复"建库被中断"留下的空索引（返回修复的学科数）。
 
     为什么需要（2026-10-07 真实事故）：
-    _build_index_with_rollback 的顺序是「备份 → **删除现有索引** → 重建 → 成功删备份 / 失败回滚」。
-    删除与重建之间的窗口里，磁盘上索引是空的；如果进程在这段时间被杀（本机内存压力下真实发生），
-    except 分支永远不执行，**回滚不会发生**，于是 .bak 留在磁盘、线上索引永久为空。
+    旧实现「备份 → **删除现有索引** → 重建 → 成功删备份 / 失败回滚」在删除与重建之间
+    留下空窗；进程若在这段时间被杀，except 分支永远不执行，**回滚不会发生**，
+    于是 .bak 留在磁盘、线上索引永久为空。
     实测：vector_store/sub-kg5yy0t4 为 0 个文件，而同目录 sub-kg5yy0t4.bak 有 3 个文件，
     bm25_index/sub-kg5yy0t4 直接不存在 —— 该学科有 25 份"可学习"资料却完全检索不到。
 
+    2026-10-08 起正常路径已改为「staging 构建 + 原子发布」（见 _build_index_with_rollback），
+    不再产生空窗；本函数仍是**兜底**，覆盖历史遗留的 .bak，以及发布被硬杀时留下的
+    .old / .prev。
+
     修复策略（只读判断 + 原子性恢复）：
-    - 线上索引**缺失或为空** 且存在 .bak → 用 .bak 恢复线上索引（这是被中断的那次）；
-    - 线上索引非空 → .bak 只是"构建成功后、清理前"被中断的残留 → 删掉 .bak，保留线上索引。
+    - 线上索引**缺失或为空** 且存在 .bak/.old/.prev → 用其恢复线上索引；
+    - 线上索引非空：
+        * .bak/.old 只是"构建成功/发布后、清理前"被中断的残留 → 删掉；
+        * .prev 是**有意保留的"上一次有效版本"备份** → 保留，不删。
     """
     fixed = 0
+    sidecars = ((".bak", False), (".old", False), (".prev", True))
     for rel, name in (("data/vector_store", "vector_store"), ("data/bm25_index", "bm25_index")):
         base = _resolve_path(rel)
         if not base.exists():
             continue
-        for backup in sorted(base.glob("*.bak")):
-            live = base / backup.name[:-4]
-            try:
-                live_files = sum(1 for f in live.rglob("*") if f.is_file()) if live.exists() else 0
-                backup_files = sum(1 for f in backup.rglob("*") if f.is_file())
-                if live_files == 0 and backup_files > 0:
-                    if live.exists():
-                        shutil.rmtree(live, ignore_errors=True)
-                    shutil.copytree(backup, live)
-                    shutil.rmtree(backup, ignore_errors=True)
-                    fixed += 1
+        for suffix, keep_when_live in sidecars:
+            for backup in sorted(base.glob(f"*{suffix}")):
+                live = base / backup.name[: -len(backup.suffix)]
+                try:
+                    live_files = _count_index_files(live)
+                    backup_files = _count_index_files(backup)
+                    if live_files == 0 and backup_files > 0:
+                        if live.exists():
+                            _remove_tree(live)
+                        shutil.copytree(backup, live)
+                        _remove_tree(backup)
+                        fixed += 1
+                        logger.warning(
+                            f"[index-recovery] {name}: 线上索引为空，已从 {backup.name} "
+                            f"恢复 {live.name}（{backup_files} 个文件）")
+                        try:
+                            _invalidate_subject_index(live.name)
+                        except Exception:
+                            pass
+                    elif live_files > 0 and not keep_when_live:
+                        # 线上索引完整：.bak/.old 是中断后的残留
+                        _remove_tree(backup)
+                except Exception as e:      # 恢复失败不能阻塞启动
                     logger.warning(
-                        f"[index-recovery] {name}: 线上索引为空，已从备份恢复 {live.name}"
-                        f"（{backup_files} 个文件）")
-                    try:
-                        _invalidate_subject_index(live.name)
-                    except Exception:
-                        pass
-                elif live_files > 0:
-                    # 线上索引完整：.bak 是成功后未清理的残留
-                    shutil.rmtree(backup, ignore_errors=True)
-            except Exception as e:      # 恢复失败不能阻塞启动
-                logger.warning(f"[index-recovery] {name}/{backup.name} 恢复失败: {e}")
+                        f"[index-recovery] {name}/{backup.name} 恢复失败: {e}")
     return fixed

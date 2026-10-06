@@ -6,8 +6,11 @@ V2.3.0: 集成新的 PDF 分析器架构，支持元素检测和提取。
 """
 
 from pathlib import Path
-from typing import List, Union, Optional
+from typing import Any, Dict, List, Union, Optional
+import hashlib
+import json
 import logging
+import os
 
 from .base import BaseLoader, LoadResult
 
@@ -109,6 +112,32 @@ class PdfLoader(BaseLoader):
             LoadResult
         """
         try:
+            def _enrich_one(doc):
+                try:
+                    out = self.enricher._enrich_single_document(doc)
+                    # 增强后正文为空的（判定为噪声/装饰）直接丢弃，不进索引
+                    return out if (out.page_content or "").strip() else None
+                except Exception as e:
+                    logger.warning(f"增强单个元素失败，保留原文档: {e}")
+                    return doc
+
+            # 大 PDF（默认 >300 页）走**分段解析**：每段独立完成并落盘缓存，
+            # 超时/中断只丢当前段，重试从缺失段继续；页码按段偏移还原为全书真实页码。
+            # 实测 958 页教材：一次性 ~84s/7.4 万元素；200 页一段仅 ~17s。
+            page_count = self._pdf_page_count(file_path)
+            range_stats = None
+            if page_count and page_count > self._range_threshold():
+                documents = self._load_pdf_in_ranges(file_path, _enrich_one)
+                range_stats = getattr(self, "_last_range_stats", None)
+                if documents:
+                    meta = dict(range_stats or {})
+                    meta["pages_total"] = page_count
+                    meta["pages_parsed"] = page_count
+                    logger.info(f"PDF 加载成功（分段）: {file_path}, {len(documents)} 个文档, "
+                                f"{meta}")
+                    return LoadResult(documents=documents, success=True, metadata=meta)
+                logger.warning(f"PDF 分段解析未产出文档，回退单次解析: {file_path}")
+
             # 使用 PDFAnalyzer 分析 PDF
             elements = self.analyzer.analyze(file_path)
             
@@ -130,15 +159,6 @@ class PdfLoader(BaseLoader):
             # modality 覆盖掉，导致下游增强器只认到块首那一个元素
             # （实测 90 张图只识别了 1 张）。放在合并前，每张图都能被识别，
             # 识别出的正文再随合并进入最终 chunk。
-            def _enrich_one(doc):
-                try:
-                    out = self.enricher._enrich_single_document(doc)
-                    # 增强后正文为空的（判定为噪声/装饰）直接丢弃，不进索引
-                    return out if (out.page_content or "").strip() else None
-                except Exception as e:
-                    logger.warning(f"增强单个元素失败，保留原文档: {e}")
-                    return doc
-
             documents = self.adapter.adapt(
                 elements, file_path, merge_small=True, pre_merge_hook=_enrich_one)
             
@@ -154,6 +174,125 @@ class PdfLoader(BaseLoader):
             logger.warning(f"新架构加载失败，降级到旧架构: {str(e)}")
             return self._load_with_legacy_architecture(file_path)
     
+    # ==================== 大 PDF 分段解析（2026-10-07） ====================
+    # 实测：958 页教材一次性解析 ~84s、7.4 万个元素；按 200 页分段每段 ~17s。
+    # 分段后每段独立完成并落盘缓存：超时/中断只丢当前段，重试从缺失段继续，
+    # 不会"整本教材一次超时后全部重来"。页码按 page_offset 还原为**全书真实页码**。
+
+    _RANGE_CACHE_SCHEMA = "pdfrange-v1"
+
+    def _range_pages(self) -> int:
+        try:
+            return max(20, int(os.getenv("IMPORT_PDF_RANGE_PAGES", "200")))
+        except (TypeError, ValueError):
+            return 200
+
+    def _range_threshold(self) -> int:
+        try:
+            return max(1, int(os.getenv("IMPORT_PDF_RANGE_THRESHOLD", "300")))
+        except (TypeError, ValueError):
+            return 300
+
+    def _pdf_page_count(self, file_path: Path) -> int:
+        try:
+            import fitz
+            doc = fitz.open(str(file_path))
+            n = doc.page_count
+            doc.close()
+            return int(n)
+        except Exception as e:
+            logger.warning(f"读取 PDF 页数失败（回退单次解析）: {e}")
+            return 0
+
+    def _range_cache_dir(self) -> Path:
+        from config.path_config import get_data_dir
+        d = Path(get_data_dir()) / "cache" / "pdf_ranges"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _file_sha(self, file_path: Path) -> str:
+        h = hashlib.sha256()
+        with open(file_path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()[:24]
+
+    def _range_cache_path(self, file_path: Path, start: int, end: int, sha: str) -> Path:
+        try:
+            from ..enrichment.multimodal_enricher import VISION_PROMPT_VERSION
+            ver = str(VISION_PROMPT_VERSION)
+        except Exception:
+            ver = "0"
+        key = f"{sha}_{start}_{end}_{ver}_{self._RANGE_CACHE_SCHEMA}"
+        return self._range_cache_dir() / f"{key}.json"
+
+    @staticmethod
+    def _docs_to_json(docs: List[Any]) -> List[dict]:
+        out = []
+        for d in docs:
+            try:
+                md = json.loads(json.dumps(d.metadata or {}, ensure_ascii=False, default=str))
+            except Exception:
+                md = {}
+            out.append({"content": d.page_content or "", "metadata": md})
+        return out
+
+    @staticmethod
+    def _docs_from_json(payload: List[dict]) -> List[Any]:
+        from langchain_core.documents import Document
+        return [Document(page_content=it.get("content", ""), metadata=it.get("metadata") or {})
+                for it in payload or []]
+
+    def _load_pdf_in_ranges(self, file_path: Path, hook: Any) -> List[Any]:
+        """按页范围解析大 PDF，逐段落盘缓存，重试只补齐缺失段。"""
+        import fitz
+        doc = fitz.open(str(file_path))
+        total = doc.page_count
+        doc.close()
+        span = self._range_pages()
+        sha = self._file_sha(file_path)
+        ranges = [(s, min(s + span, total)) for s in range(0, total, span)]
+        docs: List[Any] = []
+        parsed = 0
+        if not ranges:
+            return []
+        for start, end in ranges:
+            cp = self._range_cache_path(file_path, start, end, sha)
+            cached = None
+            if cp.exists():
+                try:
+                    cached = self._docs_from_json(json.loads(cp.read_text(encoding="utf-8")))
+                except Exception:
+                    cached = None
+            if cached is not None:
+                docs.extend(cached)
+                continue
+            parsed += 1
+            # 注意：analyze 按**全文档绝对页号**迭代（start_page/end_page 是绝对下标），
+            # 检测器收到的已经是真实页码，这里不能再传 page_offset，否则页码会被加倍
+            # （实测把 958 页的书算到 1757 页）。
+            elements = self.analyzer.analyze(file_path, start_page=start, end_page=end)
+            elements = self._extract_images_from_elements(elements, file_path)
+            part_docs = self.adapter.adapt(elements, file_path, merge_small=True,
+                                           pre_merge_hook=hook)
+            for d in part_docs:
+                try:
+                    d.metadata.setdefault("page_range", f"{start + 1}-{end}")
+                except Exception:
+                    pass
+            try:
+                cp.write_text(json.dumps(self._docs_to_json(part_docs), ensure_ascii=False),
+                              encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"PDF 分段缓存写入失败（不影响本次解析）: {e}")
+            docs.extend(part_docs)
+            logger.info(f"[pdf-range] {file_path.name} 段 {start + 1}-{end} 完成，"
+                        f"累计 {len(docs)} 个文档")
+        self._last_range_stats = {"pages_total": total, "ranges": len(ranges),
+                                  "ranges_parsed": parsed,
+                                  "ranges_cached": len(ranges) - parsed}
+        return docs
+
     def _extract_images_from_elements(self, elements: list, file_path: Path) -> list:
         """
         从元素列表中提取图片文件

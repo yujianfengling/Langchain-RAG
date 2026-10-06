@@ -13,6 +13,7 @@ v2.1 更新：
 """
 
 import os
+import json
 import pickle
 import logging
 import threading
@@ -41,6 +42,23 @@ def _bm25_index_dir() -> str:
 
 # BM25 索引 schema 版本（v2.6）：分词方式或结构变更时递增，强制重建
 BM25_INDEX_VERSION = 2
+
+# BM25 索引随附的元数据文件（记录本次构建的 build_id / 文档数 / 分词器），
+# 供原子发布时与 FAISS 的 meta.json 做"同一版本"校验。
+BM25_META_FILE = "bm25_meta.json"
+
+
+def read_bm25_meta(bm25_dir: str) -> Dict[str, Any]:
+    """读取 BM25 索引元数据（不存在或损坏返回空 dict）"""
+    path = Path(bm25_dir) / BM25_META_FILE
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"读取 BM25 元数据失败: {e}")
+        return {}
 
 # ============ 检索诊断状态（线程安全） ============
 # retrieval_mode: hybrid_ready | vector_only | bm25_degraded | unavailable
@@ -107,22 +125,37 @@ def _get_bm25_index_path(subject_id: str) -> Path:
     return Path(_bm25_index_dir()) / subject_id / "bm25.pkl"
 
 
-def _save_bm25_index(subject_id: str) -> None:
+def _save_bm25_index(
+    subject_id: str,
+    bm25: Optional[BM25Retriever] = None,
+    index_path: Optional[Path] = None,
+    build_id: Optional[str] = None,
+) -> None:
     """
     将BM25索引持久化到磁盘
-    
+
     保存内容：
     - documents: 原始Document对象列表
     - tokenized_corpus: 分词后的语料库
     - tokenizer_mode / tokenizer_version: 供加载时校验（v2.6）
+
+    参数（原子发布新增，均为可选，默认行为不变）：
+    - bm25: 待持久化的检索器；缺省取内存缓存中的实例（旧调用方式）；
+    - index_path: 输出文件路径；缺省用默认 BM25 目录。原子发布传 staging
+      目录，使构建期间线上 BM25 索引保持原样；
+    - build_id: 本次构建版本号，写入同目录 bm25_meta.json，与 FAISS meta.json
+      的 build_id 对齐，确保"同一版本"。
     """
-    bm25 = _bm25_retrievers.get(subject_id)
+    if bm25 is None:
+        bm25 = _bm25_retrievers.get(subject_id)
     if bm25 is None or bm25.is_empty:
         return
-    
-    index_path = _get_bm25_index_path(subject_id)
+
+    if index_path is None:
+        index_path = _get_bm25_index_path(subject_id)
+    index_path = Path(index_path)
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     try:
         data = {
             "documents": bm25._documents,
@@ -134,8 +167,21 @@ def _save_bm25_index(subject_id: str) -> None:
         }
         with open(index_path, 'wb') as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        # 原子写 bm25_meta.json（与 bm25.pkl 同目录、同一次构建）
+        meta_path = index_path.parent / BM25_META_FILE
+        tmp_meta = str(meta_path) + ".tmp"
+        with open(tmp_meta, "w", encoding="utf-8") as f:
+            json.dump({
+                "build_id": build_id,
+                "documents": bm25.doc_count,
+                "tokenizer_mode": data["tokenizer_mode"],
+                "tokenizer_version": data["tokenizer_version"],
+            }, f, ensure_ascii=False, indent=1)
+        os.replace(tmp_meta, meta_path)
+
         logger.info(f"BM25索引已持久化: {index_path} ({bm25.doc_count}个文档, "
-                    f"tokenizer={data['tokenizer_mode']})")
+                    f"tokenizer={data['tokenizer_mode']}, build_id={build_id})")
     except Exception as e:
         logger.error(f"BM25索引持久化失败: {e}", exc_info=True)
 
@@ -201,7 +247,11 @@ def _load_bm25_index(subject_id: str) -> bool:
 def build_index(
     subject_id: str,
     documents: List[Any],
-    embeddings: Any = None
+    embeddings: Any = None,
+    *,
+    bm25_dir: Optional[str] = None,
+    update_cache: bool = True,
+    build_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     为指定学科构建混合检索索引（向量索引 + BM25索引）
@@ -210,6 +260,11 @@ def build_index(
         subject_id: 学科ID
         documents: Document对象列表
         embeddings: Embedding模型（可选）
+        bm25_dir: BM25 输出目录（可选）。原子发布传 staging 目录，
+                  使构建期间线上 BM25 索引保持原样；缺省用默认目录。
+        update_cache: 是否更新进程内 BM25 缓存。原子发布传 False，
+                  避免构建中的新版本提前覆盖正在服务的旧版本。
+        build_id: 本次构建版本号（写入 bm25_meta.json）。
         
     Returns:
         索引构建结果
@@ -220,10 +275,13 @@ def build_index(
     
     # 2. 构建BM25索引
     bm25 = BM25Retriever(documents)
-    _bm25_retrievers[subject_id] = bm25
+    if update_cache:
+        _bm25_retrievers[subject_id] = bm25
     
     # 3. 持久化BM25索引到磁盘（重启后可自动加载）
-    _save_bm25_index(subject_id)
+    #    原子发布：写入指定的 staging 目录，线上目录不动、缓存不动
+    index_path = (Path(bm25_dir) / "bm25.pkl") if bm25_dir else None
+    _save_bm25_index(subject_id, bm25=bm25, index_path=index_path, build_id=build_id)
     
     logger.info(f"BM25索引构建完成: subject={subject_id}, BM25文档={bm25.doc_count}")
     
@@ -457,6 +515,17 @@ def get_retriever_status(subject_id: str) -> Dict[str, Any]:
     }
 
 
+def invalidate_index(subject_id: str) -> None:
+    """仅使内存中的 BM25 缓存失效（**不触碰磁盘索引**）。
+
+    原子发布在切换成功后调用：新版本的磁盘索引已经就位，只需让进程内的旧缓存
+    失效；若这里复用 clear_index 会把刚发布的新索引一并删掉。
+    """
+    global _bm25_retrievers
+    _bm25_retrievers.pop(subject_id, None)
+    logger.info(f"BM25 内存缓存已失效（磁盘索引保留）: subject={subject_id}")
+
+
 def clear_index(subject_id: str) -> None:
     """清除指定学科的混合索引（内存 + 磁盘）"""
     global _bm25_retrievers
@@ -465,11 +534,14 @@ def clear_index(subject_id: str) -> None:
         _bm25_retrievers[subject_id].clear()
         del _bm25_retrievers[subject_id]
     
-    # 清理磁盘上的BM25索引文件
+    # 清理磁盘上的BM25索引文件（含随附的 bm25_meta.json）
     index_path = _get_bm25_index_path(subject_id)
     if index_path.exists():
         try:
             index_path.unlink()
+            meta_path = index_path.parent / BM25_META_FILE
+            if meta_path.exists():
+                meta_path.unlink()
             # 清理空的父目录
             parent_dir = index_path.parent
             if parent_dir.exists() and not any(parent_dir.iterdir()):
