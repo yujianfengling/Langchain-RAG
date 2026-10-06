@@ -334,22 +334,22 @@ resume→重新 running；cancel→cancelled 且状态稳定。**10/10 通过**�
 
 | 阶段 | 耗时 |
 |---|---|
-| \`PDFAnalyzer.analyze\`（74,077 个元素：文本 66,402 / 公式 7,528 / 表格 142 / 图 5） | **84.3s** |
+| `PDFAnalyzer.analyze`（74,077 个元素：文本 66,402 / 公式 7,528 / 表格 142 / 图 5） | **84.3s** |
 | 图片抽取 | 0.1s |
 | 适配 + 逐元素增强（生产路径） | 5.5s |
-| \`_parse_file\` 端到端 | **83.2s** |
+| `_parse_file` 端到端 | **83.2s** |
 | 不增强的适配（含再次 analyze） | 85.6s |
 
 → **180s 不是被"整本解析"一次性撑爆的**：这本教材在空载下 83s 就能解析完；
 真正的问题是"**一次性解析 + 任何超时都整本重来**"，并且在后端有其它负载时超过 180s。
 
 **改法（按测量，不是全局调大）**：
-1. \`PDFAnalyzer.analyze\` 支持页范围（\`start_page/end_page/page_offset\`，默认行为不变），
+1. `PDFAnalyzer.analyze` 支持页范围（`start_page/end_page/page_offset`，默认行为不变），
    页码按**全书真实页码**输出（修掉一个"偏移被加两次"的 bug：曾把 958 页算到 1757 页）。
-2. \`PdfLoader\` 对超过 \`IMPORT_PDF_RANGE_THRESHOLD\`（默认 300 页）的 PDF **按 \`IMPORT_PDF_RANGE_PAGES\`（默认 200 页）分段解析**，
-   每段完成即落盘（\`data/cache/pdf_ranges/<sha>_<start>_<end>_<vision版本>_pdfrange-v1.json\`），
+2. `PdfLoader` 对超过 `IMPORT_PDF_RANGE_THRESHOLD`（默认 300 页）的 PDF **按 `IMPORT_PDF_RANGE_PAGES`（默认 200 页）分段解析**，
+   每段完成即落盘（`data/cache/pdf_ranges/<sha>_<start>_<end>_<vision版本>_pdfrange-v1.json`），
    重试**只补缺失段**；每段跳过 0、失败不拖垮其余段。
-3. **按体积给预算**：大 PDF 用 \`IMPORT_PDF_ITEM_MAX_SECONDS\`（默认 600s），其余文件仍是 180s。
+3. **按体积给预算**：大 PDF 用 `IMPORT_PDF_ITEM_MAX_SECONDS`（默认 600s），其余文件仍是 180s。
    放宽是安全的，因为解析已分段可续。
 
 **实测**（同一文件同条件）：
@@ -362,33 +362,46 @@ resume→重新 running；cancel→cancelled 且状态稳定。**10/10 通过**�
 
 即缓存复用快 **145×**；且超时那次留下的 3 段缓存让下一次只跑剩余 2 段。
 
-**只重试这一本（复用其余成果）的最终结果**：任务 \`imp_e8d31bcaa376\` → **succeeded**，
+**只重试这一本（复用其余成果）的最终结果**：任务 `imp_e8d31bcaa376` → **succeeded**，
 ready=1 / failed=0；条目提示"同名同内容，已跳过（不重复导入）"；
-\`build_chunks=13109\`、\`build_ms≈611s\`、总耗时 **676s**；
+`build_chunks=13109`、`build_ms≈611s`、总耗时 **676s**；
 内存峰值 parse 564MB / build 428MB。
 
 ## 2. 索引发布：先建新版本，校验后再原子切换
 - 旧顺序"备份 → **删除线上** → 重建"在重建期间线上索引为空（大库可达数分钟），
-  启动恢复只能事后补救。现在改为：新版本写入 \`<name>.building\`（线上与内存缓存都不动）→
-  校验（meta 存在、FAISS ntotal>0、BM25 存在、\`meta.documents == FAISS == BM25\`、\`build_id\` 三者一致）→
-  **成对原子 rename** 切换（失败回退，旧版本继续可用）→ 上一版本留作 \`.prev\`。
-- 顺带修掉一个真 bug：发布后调用 \`_invalidate_subject_index\` 会经 \`clear_index\` **删掉刚发布的 BM25 磁盘索引**；
-  现在发布后只清内存（\`_invalidate_memory_index\`）。
+  启动恢复只能事后补救。现在改为：新版本写入 `<name>.building`（线上与内存缓存都不动）→
+  校验（meta 存在、FAISS ntotal>0、BM25 存在、`meta.documents == FAISS == BM25`、`build_id` 三者一致）→
+  **成对的 rename 切换**（失败回退，旧版本继续可用）→ 上一版本留作 `.prev`。
+
+  **准确描述（不夸大）**：这里的"原子发布"**不是一次不可分割的操作**，实现上是
+  **4 次顺序 os.replace**：① vector_store 线上→`.old`；② bm25 线上→`.old`；
+  ③ staging→线上（两个目录）；④ `.old`→`.prev`。因此存在**毫秒级**中间窗口，
+  期间可能只切了其中一个目录（不是"零窗口"）。中断一致性由三点保证：
+  (a) 同一卷内 rename，单次 rename 本身原子；
+  (b) 发布中途失败会把已移动的旧目录放回、新版本退回 staging；
+  (c) 若恰在窗口内被杀，启动时 restore_orphaned_index_backups / _recover_index_sidecars
+  会依据 `.old`/`.prev` 把线上恢复成**某一次完整版本**，不会出现"新 FAISS + 旧 BM25"。
+- 顺带修掉一个真 bug：发布后调用 `_invalidate_subject_index` 会经 `clear_index` **删掉刚发布的 BM25 磁盘索引**；
+  现在发布后只清内存（`_invalidate_memory_index`）。
+- **澄清一个容易误解的点**：重建期间旧索引仍可服务，靠的是"先建 staging、校验后切换"这套**发布机制**，
+  与"全量重建还是增量重建"**无关**——将来即使做了增量向量化，也仍需要同样的暂存/切换才能边建边服务。
+  整库目前**仍是一次全量重建（约 10 分钟）**，尚未实现增量向量化；那是**性能待办**，
+  **不是"在线服务"的前提**。
 - **线上实测**（本轮真实重建期间）：
-  - \`vector_store/sub-kg5yy0t4\` 仍有 3 个文件（旧版本在线上）、\`sub-kg5yy0t4.building\` 存在；
+  - `vector_store/sub-kg5yy0t4` 仍有 3 个文件（旧版本在线上）、`sub-kg5yy0t4.building` 存在；
   - 构建进行中提问"化学平衡的定义" → **返回 10 条来源**（来自旧索引），证明重建期间问答可用；
-  - 发布后 \`meta.json\` 带 \`build_id=d289a9297ae742188dae046e409b6843\`，\`documents=13109\`。
+  - 发布后 `meta.json` 带 `build_id=d289a9297ae742188dae046e409b6843`，`documents=13109`。
 
 ## 3. 执行者接管的写入安全（fencing）
-- 新增 \`executor_epoch\` + 原子条件 UPDATE 声明；\`_is_executor_current\` 要求 id 与 epoch 都一致；
-  所有写入路径（item/状态/落盘/注册资料/建库前后）都有 \`_fence_guard()\`，失权即抛 \`_ExecutorLostError\` 并退出。
+- 新增 `executor_epoch` + 原子条件 UPDATE 声明；`_is_executor_current` 要求 id 与 epoch 都一致；
+  所有写入路径（item/状态/落盘/注册资料/建库前后）都有 `_fence_guard()`，失权即抛 `_ExecutorLostError` 并退出。
 - **独立心跳看护线程**（间隔默认 30s，过期阈值默认 300s）→ 单次长建库（实测 611s）期间持续续期，
   不会因为"某次操作耗时长"被误判失活。
 - 4 项实测：被接管后不写 item/不落盘/不建库；长建库不被误接管；并发触发只有一个执行者；接管后不重复导入。
 
 ## 4. 教材验收（前/中/后 + 公式/表格）
 - 检索命中页码横跨全书：前部 p15/19/26/39/44/85，中部 p128/134/141/169/579–585，
-  后部 p633/689/908/948 —— 全部指向这本 PDF 且带真实页码，\`context_used=True\`。
+  后部 p633/689/908/948 —— 全部指向这本 PDF 且带真实页码，`context_used=True`。
 - 公式/表格：该书的元素里有 **7,528 个公式元素、142 个表格元素**，均随分块入库；
   针对"ideal gas law / partition function / Maxwell relations"的检索都返回了对应页（p19 / p584 / p134）。
 - 结论：**教材已完整入库**，学科仍为 **92 份有效资料**（92 文件 + 1 个 extracted_images 目录，无重复文件）。
