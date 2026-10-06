@@ -1,0 +1,112 @@
+# 资料导入接口契约（2026-10-07，本轮冻结）
+
+前后端并行开发依据。实现方不得单方面改名；如需变更，先改本文件并通知对方。
+
+## 1. 能力清单
+
+`GET /api/knowledge/capabilities`
+
+```json
+{ "success": true,
+  "data": {
+    "formats": [
+      { "ext": "pptx", "kind": "presentation", "label": "PowerPoint 演示文稿",
+        "parser": "python-pptx", "requires": null, "available": true, "note": null }
+    ],
+    "archives": [ { "ext": "zip", "label": "ZIP 压缩包", "parser": "zipfile",
+                    "requires": null, "available": true, "note": null } ],
+    "converter": { "available": false, "path": null, "kind": "libreoffice",
+                   "note": "旧版 .ppt/.doc/.xls 需要 LibreOffice；未检测到。" },
+    "limits": { "max_file_mb": 20, "max_total_mb": 1024, "max_files": 100,
+                "max_depth": 2, "max_seconds": 300 },
+    "accept": ".pptx,.ppt,.pdf,.docx,.doc,.txt,.md,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.webp,.zip,..."
+  } }
+```
+
+- `available=false` 的格式仍会出现在清单里，但前端要标注"需要转换组件/暂不支持"，后端必须返回明确原因，不得假装成功。
+- `accept` 只包含 `available=true` 的扩展名，供 <input accept> 与拖拽校验共用。
+
+## 2. 发起导入
+
+`POST /api/knowledge/{subject_id}/import`  `multipart/form-data`
+
+- 字段 `files`：可重复，支持多文件与压缩包混投。
+- 权限：沿用学科写权限（课程学科=授课教师/管理员；个人学科=创建者/管理员；历史学科=管理白名单）。
+- 返回：
+
+```json
+{ "success": true,
+  "data": { "job_id": "imp_xxx", "accepted": 3,
+            "rejected": [ { "filename": "a.xyz", "reason": "不支持的文件类型",
+                            "error_type": "unsupported_format" } ] } }
+
+- `rejected` 项在 `filename`/`reason` 之外附带 `error_type`（便于前端区分
+  unsupported_format / converter_unavailable / size_exceeded / count_exceeded）；
+  这是**附加字段**，不改变既有字段含义。
+- `limits` 的默认值随 `IMPORT_MAX_*` 环境变量变化，前端应读取响应而不是写死。
+  单文件默认 20MB，与既有 `POST /knowledge/upload` 的上限**保持一致，不放宽**。
+```
+
+- 立刻返回，解析与建库在后台线程完成（不得在请求里同步阻塞）。
+
+## 3. 查询任务（刷新后可恢复）
+
+`GET /api/knowledge/imports/{job_id}` 与 `GET /api/knowledge/{subject_id}/imports?limit=5`
+
+```json
+{ "success": true,
+  "data": {
+    "job_id": "imp_xxx", "subject_id": "s1",
+    "status": "queued|running|succeeded|partial|failed|cancelled",
+    "created_at": "...", "updated_at": "...", "finished_at": null,
+    "totals": { "files": 12, "ready": 10, "failed": 2, "skipped": 3, "bytes": 123456 },
+    "items": [
+      { "item_id": "itm_1", "display_name": "第1章/课件.pptx",
+        "source_path": "第1章/课件.pptx", "origin_archive": "资料包.zip",
+        "size": 12345, "status": "ready", "stage": "indexing", "progress": 1.0,
+        "message": "可学习", "doc_id": "mat_xxx", "error_type": null, "retryable": false }
+    ],
+    "archive_summaries": [
+      { "archive": "资料包.zip", "extracted": 8, "skipped": 2,
+        "note": "已忽略 __MACOSX 等无关内容" }
+    ],
+    "kb": { "status": "ready", "ready": true, "document_count": 12, "chunk_count": 340 },
+    "summary_text": "12 份资料已可学习，2 份未能导入",
+    "can_retry": true,
+    "warnings": ["旧版 .ppt 需要 LibreOffice，已跳过 1 个文件"]
+  } }
+```
+
+- 条目 `status`：`pending|parsing|indexing|ready|failed|skipped`。
+- `progress` 只在该阶段有真实百分比时给出，否则为 null；不得编造。
+- 全部文件解析失败时 `kb.ready=false`，且 `status != "succeeded"`。
+
+说明（实现侧，2026-10-07）：
+- `GET /api/knowledge/{subject_id}/imports?limit=5` 返回的 `data` 形如
+  `{ "jobs": [<job>, ...], "latest": <job>|null }`；单个 job 结构与
+  `GET /api/knowledge/imports/{job_id}` 的 `data` 完全一致。
+- 压缩包展开出的被忽略项（__MACOSX、隐藏文件、临时文件等）会作为
+  `status="skipped"` 的条目如实列出，`message` 写清跳过原因。
+- 压缩包自身损坏 / 加密 / 超限时，会在 items 里产生
+  `status="failed"`、`error_type=archive_corrupt | archive_encrypted |
+  archive_limit_exceeded` 的条目（`retryable=false`），并在
+  `archive_summaries` 里说明原因；绝不静默或显示成"没有可导入的资料"。
+- 每条被接受的文件都必须有至少一条终态（ready/failed/skipped）条目。
+- `archive_summaries[].note` 说明本包展开了什么、跳过了什么。
+
+## 4. 重试与取消
+
+- `POST /api/knowledge/imports/{job_id}/retry` → `{ "success": true, "data": { "job_id": "imp_new" } }`
+  （只重试失败且 retryable 的条目，不产生重复资料）。
+  实现口径：重试会重新处理该任务的原始上传内容，已成功落盘的"同名同内容"按内容哈希
+  判为"已存在、不重复导入"并记为 ready；同名不同内容一律另存（不静默覆盖）。
+  `build_failed` 与 `converter_unavailable` 的条目 `retryable=true`。
+- `DELETE /api/knowledge/imports/{job_id}` → 取消未开始/进行中的任务并清理临时目录（已导入的资料不删除）
+
+## 5. 前端行为
+
+- 拖拽区始终可见（有资料时也能继续拖），无写权限时不渲染可操作的上传框。
+- 拖拽时高亮；`dragover/drop` 必须 `preventDefault`，禁止浏览器直接打开文件。
+- 队列展示：文件名、大小、状态、失败原因、重试按钮；上传/解析/建库三段状态分开。
+- 完成后展示真实摘要 + 「查看详情」+「开始伴学（跳 /student?subject=<sid>）」。
+- 轮询 1.5s，任务终态后停止；刷新页面用 `/{subject_id}/imports` 恢复最近任务。

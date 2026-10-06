@@ -99,3 +99,57 @@ powershell -ExecutionPolicy Bypass -File D:\神の文档\Langchain-RAG\tests\_br
 - NotebookLM 官方文档正文因网络不可达未取得，其分层只作低置信产品参考（见 THIRD_PARTY_REUSE.md）。
 - `services/agent_runtime.py`（旧的确定性 Agent）仍被部分接口/工具复用（`get_learning_state` 等），
   尚未整体删除；统一伴学路径不再使用它的固定步骤编排。下一轮可评估合并。
+
+---
+
+# 第二轮（2026-10-07）：认证状态修复 + 真实拖拽导入
+
+## 交付 1：未登录/登录失效重复报错
+
+真实根因（详见 `docs/AUTH_FIX.md`）：
+1. Axios 拦截器对**每个** 401 都派发一次失效事件，而 TasksPage 一次加载并发 6 个个人接口；
+2. 侧栏 / 顶栏(CSS 隐藏但仍挂载) / 抽屉里各有一个 UserAuth 实例，每个都 toast → 6×2=12 条；
+3. 未登录时页面照常发起个人接口请求；
+4. 403 与 401 未在状态层区分，注销/切号存在竞态。
+
+修复：新增 `api/authState.ts`（唯一状态源：anonymous/initializing/authenticated/expired +
+登录代次 generation + 同一令牌只处理一次失效）、拦截器单次失效与陈旧响应丢弃、`AuthContext`
+单一提示入口、`App.tsx` 的 `<Protected>` 未登录不挂载页面（个人接口一个都不发）。
+验证：`tests/_browser/verify_auth.js` 12/12。
+
+## 交付 2：真实拖拽导入 + 格式扩展
+
+新增：`rag/formats.py`（能力单一来源）、`rag/loaders/pptx_loader.py`、`spreadsheet_loader.py`、
+`legacy_office_loader.py`、`extended_loader.py`、`services/office_converter.py`、
+`services/archive_service.py`、`services/import_service.py`、`api/routes/knowledge.py` 的导入接口；
+前端 `api/import.ts` + `components/UploadDropzone`（真实拖拽、队列、摘要、刷新恢复）。
+格式能力与配置见 `docs/FORMAT_SUPPORT.md`，接口契约 `docs/IMPORT_API_CONTRACT.md`。
+
+## 本轮修掉的两个真实回归（端到端验收发现）
+
+1. **个人学科资料全部不可见**：`student_visible_document_names` 没有 `personal` 分支，
+   落到课程分支用 `course_id=None` 查课程资料，返回空集合 →
+   `GET /knowledge/{sid}/documents` 把学生自己上传的资料全部隐藏（界面显示“资料 0 份”、
+   资料范围选择为空）。已修复并加回归测试 `tests/test_personal_subject.py`（4 项）。
+2. **note_service 的 mock 点被改变**：上轮把检索改为`retrieve_and_build_context_scoped` 后，
+   既有测试 patch 的 `retrieve_and_build_context` 不再生效。已改回“无 scope 时走原入口、
+   有 scope 时才走范围检索”，保持既有契约。
+   同时更新 `test_phase1_hardening` 中“非白名单账号不能创建学科”的旧断言 ——
+   该契约已按产品要求刻意改变（个人学科人人可建），新断言改为保护**历史全局学科**的写操作。
+
+## 本轮验收结果
+
+- 导入端到端（隔离数据，真实模型）：`tests/_browser/verify_import.py` **32/32**
+- 浏览器真实拖拽：`tests/_browser/verify_dragdrop.js` **6/6**（390/800/1366 截图）
+- 认证状态：`tests/_browser/verify_auth.js` **12/12**
+- 后端新增测试：`test_formats_import.py` / `test_pptx_loader.py` / `test_archive_service.py` /
+  `test_formats.py` / `test_import_service.py` 共 42 项
+- `ruff check .` 0；`npx tsc --noEmit` 0；`npm run build` 成功
+- 前端 `npm run lint` **无法运行**：仓库里没有 ESLint 配置文件（既有情况，非本轮引入）
+
+## 已知限制
+
+- `.ppt/.doc` 需要 LibreOffice（本机未装，能力清单如实标 false 并给配置方法）；
+  `.rar` 需要外部 unrar/7z。除此之外不需要任何额外安装。
+- 单文件上传上限仍是 20MB（沿用既有规则，未放宽）。
+- 导入任务在内存后台线程执行，进程重启后任务状态保留在库里但不会自动续跑（可重试）。

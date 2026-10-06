@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
-  Alert, Button, Checkbox, Empty, Input, Segmented, Select, Space, Spin, Tag, Tooltip,
+  Alert, Button, Checkbox, Input, Segmented, Select, Space, Spin, Tag, Tooltip,
   Typography, message as antdMessage,
 } from 'antd';
 import {
@@ -75,6 +76,7 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   initialSubjectId, initialDocIds, initialNodeId, role = 'student', greeting,
 }) => {
   const ctx = useCourse();
+  const navigate = useNavigate();
   const isNarrow = useIsNarrow();
   const [subjectId, setSubjectId] = useState<string>(initialSubjectId || '');
   const [sessionLoading, setSessionLoading] = useState(false);
@@ -434,7 +436,22 @@ const includeNodeSources = useCallback(() => {
             </Button>
           ))}
           {ctx.courses.length === 0 && ctx.personalSubjects.length === 0 && (
-            <Empty description="还没有课程或资料" />
+            /* 首次使用空状态：直接给可执行的下一步，不让用户自己去找资料库 */
+            <div className="tutor-firstuse">
+              <div className="tutor-firstuse-icon"><DatabaseOutlined /></div>
+              <div className="tutor-firstuse-title">还没有资料，先建一门学科</div>
+              <div className="tutor-firstuse-sub">
+                创建学科后把课件、讲义或老师发的资料包拖进去，系统会自动解析并建好知识库，
+                然后就能在这里提问、讲解、练习与整理。
+              </div>
+              <Button type="primary" size="large" icon={<DatabaseOutlined />}
+                      onClick={() => navigate('/student/materials?create=1')}>
+                创建学科并上传资料
+              </Button>
+              <Button type="link" onClick={() => navigate('/student/materials?join=1')}>
+                已有班级邀请码？加入课程
+              </Button>
+            </div>
           )}
         </Space>
       </div>

@@ -1,27 +1,34 @@
 import apiClient from './axios';
+import {
+  adoptToken, clearAuth, getStatus, getToken, isLoggedIn, markAuthenticated,
+  setUser as setAuthUser, subscribe,
+} from './authState';
+import type { AuthUser } from './authTypes';
 import { ApiResponse } from '../types';
 
-// 学习数据必须归属到真实用户：令牌由后端签发，前端只负责保存与随请求携带
-const TOKEN_KEY = 'edu_user_token';
+/**
+ * 认证 API 客户端。
+ *
+ * 令牌与登录态的**唯一来源**是 api/authState.ts（本轮修复重复提示时收敛），
+ * 这里只保留请求方法与同名导出的兼容转发，避免改动大量既有调用点。
+ */
+export type { AuthUser };
 
-export interface AuthUser {
-  id: string;
-  username: string;
-  display_name?: string | null;
-  is_legacy?: boolean;
-  status?: string;
-  created_at?: string;
-  /**
-   * 角色（由**后端**判定，前端仅用于决定显示哪些入口）
-   *
-   * 注意：隐藏菜单≠权限。所有越权请求都会在后端被拒绝（403），
-   * 前端不承担任何安全职责。
-   */
-  role?: 'student' | 'teacher' | 'admin';
+export { getToken, isLoggedIn, getStatus, subscribe };
+
+/** 兼容旧调用：直接写入令牌并进入"校验中" */
+export const setToken = (token: string): void => {
+  adoptToken(token);
+};
+
+export const clearToken = (): void => {
+  clearAuth();
+};
+
+export interface AuthSession extends AuthUser {
+  token: string;
+  expires_at: string;
 }
-
-/** 登录/注册返回：用户信息 + 会话令牌（后端为扁平结构） */
-export type AuthSession = AuthUser & { token: string; expires_at: string };
 
 export interface LegacyClaimItem {
   owner_label: string;
@@ -30,32 +37,6 @@ export interface LegacyClaimItem {
   status: string;
   claimed_by?: string | null;
 }
-
-export const getToken = (): string | null => {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
-};
-
-export const setToken = (token: string): void => {
-  try {
-    localStorage.setItem(TOKEN_KEY, token);
-  } catch {
-    /* 隐私模式下 localStorage 不可用：本次会话仍可用，刷新后需重新登录 */
-  }
-};
-
-export const clearToken = (): void => {
-  try {
-    localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    /* 忽略 */
-  }
-};
-
-export const isLoggedIn = (): boolean => !!getToken();
 
 export const register = async (username: string, password: string,
                                displayName?: string): Promise<ApiResponse<AuthSession>> => {
@@ -74,16 +55,21 @@ export const logout = async (): Promise<ApiResponse<null>> => {
   return apiClient.post('/auth/logout');
 };
 
-/** 获取当前登录用户（令牌失效返回 401，由响应拦截器清理本地令牌） */
+/** 获取当前登录用户（令牌失效返回 401，由拦截器统一清理一次） */
 export const me = async (): Promise<ApiResponse<AuthUser>> => {
   return apiClient.get('/auth/me');
 };
 
-/** 历史数据待认领清单（沿用旧 default_user 数据时使用，需用户显式确认） */
 export const legacyClaims = async (): Promise<ApiResponse<LegacyClaimItem[]>> => {
   return apiClient.get('/auth/legacy-claims');
 };
 
 export const claimLegacy = async (): Promise<ApiResponse<any>> => {
   return apiClient.post('/auth/claim-legacy');
+};
+
+/** 内部使用：把校验成功的用户写回唯一来源 */
+export const commitUser = (user: AuthUser | null): void => {
+  if (user) markAuthenticated(user);
+  else setAuthUser(null);
 };

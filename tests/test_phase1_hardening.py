@@ -773,18 +773,42 @@ class TestObjectLevelPermissions(HardeningTestBase):
 
     def test_knowledge_admin_allowlist_enforced_when_configured(self):
         """
-        配置 KNOWLEDGE_ADMIN_USERS 后，非白名单账号不能管理课程资料。
-        未配置时为"任一登录用户可管理"，该分支由上一条用例（允许登录用户）覆盖。
+        配置 KNOWLEDGE_ADMIN_USERS 后的写权限边界。
+
+        契约变化（2026-10-07，产品要求"创建学科就能开始"）：
+        任何登录用户都可以创建**属于自己的个人学科**并上传资料，因此旧断言
+        "非白名单账号不能创建学科"不再成立。白名单保护的仍然是**历史全局学科**
+        （无 owner、也非课程归属）的写操作 —— 本用例改为验证这条真正的边界，
+        同时保留"未配置白名单即放行"的既有语义。
         """
+        from services import subject_service
+
         token, _ = self.login("perm_admin_normal")
-        with mock.patch.dict(os.environ, {"KNOWLEDGE_ADMIN_USERS": "someone_else"}):
-            r = self.req("POST", "/api/subjects", token=token,
-                         params={"subject_id": "白名单测试学科", "name": "白名单测试学科"})
-            self.assertEqual(r.status_code, 403, r.text)
-        # 未配置白名单 → 放行（单用户/开发模式）
-        r2 = self.req("POST", "/api/subjects", token=token,
-                      params={"subject_id": "新学科", "name": "新学科"})
-        self.assertEqual(r2.status_code, 200, r2.text)
+
+        # 1) 个人学科：任何登录用户都能创建，且归属记录为本人
+        r = self.req("POST", "/api/subjects", token=token,
+                     params={"subject_id": "个人学科_白名单外", "name": "个人学科_白名单外"})
+        self.assertEqual(r.status_code, 200, r.text)
+
+        # 2) 历史全局学科（无 owner）：白名单外账号不得写入
+        legacy_id = "白名单测试学科"
+        try:
+            subject_service.delete_subject(legacy_id)
+        except Exception:
+            pass
+        subject_service.create_subject(legacy_id, legacy_id)
+        try:
+            with mock.patch.dict(os.environ, {"KNOWLEDGE_ADMIN_USERS": "someone_else"}):
+                r2 = self.req("POST", f"/api/knowledge/{legacy_id}/rebuild", token=token)
+                self.assertEqual(r2.status_code, 403, r2.text)
+            # 未配置白名单 → 放行（单用户/开发模式）；此处只要求不再是 403
+            r3 = self.req("POST", f"/api/knowledge/{legacy_id}/rebuild", token=token)
+            self.assertNotEqual(r3.status_code, 403, r3.text)
+        finally:
+            try:
+                subject_service.delete_subject(legacy_id)
+            except Exception:
+                pass
 
     # ---------- 工具 ----------
 

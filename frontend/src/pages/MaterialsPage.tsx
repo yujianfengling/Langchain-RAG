@@ -1,21 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert, Button, Card, Checkbox, Collapse, Empty, Form, Input, List, Modal, Popconfirm,
-  Space, Spin, Tag, Typography, Upload, message,
+  Space, Spin, Tag, Typography, message,
 } from 'antd';
 import {
-  BuildOutlined, CloudUploadOutlined, DatabaseOutlined, DeleteOutlined,
+  BuildOutlined, DatabaseOutlined, DeleteOutlined,
   FileTextOutlined, PlusOutlined, ReadOutlined, ReloadOutlined, SyncOutlined,
   TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import { useCourse } from '../context/CourseContext';
 import { createSubject } from '../api/subjects';
 import {
-  deleteDocument, getDocuments, getKnowledgeStats, rebuildKnowledge, uploadFile,
+  deleteDocument, getDocuments, getKnowledgeStats, rebuildKnowledge,
 } from '../api/knowledge';
 import { getTutorSession } from '../api/tutor';
 import { getHome } from '../api/student';
+import { joinCourseByCode } from '../api/studentCourses';
+import UploadDropzone from '../components/UploadDropzone';
 import { SkeletonCard } from '../components/AnimateMotion';
 
 // 知识图谱依赖 echarts（较大），只在学生真正展开"概念关系分析"时才加载，
@@ -120,6 +122,7 @@ const KbStatusTag: React.FC<{ state: KbState }> = ({ state }) => {
 
 const MaterialsPage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const ctx = useCourse();
 
   const [meta, setMeta] = useState<Record<string, SubjectMeta>>({});
@@ -129,11 +132,44 @@ const MaterialsPage: React.FC = () => {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [creating, setCreating] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [joinOpen, setJoinOpen] = useState(false);
+  const [joinCode, setJoinCode] = useState('');
+  const [joining, setJoining] = useState(false);
   const [form] = Form.useForm<{ name: string; description?: string }>();
+
+  // 从"首次使用空状态"或其它页面带参数进入：直接打开对应流程
+  useEffect(() => {
+    const want = searchParams.get('create') || searchParams.get('join');
+    if (!want) return;
+    if (want === 'join') setJoinOpen(true); else setModalOpen(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    next.delete('join');
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleJoin = async () => {
+    const code = joinCode.trim();
+    if (!code) { message.warning('请输入教师提供的班级邀请码'); return; }
+    setJoining(true);
+    try {
+      await joinCourseByCode(code);
+      message.success('已加入课程');
+      setJoinOpen(false);
+      setJoinCode('');
+      await ctx.refresh();
+      const c = ctx.courses.find((x) => x.title);
+      if (c) setSelectedId(c.subject_id);
+    } catch (e: any) {
+      message.error(e?.response?.data?.message || e?.response?.data?.detail || '加入失败，请核对邀请码');
+    } finally {
+      setJoining(false);
+    }
+  };
 
   const allIds = useMemo(() => {
     const set = new Set<string>();
@@ -275,21 +311,6 @@ const MaterialsPage: React.FC = () => {
     }
   };
 
-  const handleUpload = async (file: File) => {
-    if (!selectedId) return;
-    setUploading(true);
-    try {
-      await uploadFile(selectedId, file);
-      message.success('已上传 ' + file.name);
-      await loadDetail(selectedId);
-      await loadMeta(allIds);
-    } catch (e) {
-      message.error(describeError(e, '上传失败，请重试'));
-    } finally {
-      setUploading(false);
-    }
-  };
-
   const handleDelete = async (name: string) => {
     if (!selectedId) return;
     try {
@@ -360,14 +381,12 @@ const MaterialsPage: React.FC = () => {
         <DatabaseOutlined style={{ color: 'var(--color-primary)', fontSize: 18 }} />
         <Title level={4} style={{ margin: 0 }}>资料库</Title>
         <Text type="secondary" style={{ fontSize: 12 }}>管理伴学依据，勾选资料即可定向学习</Text>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          style={{ marginLeft: 'auto' }}
-          onClick={() => setModalOpen(true)}
-        >
-          创建学科
-        </Button>
+        <Space style={{ marginLeft: 'auto' }} wrap>
+          <Button icon={<TeamOutlined />} onClick={() => setJoinOpen(true)}>加入课程</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
+            创建学科
+          </Button>
+        </Space>
       </div>
 
       {ctx.status === 'error' && (
@@ -518,15 +537,19 @@ const MaterialsPage: React.FC = () => {
             </Text>
           )}
 
+          {/* 拖拽导入区：始终可见（已有资料时也能继续拖入新增文件） */}
+          <UploadDropzone
+            subjectId={selectedId}
+            writable={writable}
+            onFinished={() => {
+              // 导入结束后：资料明细、学科卡片数量与建库状态都要立刻更新
+              void loadDetail(selectedId);
+              void loadMeta(allIds);
+            }}
+          />
+
           {writable && (
             <Space style={{ marginBottom: 8 }} wrap>
-              <Upload
-                showUploadList={false}
-                accept=".pdf,.docx,.txt,.md,.jpg,.jpeg,.png,.webp"
-                beforeUpload={(file) => { void handleUpload(file); return false; }}
-              >
-                <Button icon={<CloudUploadOutlined />} loading={uploading}>上传资料</Button>
-              </Upload>
               <Button icon={<BuildOutlined />} loading={rebuilding} disabled={docs.length === 0} onClick={handleRebuild}>
                 重建知识库
               </Button>
@@ -547,17 +570,11 @@ const MaterialsPage: React.FC = () => {
           {detailLoading ? (
             <Spin />
           ) : docs.length === 0 ? (
-            <Empty description={writable ? '还没有资料，上传第一份课件即可开始伴学' : '该课程暂无资料'}>
-              {writable && (
-                <Upload
-                  showUploadList={false}
-                  accept=".pdf,.docx,.txt,.md,.jpg,.jpeg,.png,.webp"
-                  beforeUpload={(file) => { void handleUpload(file); return false; }}
-                >
-                  <Button type="primary" icon={<CloudUploadOutlined />} loading={uploading}>上传第一份资料</Button>
-                </Upload>
-              )}
-            </Empty>
+            <Empty
+              description={writable
+                ? '还没有资料，把课件或资料包拖到上面的区域，系统会自动解析并建库'
+                : '该课程暂无资料'}
+            />
           ) : (
             <>
               <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, margin: '6px 0' }}>
@@ -683,6 +700,30 @@ const MaterialsPage: React.FC = () => {
             <Input.TextArea placeholder="一句话说明这个学科要学什么" rows={2} maxLength={120} showCount />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* 加入教师课程：次级入口（学生凭教师给的邀请码加入） */}
+      <Modal
+        title="加入课程"
+        open={joinOpen}
+        onCancel={() => setJoinOpen(false)}
+        onOk={handleJoin}
+        confirmLoading={joining}
+        okText="加入课程"
+        cancelText="取消"
+        destroyOnHidden
+      >
+        <Alert
+          type="info" showIcon style={{ marginBottom: 12 }}
+          message="向老师要一个班级邀请码，加入后就能用课程资料提问、做作业与复习。"
+        />
+        <Input
+          placeholder="输入班级邀请码，例如 PL7F93"
+          value={joinCode}
+          onChange={(e) => setJoinCode(e.target.value)}
+          onPressEnter={handleJoin}
+          autoFocus
+        />
       </Modal>
     </div>
   );

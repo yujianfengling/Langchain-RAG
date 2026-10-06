@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import { listMyCourses } from '../api/studentCourses';
 import { listTeacherCourses } from '../api/teacher';
 import { getSubjects } from '../api/subjects';
-import { isLoggedIn, me } from '../api/auth';
+import { useAuth } from './AuthContext';
 import { Subject } from '../types';
 
 /**
@@ -54,6 +54,7 @@ const LAST_COURSE_KEY = 'edu_current_course';
 const LAST_SUBJECT_KEY = 'edu_last_subject';
 
 export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { status: authStatus, user } = useAuth();
   const [status, setStatus] = useState<CourseStatus>('loading');
   const [error, setError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState<string | null>(null);
@@ -63,19 +64,14 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [personalSubjectId, setPersonalSubjectId] = useState<string>('');
 
   const load = useCallback(async () => {
-    if (!isLoggedIn()) {
+    // 未登录 / 校验中：**不发起**任何课程请求（2026-10-07 修复未登录刷个人接口）
+    if (authStatus !== 'authenticated') {
       setStatus('ready'); setCourses([]); setPersonal([]); setError(null); setForbidden(null);
       setCurrentId(''); setPersonalSubjectId('');
       return;
     }
     setStatus('loading'); setError(null); setForbidden(null);
-    let role = 'student';
-    try {
-      const r: any = await me();
-      role = r && r.data ? (r.data.role || 'student') : 'student';
-    } catch (e) {
-      // 身份读取失败不阻断课程加载（令牌可能刚失效，课程接口会给出真实状态）
-    }
+    const role = user?.role || 'student';
     try {
       let items: CourseItem[] = [];
       if (role === 'teacher' || role === 'admin') {
@@ -146,7 +142,7 @@ export const CourseProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setError(msg); setStatus('error');
       }
     }
-  }, []);
+  }, [authStatus, user]);
 
   useEffect(() => { load(); }, [load]);
 

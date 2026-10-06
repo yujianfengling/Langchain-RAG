@@ -84,6 +84,74 @@ PLAN_PROMPT = """你是一名学习规划助手。请基于用户的学习目标
 
 
 
+# 基础表结构（与 _init_db 共用一份，避免两处漂移）
+_BASE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS learning_plans (
+    id TEXT PRIMARY KEY,
+    subject_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    goal TEXT,
+    start_date TEXT,
+    end_date TEXT,
+    status TEXT NOT NULL DEFAULT 'ACTIVE',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS learning_tasks (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    knowledge_point TEXT,
+    task_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    priority INTEGER DEFAULT 3,
+    estimated_minutes INTEGER DEFAULT 30,
+    status TEXT NOT NULL DEFAULT 'TODO',
+    completed_at TEXT,
+    actual_minutes INTEGER,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (plan_id) REFERENCES learning_plans(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_plan ON learning_tasks(plan_id);
+-- 任务改期留痕（与 learning_tasks 同库；不在 learning_loop.db 中创建）
+CREATE TABLE IF NOT EXISTS task_adjustments (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    user_id TEXT,
+    old_date TEXT,
+    new_date TEXT,
+    reason TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_adjust_task ON task_adjustments(task_id, created_at);
+"""
+
+
+def _ensure_base_schema(conn: sqlite3.Connection) -> bool:
+    """
+    确保基础表存在；返回 True 表示本次真的补建过。
+
+   为什么放在 _get_db（而不是只在导入时建一次）：数据目录被清空/切换、库文件被重建、
+    或并行测试的不同 worker 各自初始化时，表结构会缺失；只在导入时建一次的话，
+    后续所有计划/任务查询都会以 sqlite3.OperationalError: no such table 失败
+    （2026-10-07 在 pytest -n 4 全量跑时真实复现：gw1 的 learning_plans 不存在）。
+    一次 sqlite_master 查询成本极低，换来"库在就一定能用"。
+    """
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='learning_plans'").fetchone()
+    if row:
+        return False
+    conn.executescript(_BASE_SCHEMA_SQL)
+    conn.commit()
+    try:
+        from services.learning_data import ensure_columns
+        ensure_columns(conn, "learning_tasks")
+        ensure_columns(conn, "learning_plans")
+    except Exception as e:      # 列补齐失败不阻断查询，但必须留痕
+        logger.warning(f"补建学习计划表结构后补齐列失败: {e}")
+    return True
+
+
 def _get_db() -> sqlite3.Connection:
     """获取数据库连接（每次新建，thread-safe）"""
     os.makedirs(_DATA_DIR, exist_ok=True)
@@ -92,6 +160,10 @@ def _get_db() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     # V2.5.2：并发写等待（默认5s），避免 database is locked
     conn.execute("PRAGMA busy_timeout=5000")
+    try:
+        _ensure_base_schema(conn)
+    except sqlite3.Error as e:
+        logger.warning(f"确保学习计划表结构失败: {e}")
     return conn
 
 
@@ -99,46 +171,7 @@ def _init_db() -> None:
     """初始化表结构（幂等）"""
     conn = _get_db()
     try:
-        conn.executescript("""
-        CREATE TABLE IF NOT EXISTS learning_plans (
-            id TEXT PRIMARY KEY,
-            subject_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            goal TEXT,
-            start_date TEXT,
-            end_date TEXT,
-            status TEXT NOT NULL DEFAULT 'ACTIVE',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS learning_tasks (
-            id TEXT PRIMARY KEY,
-            plan_id TEXT NOT NULL,
-            knowledge_point TEXT,
-            task_type TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT,
-            priority INTEGER DEFAULT 3,
-            estimated_minutes INTEGER DEFAULT 30,
-            status TEXT NOT NULL DEFAULT 'TODO',
-            completed_at TEXT,
-            actual_minutes INTEGER,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (plan_id) REFERENCES learning_plans(id) ON DELETE CASCADE
-        );
-        CREATE INDEX IF NOT EXISTS idx_tasks_plan ON learning_tasks(plan_id);
-        -- 任务改期留痕（与 learning_tasks 同库；不在 learning_loop.db 中创建）
-        CREATE TABLE IF NOT EXISTS task_adjustments (
-            id TEXT PRIMARY KEY,
-            task_id TEXT NOT NULL,
-            user_id TEXT,
-            old_date TEXT,
-            new_date TEXT,
-            reason TEXT,
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_adjust_task ON task_adjustments(task_id, created_at);
-        """)
+        conn.executescript(_BASE_SCHEMA_SQL)
         conn.commit()
 
         # 阶段一新增列（用户归属/学科/知识点稳定 ID/计划日期等）：

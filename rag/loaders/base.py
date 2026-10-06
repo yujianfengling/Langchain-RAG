@@ -24,6 +24,9 @@ class LoadResult:
     success: bool
     error_message: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # 失败类型（unsupported_format / parse_error / converter_unavailable ...）。
+    # 2026-10-07：导入任务需要按类型区分失败原因，不能只有一句可读文案。
+    error_type: Optional[str] = None
     
     def __post_init__(self):
         """初始化后处理"""
@@ -119,13 +122,15 @@ class BaseLoader(ABC):
             metadata=metadata or {}
         )
     
-    def _create_error_result(self, error_message: str, metadata: Optional[Dict] = None) -> LoadResult:
+    def _create_error_result(self, error_message: str, metadata: Optional[Dict] = None,
+                             error_type: Optional[str] = None) -> LoadResult:
         """
         创建错误结果
         
         Args:
             error_message: 错误信息
             metadata: 元数据
+            error_type: 失败类型（供导入任务区分）
             
         Returns:
             LoadResult
@@ -134,5 +139,6 @@ class BaseLoader(ABC):
             documents=[],
             success=False,
             error_message=error_message,
-            metadata=metadata or {}
+            metadata=metadata or {},
+            error_type=error_type,
         )

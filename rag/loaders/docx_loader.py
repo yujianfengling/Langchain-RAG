@@ -24,7 +24,9 @@ class DocxLoader(BaseLoader):
     def supports(self, file_path: Union[str, Path]) -> bool:
         """判断是否支持该文件"""
         file_path = Path(file_path)
-        return file_path.suffix.lower() in ['.docx', '.doc']
+        # 2026-10-07：.doc 是二进制旧格式，docx2txt 无法真实解析；
+        # 旧格式统一由 LegacyOfficeLoader（LibreOffice 转换）处理。
+        return file_path.suffix.lower() in ['.docx']
     
     def load(self, file_path: Union[str, Path]) -> LoadResult:
         """
@@ -78,13 +80,16 @@ class DocxLoader(BaseLoader):
                 return self._create_success_result([doc])
                 
             except ImportError:
-                return self._create_error_result("DOCX加载需要安装langchain-community或docx2txt包")
+                return self._create_error_result(
+                    "DOCX加载需要安装langchain-community或docx2txt包",
+                    error_type="unsupported_format")
             except Exception as e:
-                return self._create_error_result(f"读取DOCX文件失败: {str(e)}")
+                return self._create_error_result(f"读取DOCX文件失败: {str(e)}",
+                                                 error_type="parse_error")
             
         except Exception as e:
-            return self._create_error_result(str(e))
+            return self._create_error_result(str(e), error_type="io_error")
     
     def get_supported_extensions(self) -> List[str]:
         """获取支持的文件扩展名"""
-        return ['.docx', '.doc']
+        return ['.docx']

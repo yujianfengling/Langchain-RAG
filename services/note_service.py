@@ -411,9 +411,14 @@ def generate_quiz(
         # 知识库就绪守卫
         require_kb_ready(subject_id)
 
-        # RAG 检索证据（按查看者可见范围过滤课程资料；传 scope 时只在所选资料内检索）
-        ctx = retrieve_and_build_context_scoped(topic, subject_id, top_k=top_k,
-                                                viewer_user_id=user_id, scope=scope)
+        # RAG 检索证据（按查看者可见范围过滤课程资料）
+        # 未指定资料范围时走原有入口，保持既有契约与可 mock 点；指定范围时才用范围检索。
+        if scope:
+            ctx = retrieve_and_build_context_scoped(topic, subject_id, top_k=top_k,
+                                                    viewer_user_id=user_id, scope=scope)
+        else:
+            ctx = retrieve_and_build_context(topic, subject_id, top_k=top_k,
+                                             viewer_user_id=user_id)
         context = ctx.get("context", "")
         sources = ctx.get("sources", [])
         context_used = ctx.get("context_used", False)
@@ -526,9 +531,14 @@ def generate_smart_note(
         # 0. 知识库就绪守卫（快速失败，不调 RAG/LLM）
         require_kb_ready(subject_id)
 
-        # 1. RAG 检索证据（按查看者可见范围过滤课程资料；传 scope 时只在所选资料内检索）
-        ctx = retrieve_and_build_context_scoped(topic, subject_id, top_k=top_k,
-                                                viewer_user_id=user_id, scope=scope)
+        # 1. RAG 检索证据（按查看者可见范围过滤课程资料）
+        # 未指定资料范围时走原有入口（保持既有契约与可 mock 点），指定范围时才用范围检索。
+        if scope:
+            ctx = retrieve_and_build_context_scoped(topic, subject_id, top_k=top_k,
+                                                    viewer_user_id=user_id, scope=scope)
+        else:
+            ctx = retrieve_and_build_context(topic, subject_id, top_k=top_k,
+                                             viewer_user_id=user_id)
         context = ctx.get("context", "")
         sources = ctx.get("sources", [])
         context_used = ctx.get("context_used", False)

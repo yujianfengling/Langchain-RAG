@@ -208,9 +208,12 @@ def student_visible_document_names(user_id: Optional[str], subject_id: str) -> O
     - 授课教师 / 管理员 → None（全部可见）
     - 在班学生 → 只允许 visibility='students' 的文件
     - 历史全局学科（无课程归属）→ None（保持既有行为，不改变原有语义）
+    - **个人学科 → None**（只有创建者/管理员能读，前面 require_subject_read 已拦住别人；
+      2026-10-07 修复：此前会落到"课程资料"分支、用 course_id=None 去查课程资料，
+      结果返回空集合，把学生自己上传的资料全部隐藏，资料列表显示 0 份）
     """
     bound = subject_scope(subject_id)
-    if bound["scope"] == "legacy":
+    if bound["scope"] in ("legacy", "personal"):
         return None
     if is_course_teacher(user_id, bound["course_id"]) or is_admin(user_id):
         return None

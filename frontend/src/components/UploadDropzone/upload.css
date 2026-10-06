@@ -1,0 +1,280 @@
+/* UploadDropzone — 资料导入拖拽区与队列（2026-10-07）
+   遵循 index.css 设计 token：Teal 主色、中性底、无紫色、柔和阴影与圆角。 */
+
+.udz-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* ============ 拖拽区（区域唯一最突出主操作） ============ */
+.udz-drop {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 28px 20px;
+  text-align: center;
+  cursor: pointer;
+  border: 1.5px dashed var(--color-primary-200);
+  border-radius: var(--radius-lg);
+  background: var(--color-primary-50);
+  transition: border-color 0.2s var(--ease-out), background 0.2s var(--ease-out),
+    box-shadow 0.2s var(--ease-out), padding 0.2s var(--ease-out);
+}
+.udz-drop:hover {
+  border-color: var(--color-primary-light);
+  box-shadow: var(--shadow-sm);
+}
+.udz-drop--active {
+  border-color: var(--color-primary);
+  border-style: solid;
+  background: var(--color-primary-100);
+  box-shadow: 0 0 0 3px var(--color-border-focus);
+}
+.udz-drop--compact {
+  flex-direction: row;
+  padding: 12px 16px;
+  gap: 10px;
+  text-align: left;
+}
+.udz-drop--compact .udz-icon { font-size: 20px; }
+.udz-drop--compact .udz-sub { display: none; }
+
+.udz-drop--readonly {
+  cursor: default;
+  border-style: solid;
+  border-color: var(--color-border);
+  background: var(--color-bg-muted);
+}
+.udz-drop--readonly .udz-icon { color: var(--color-text-muted); }
+
+.udz-input { display: none; }
+
+.udz-icon {
+  font-size: 30px;
+  color: var(--color-primary);
+  line-height: 1;
+}
+.udz-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.udz-sub {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  max-width: 520px;
+  line-height: 1.5;
+}
+.udz-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-lg);
+  background: rgba(240, 253, 250, 0.85);
+  color: var(--color-primary);
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.udz-caps-error { border-radius: var(--radius-md); }
+.udz-poll-error {
+  font-size: 12px;
+  color: #b45309;
+}
+
+/* ============ 上传阶段 ============ */
+.udz-uploading {
+  padding: 10px 12px;
+  border: 1px solid var(--color-primary-200);
+  border-radius: var(--radius-md);
+  background: var(--color-primary-50);
+}
+
+/* ============ 队列 ============ */
+.udz-queue {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-card);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+}
+.udz-queue-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border-light);
+  background: var(--color-bg-muted);
+}
+.udz-queue-progress {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.udz-cancel, .udz-details-toggle { margin-left: auto; padding: 0; }
+
+.udz-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--color-border-light);
+}
+.udz-summary-text {
+  font-size: 13px;
+  color: var(--color-text);
+  min-width: 0;
+}
+.udz-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.udz-rows { display: flex; flex-direction: column; }
+.udz-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border-light);
+  min-width: 0;
+}
+.udz-row:last-child { border-bottom: none; }
+.udz-row-icon {
+  color: var(--color-primary);
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+.udz-row-main { flex: 1; min-width: 0; }
+.udz-row-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.udz-row-sub {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.udz-row-msg {
+  font-size: 12px;
+  color: #b91c1c;
+  margin-top: 3px;
+  word-break: break-word;
+}
+.udz-row-msg--muted { color: var(--color-text-secondary); }
+.udz-row-retry { padding: 0 4px; height: auto; }
+.udz-row-state { flex-shrink: 0; margin: 0; }
+
+.udz-archive {
+  padding: 8px 12px;
+  border-top: 1px solid var(--color-border-light);
+  background: var(--color-bg-muted);
+}
+.udz-archive-row {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.udz-warnings {
+  padding: 8px 12px;
+  border-top: 1px solid var(--color-border-light);
+  font-size: 12px;
+  color: #b45309;
+}
+
+/* ============ 被拒绝的文件 ============ */
+.udz-rejected {
+  border: 1px solid #fde68a;
+  border-radius: var(--radius-md);
+  background: #fffbeb;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.udz-rejected-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+.udz-rejected-name {
+  font-weight: 500;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+.udz-rejected-reason { color: #b45309; }
+
+/* ============ 按需展开的格式/限制说明 ============ */
+.udz-details {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.udz-details > summary {
+  cursor: pointer;
+  color: var(--color-primary);
+  padding: 2px 0;
+  list-style: none;
+}
+.udz-details > summary::-webkit-details-marker { display: none; }
+.udz-details > summary::before {
+  content: '＋ ';
+  font-weight: 600;
+}
+.udz-details[open] > summary::before { content: '－ '; }
+.udz-details-body { padding: 8px 0 0; }
+.udz-format-list {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+.udz-format-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.udz-format-ext {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-size: 11px;
+  color: var(--color-text);
+}
+.udz-ok { color: var(--color-primary); }
+.udz-off { color: var(--color-text-muted); }
+.udz-format-note { color: var(--color-text-muted); }
+.udz-limits { margin-top: 4px; color: var(--color-text-muted); }
+
+/* ============ 窄屏（390px 可用） ============ */
+@media (max-width: 480px) {
+  .udz-drop { padding: 20px 14px; }
+  .udz-drop--compact { flex-direction: column; text-align: center; }
+  .udz-drop--compact .udz-sub { display: block; }
+  .udz-queue-head, .udz-summary { flex-direction: column; align-items: stretch; }
+  .udz-cancel, .udz-details-toggle { margin-left: 0; align-self: flex-start; }
+  .udz-actions { width: 100%; }
+  .udz-actions .ant-btn { flex: 1; }
+  .udz-row { flex-wrap: wrap; }
+  .udz-row-state { margin-left: 26px; }
+  .udz-rejected-name { max-width: 100%; white-space: normal; word-break: break-all; }
+}

@@ -7,11 +7,11 @@ import {
   EditOutlined, FormOutlined, BarChartOutlined, MenuOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
-import { AUTH_CHANGED_EVENT } from './components/UserAuth';
 import AccountMenu from './components/AccountMenu';
+import LoginRequired from './components/LoginRequired';
 import SystemStatusBanner from './components/SystemStatusBanner';
 import { CourseProvider } from './context/CourseContext';
-import { isLoggedIn, me } from './api/auth';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { useIsNarrow } from './hooks/useIsNarrow';
 import { themeConfig } from './theme';
 
@@ -50,29 +50,29 @@ const PageFallback: React.FC = () => (
   <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}><Spin /></div>
 );
 
+/**
+ * 受保护路由：未登录/已过期时**不挂载页面组件**。
+ *
+ * 这样页面里的个人接口（课程、任务、作业、掌握度、导入任务…）根本不会发起，
+ * 也就不会出现"登录提示 + 加载失败 + 暂无数据"同时刷屏；登录成功后自动渲染原页面。
+ */
+const Protected: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { status } = useAuth();
+  if (status === 'authenticated') return <>{children}</>;
+  if (status === 'initializing') return <PageFallback />;
+  return <LoginRequired reason={status === 'expired' ? 'expired' : 'anonymous'} />;
+};
+
 const App: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const isNarrow = useIsNarrow();
-  const [role, setRole] = React.useState<string>('student');
+  const { user } = useAuth();
   const [drawerOpen, setDrawerOpen] = React.useState(false);
-
-  React.useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      if (!isLoggedIn()) { if (alive) setRole('student'); return; }
-      try {
-        const res: any = await me();
-        if (alive) setRole((res && res.data && res.data.role) || 'student');
-      } catch (e) { if (alive) setRole('student'); }
-    };
-    load();
-    window.addEventListener(AUTH_CHANGED_EVENT, load);
-    return () => { alive = false; window.removeEventListener(AUTH_CHANGED_EVENT, load); };
-  }, []);
 
   React.useEffect(() => { setDrawerOpen(false); }, [location.pathname, location.search]);
 
+  const role = user?.role || 'student';
   const isTeacher = role === 'teacher' || role === 'admin';
   const items = isTeacher ? TEACHER_ITEMS : STUDENT_ITEMS;
 
@@ -135,91 +135,97 @@ const App: React.FC = () => {
   );
 
   return (
-    <ConfigProvider locale={zhCN} theme={themeConfig}>
-      <CourseProvider>
-        <Layout style={{ minHeight: '100vh', background: '#f8fafc' }}>
-          <motion.div
-            className="app-sider-wrap"
-            initial={{ x: -40, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            transition={{ duration: 0.18 }}
-            style={{ display: 'flex', flexDirection: 'column', width: 200, flexShrink: 0 }}
-          >
-            <Sider
-              className="app-sider"
-              width={200}
-              style={{
-                background: '#ffffff', borderRight: '1px solid #e2e8f0',
-                height: '100vh', position: 'fixed', left: 0, top: 0, bottom: 0, zIndex: 100,
-                display: 'flex', flexDirection: 'column', overflow: 'hidden',
-              }}
-            >
-              <div style={{ padding: '18px 16px 14px', borderBottom: '1px solid #f1f5f9' }}>{brandNode()}</div>
-              <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode}</div>
-              <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}>
-                <AccountMenu onOpenProfile={() => navigate('/me')} />
-              </div>
-              {footerNode}
-            </Sider>
-          </motion.div>
-
-          <header className="app-topbar">
-            <Button type="text" icon={<MenuOutlined />} aria-label="打开导航菜单" onClick={() => setDrawerOpen(true)} />
-            <div className="app-topbar-title" style={{ fontWeight: 700, color: '#0f172a' }}>RAG智慧教育</div>
-            <div style={{ marginLeft: 'auto' }}>
-              <AccountMenu compact onOpenProfile={() => navigate('/me')} />
-            </div>
-          </header>
-
-          <Drawer
-            placement="left" open={drawerOpen} onClose={() => setDrawerOpen(false)} width={260}
-            closable={false} styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }} title={null}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', padding: '14px 16px', borderBottom: '1px solid #f1f5f9' }}>
-              {brandNode()}
-              <Button type="text" icon={<CloseOutlined />} aria-label="关闭导航菜单" style={{ marginLeft: 'auto' }} onClick={() => setDrawerOpen(false)} />
-            </div>
-            <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode}</div>
-            <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}>
-              <AccountMenu onOpenProfile={() => { setDrawerOpen(false); navigate('/me'); }} />
-            </div>
-          </Drawer>
-
-          <div className={isNarrow ? 'app-content app-content-narrow' : 'app-content'}
-               style={{ flex: 1, minWidth: 0, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-            <SystemStatusBanner />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <AnimatePresence mode="sync">
-                <motion.div key={location.pathname} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}>
-                  <Suspense fallback={<PageFallback />}>
-                    <Routes location={location}>
-                      <Route path="/" element={<Navigate to="/student" replace />} />
-                      <Route path="/student" element={<StudentLearningPage />} />
-                      <Route path="/student/materials" element={<MaterialsPage />} />
-                      <Route path="/student/tasks" element={<TasksPage />} />
-                      <Route path="/me" element={<ProfilePage />} />
-                      <Route path="/teacher" element={<TeacherPage onNavigate={navigate} />} />
-                      <Route path="/settings" element={<SettingsPage />} />
-                      {/* 旧网址兼容：功能都有明确的新入口，不留下找不到的功能 */}
-                      <Route path="/chat" element={<Navigate to="/student" replace />} />
-                      <Route path="/knowledge" element={<Navigate to="/student/materials" replace />} />
-                      <Route path="/student/courses" element={<Navigate to="/student/materials" replace />} />
-                      <Route path="/student/todo" element={<Navigate to="/student/tasks" replace />} />
-                      <Route path="/student/assignments" element={<Navigate to="/student/tasks" replace />} />
-                      <Route path="/learning" element={<Navigate to="/student/tasks" replace />} />
-                      <Route path="*" element={<Navigate to="/student" replace />} />
-                    </Routes>
-                  </Suspense>
-                </motion.div>
-              </AnimatePresence>
-            </div>
+    <Layout style={{ minHeight: '100vh', background: '#f8fafc' }}>
+      <motion.div
+        className="app-sider-wrap"
+        initial={{ x: -40, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        transition={{ duration: 0.18 }}
+        style={{ display: 'flex', flexDirection: 'column', width: 200, flexShrink: 0 }}
+      >
+        <Sider
+          className="app-sider"
+          width={200}
+          style={{
+            background: '#ffffff', borderRight: '1px solid #e2e8f0',
+            height: '100vh', position: 'fixed', left: 0, top: 0, bottom: 0, zIndex: 100,
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          }}
+        >
+          <div style={{ padding: '18px 16px 14px', borderBottom: '1px solid #f1f5f9' }}>{brandNode()}</div>
+          <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode}</div>
+          <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}>
+            <AccountMenu onOpenProfile={() => navigate('/me')} />
           </div>
-        </Layout>
-      </CourseProvider>
-    </ConfigProvider>
+          {footerNode}
+        </Sider>
+      </motion.div>
+
+      <header className="app-topbar">
+        <Button type="text" icon={<MenuOutlined />} aria-label="打开导航菜单" onClick={() => setDrawerOpen(true)} />
+        <div className="app-topbar-title" style={{ fontWeight: 700, color: '#0f172a' }}>RAG智慧教育</div>
+        <div style={{ marginLeft: 'auto' }}>
+          <AccountMenu compact onOpenProfile={() => navigate('/me')} />
+        </div>
+      </header>
+
+      <Drawer
+        placement="left" open={drawerOpen} onClose={() => setDrawerOpen(false)} width={260}
+        closable={false} styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }} title={null}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', padding: '14px 16px', borderBottom: '1px solid #f1f5f9' }}>
+          {brandNode()}
+          <Button type="text" icon={<CloseOutlined />} aria-label="关闭导航菜单" style={{ marginLeft: 'auto' }} onClick={() => setDrawerOpen(false)} />
+        </div>
+        <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode}</div>
+        <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}>
+          <AccountMenu onOpenProfile={() => { setDrawerOpen(false); navigate('/me'); }} />
+        </div>
+      </Drawer>
+
+      <div className={isNarrow ? 'app-content app-content-narrow' : 'app-content'}
+           style={{ flex: 1, minWidth: 0, minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <SystemStatusBanner />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <AnimatePresence mode="sync">
+            <motion.div key={location.pathname} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}>
+              <Suspense fallback={<PageFallback />}>
+                <Routes location={location}>
+                  <Route path="/" element={<Navigate to="/student" replace />} />
+                  <Route path="/student" element={<Protected><StudentLearningPage /></Protected>} />
+                  <Route path="/student/materials" element={<Protected><MaterialsPage /></Protected>} />
+                  <Route path="/student/tasks" element={<Protected><TasksPage /></Protected>} />
+                  <Route path="/me" element={<Protected><ProfilePage /></Protected>} />
+                  <Route path="/teacher" element={<Protected><TeacherPage onNavigate={navigate} /></Protected>} />
+                  <Route path="/settings" element={<Protected><SettingsPage /></Protected>} />
+                  {/* 旧网址兼容：功能都有明确的新入口，不留下找不到的功能 */}
+                  <Route path="/chat" element={<Navigate to="/student" replace />} />
+                  <Route path="/knowledge" element={<Navigate to="/student/materials" replace />} />
+                  <Route path="/student/courses" element={<Navigate to="/student/materials" replace />} />
+                  <Route path="/student/todo" element={<Navigate to="/student/tasks" replace />} />
+                  <Route path="/student/assignments" element={<Navigate to="/student/tasks" replace />} />
+                  <Route path="/learning" element={<Navigate to="/student/tasks" replace />} />
+                  <Route path="*" element={<Navigate to="/student" replace />} />
+                </Routes>
+              </Suspense>
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      </div>
+    </Layout>
   );
 };
 
-const AppWithRouter: React.FC = () => (<Router><App /></Router>);
+const AppWithRouter: React.FC = () => (
+  <Router>
+    <ConfigProvider locale={zhCN} theme={themeConfig}>
+      <AuthProvider>
+        <CourseProvider>
+          <App />
+        </CourseProvider>
+      </AuthProvider>
+    </ConfigProvider>
+  </Router>
+);
 
 export default AppWithRouter;

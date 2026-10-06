@@ -11,7 +11,9 @@ export default defineConfig({
   // src/App.tsx 的 lazy + Suspense，首屏从 3.94MB 降到 874KB）。
   // 若要再动拆包，必须实测首屏：把 dist/index.html 里所有 /assets/*.js 加起来。
   server: {
-    port: 3000,
+    // 目标后端可用 DSH_API_TARGET 覆盖：隔离验收会起第二个 dev server 指向独立后端，
+    // 避免验收数据写进演示库（2026-10-07）。默认仍是 8000，行为不变。
+    port: Number(process.env.DSH_DEV_PORT || 3000),
     // 修复（2026-10-04）：编辑工具/编辑器写文件时会先在源码目录里创建临时文件
     // （形如 `.StudentsPanel.tsx.<pid>.<uuid>.tmpdir/xxx.tmp`）。Windows 上 Vite 的
     // 文件监视器对这类文件会抛 `EBUSY: resource busy or locked`，**直接导致 dev server
@@ -26,7 +28,7 @@ export default defineConfig({
     },
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: process.env.DSH_API_TARGET || 'http://localhost:8000',
         changeOrigin: true,
         secure: false,
       }

@@ -3,6 +3,8 @@
 
 import logging
 import os
+import re
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
@@ -81,6 +83,131 @@ def _max_file_bytes() -> int:
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_SUBJECT_ID_RE = re.compile(r'^[\w\u4e00-\u9fff-]+$')
+
+
+def _subject_id_ok(subject_id: str) -> bool:
+    return bool(subject_id) and bool(_SUBJECT_ID_RE.match(subject_id))
+
+
+# ============ 统一能力清单 + 批量导入（2026-10-07，契约 docs/IMPORT_API_CONTRACT.md） ============
+
+
+@router.get("/knowledge/capabilities", response_model=SuccessResponse)
+async def get_capabilities(user_id: str = Depends(require_current_user)):
+    """
+    统一格式能力清单（前端 accept / 拖拽校验 / 帮助说明共用；单一事实来源 rag/formats.py）
+    """
+    from rag import formats
+    return SuccessResponse(data=formats.capabilities(), message="ok")
+
+
+def _ensure_subject_id(subject_id: str) -> None:
+    if not _subject_id_ok(subject_id):
+        raise ValidationError("学科ID格式不合法（支持中文、英文、数字、下划线、连字符）")
+
+
+@router.post("/knowledge/{subject_id}/import", response_model=SuccessResponse)
+async def import_materials(subject_id: str,
+                           files: List[UploadFile] = File(...),
+                           user_id: str = Depends(require_subject_write)):
+    """
+    批量导入资料（多文件与压缩包混投）。立刻返回 job_id，解析与建库在后台线程完成。
+    """
+    _ensure_subject_id(subject_id)
+    if not files:
+        raise ValidationError("请至少选择一个文件")
+
+    from rag import formats
+    limits = formats.limits()
+    max_file_bytes = limits["max_file_mb"] * 1024 * 1024
+
+    if len(files) > limits["max_files"]:
+        raise ValidationError(f"单批文件数超过限制（最大 {limits['max_files']}）")
+
+    payload = []
+    for upload in files:
+        if not upload.filename:
+            continue
+        content = await upload.read()
+        if len(content) > max_file_bytes:
+            raise ValidationError(
+                f"文件 {upload.filename} 超过单文件上限 {limits['max_file_mb']}MB")
+        payload.append((upload.filename, content))
+
+    if not payload:
+        raise ValidationError("没有可导入的文件")
+
+    from services import import_service
+    result = await run_in_threadpool(
+        import_service.create_import_job, subject_id, payload, user_id)
+
+    rejected = result.get("rejected") or []
+    message = (f"已接收 {result['accepted']} 个文件，正在后台解析"
+               if result["accepted"] else "没有可导入的文件")
+    return SuccessResponse(data={
+        "job_id": result["job_id"],
+        "accepted": result["accepted"],
+        "rejected": rejected,
+    }, message=message)
+
+
+@router.get("/knowledge/imports/{job_id}", response_model=SuccessResponse)
+async def get_import_job(job_id: str,
+                         user_id: str = Depends(require_current_user)):
+    from services import import_service
+    job = await run_in_threadpool(import_service.get_job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    await require_subject_read(job.get("subject_id") or "", user_id)
+    return SuccessResponse(data=job, message="ok")
+
+
+@router.get("/knowledge/{subject_id}/imports", response_model=SuccessResponse)
+async def list_import_jobs(subject_id: str, limit: int = 5,
+                           user_id: str = Depends(require_subject_read)):
+    _ensure_subject_id(subject_id)
+    from services import import_service
+    jobs = await run_in_threadpool(import_service.list_jobs, subject_id, limit)
+    return SuccessResponse(
+        data={"jobs": jobs, "latest": jobs[0] if jobs else None}, message="ok")
+
+
+@router.post("/knowledge/imports/{job_id}/retry", response_model=SuccessResponse)
+async def retry_import_job(job_id: str,
+                           user_id: str = Depends(require_current_user)):
+    from services import import_service
+    job = await run_in_threadpool(import_service.get_job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    await require_subject_write(job.get("subject_id") or "", user_id)
+    try:
+        new_job_id = await run_in_threadpool(import_service.retry_job, job_id, user_id)
+    except ValueError as e:
+        raise ValidationError(str(e))
+    if new_job_id is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    return SuccessResponse(data={"job_id": new_job_id}, message="重试任务已创建")
+
+
+@router.delete("/knowledge/imports/{job_id}", response_model=SuccessResponse)
+async def cancel_import_job(job_id: str,
+                            user_id: str = Depends(require_current_user)):
+    from services import import_service
+    job = await run_in_threadpool(import_service.get_job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    await require_subject_write(job.get("subject_id") or "", user_id)
+
+    prev_status = job.get("status")
+    await run_in_threadpool(import_service.cancel_job, job_id)
+    if prev_status in ("queued", "cancelled"):
+        # 未开始的任务可立即清理临时内容；运行中的任务由工作线程自行清理
+        await run_in_threadpool(import_service.cleanup_job_files, job_id)
+    return SuccessResponse(data={"job_id": job_id, "status": "cancelled"},
+                           message="任务已取消（已导入的资料不会删除）")
+
 
 
 @router.get("/knowledge", response_model=KnowledgeListResponse)

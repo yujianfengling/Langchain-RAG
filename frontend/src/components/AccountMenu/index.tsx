@@ -1,34 +1,34 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Avatar, Button, Dropdown, Space, Typography, message } from 'antd';
+import React from 'react';
+import { Avatar, Button, Dropdown, Space, Typography } from 'antd';
 import { UserOutlined, SettingOutlined, BulbOutlined, LogoutOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { AuthUser, isLoggedIn, me, logout, clearToken } from '../../api/auth';
-import UserAuth, { AUTH_CHANGED_EVENT, notifyAuthChanged } from '../UserAuth';
+import { useAuth } from '../../context/AuthContext';
+import UserAuth from '../UserAuth';
 
 const { Text } = Typography;
 
 /**
- * 账号菜单：设置 / 讲解偏好 / 退出登录收进头像菜单（2026-10-06 改版）。
- * 未登录时仍复用既有 UserAuth（登录/注册仍由后端权限判定）。
+ * 账号菜单：设置 / 讲解偏好 / 退出登录收进头像菜单。
+ * 登录态来自 AuthProvider（唯一来源），本组件不再自行请求 /auth/me，
+ * 避免侧栏、顶栏、抽屉多个实例各发一次请求并各自处理 401。
  */
-const AccountMenu: React.FC<{ compact?: boolean; onOpenProfile?: () => void }> = ({ compact, onOpenProfile }) => {
+const AccountMenu: React.FC<{ compact?: boolean; onOpenProfile?: () => void }> = ({
+  compact, onOpenProfile,
+}) => {
   const navigate = useNavigate();
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const { status, user, logout } = useAuth();
 
-  const refresh = useCallback(async () => {
-    if (!isLoggedIn()) { setUser(null); return; }
-    try { const res: any = await me(); setUser(res && res.data ? res.data : null); }
-    catch (e) { setUser(null); }
-  }, []);
-
-  useEffect(() => {
-    refresh();
-    const onChange = () => refresh();
-    window.addEventListener(AUTH_CHANGED_EVENT, onChange);
-    return () => window.removeEventListener(AUTH_CHANGED_EVENT, onChange);
-  }, [refresh]);
-
-  if (!isLoggedIn() || !user) return <UserAuth />;
+  if (status !== 'authenticated' || !user) {
+    // 未登录 / 校验中：只给登录入口；校验中不闪烁登录按钮
+    if (status === 'initializing') {
+      return (
+        <Button type="text" block style={{ height: 'auto', padding: '6px 8px' }} loading>
+          正在恢复登录状态…
+        </Button>
+      );
+    }
+    return <UserAuth />;
+  }
 
   const roleLabel = user.role === 'teacher' ? '教师' : user.role === 'admin' ? '管理员' : '学生';
   const items = [
@@ -46,10 +46,7 @@ const AccountMenu: React.FC<{ compact?: boolean; onOpenProfile?: () => void }> =
     else if (key === 'settings') navigate('/settings');
     else if (key === 'preference') navigate('/settings?tab=preference');
     else if (key === 'logout') {
-      try { await logout(); } catch (e) { /* 后端不可达也允许本地退出 */ }
-      clearToken();
-      notifyAuthChanged();
-      message.success('已退出登录');
+      await logout();
       navigate('/student');
     }
   };

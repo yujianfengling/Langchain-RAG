@@ -25,8 +25,23 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 # ========== 安全常量 ==========
 
-# 允许上传的文件扩展名白名单
-ALLOWED_EXTENSIONS = {'.txt', '.md', '.pdf', '.docx', '.jpg', '.jpeg', '.png', '.webp'}
+def supported_document_extensions() -> set:
+    """
+    当前**可真实解析进入检索**的扩展名（不含压缩包；含可用的转换格式）。
+
+    单一事实来源是 rag.formats：新增/降级格式只改那里，避免"这里能选、
+    解析器不认识"的不一致。.ppt/.doc 只有在检测到 LibreOffice 时才算可用。
+    """
+    try:
+        from rag import formats
+        return set(formats.parseable_extensions())
+    except Exception as e:  # 退化只影响可用格式集合，不影响安全校验
+        logger.warning(f"读取格式能力清单失败，退化为核心格式: {e}")
+        return {'.txt', '.md', '.pdf', '.docx', '.png', '.jpg', '.jpeg', '.webp'}
+
+
+# 允许上传的文件扩展名白名单（与 rag.formats 保持一致）
+ALLOWED_EXTENSIONS = supported_document_extensions()
 
 # 禁止上传的文件扩展名黑名单（高危类型）
 BLOCKED_EXTENSIONS = {'.py', '.exe', '.sh', '.bat', '.cmd', '.ps1', '.js', '.ts',
@@ -204,8 +219,8 @@ def build_subject_knowledge(subject_id: str, source_path: str) -> Dict[str, Any]
         # 解析并校验路径（仅允许受控目录，防止扫描服务器任意路径）
         docs_path = ensure_allowed_source_dir(source_path)
         
-        # 收集目录下的所有文件路径
-        supported_extensions = {'.txt', '.md', '.pdf', '.docx', '.png', '.jpg', '.jpeg', '.webp'}
+        # 收集目录下的所有文件路径（支持格式来自 rag.formats）
+        supported_extensions = supported_document_extensions()
         file_paths = [
             f for f in docs_path.iterdir()
             if f.is_file() and f.suffix.lower() in supported_extensions
@@ -533,7 +548,7 @@ def get_subject_documents(subject_id: str) -> List[Dict[str, Any]]:
         if not subject_dir.exists():
             return []
         
-        supported_extensions = {'.txt', '.md', '.pdf', '.docx', '.jpg', '.jpeg', '.png', '.webp'}
+        supported_extensions = supported_document_extensions()
         documents = []
         
         for file_path in subject_dir.iterdir():
@@ -691,6 +706,106 @@ def _attach_material_ids(subject_id: str, documents: List[Any]) -> int:
         return 0
 
 
+def _build_index_with_rollback(subject_id: str, documents: List[Any]) -> Dict[str, Any]:
+    """
+    备份 → 用给定 documents 构建向量/BM25 索引 → 成功删备份 / 失败回滚。
+
+    这是 rebuild 与批量导入**共用**的唯一建库路径：
+    - 失败绝不让已有知识库变空（回滚到备份）；
+    - 一批资料只建一次库（调用方先把本批资料解析好一并传入）。
+    """
+    if not documents:
+        raise KnowledgeServiceError("没有可入库的文档内容")
+
+    # 给课程学科的分块打上**稳定的资料标识**（material_id），供检索期做
+    # "资料可见范围"过滤：改可见范围/删资料无需重建即可生效，
+    # 且不必依赖文件名匹配（文件名可能被重命名或重名）。
+    _attach_material_ids(subject_id, documents)
+
+    persist_directory = _resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}")
+    bm25_directory = _resolve_path(f"data/bm25_index/{subject_id}")
+    backup_dir = persist_directory.parent / f"{persist_directory.name}.bak"
+    bm25_backup_dir = bm25_directory.parent / f"{bm25_directory.name}.bak"
+
+    def _backup():
+        """备份现有索引（存在才备份）"""
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        if persist_directory.exists():
+            shutil.copytree(persist_directory, backup_dir)
+        if bm25_backup_dir.exists():
+            shutil.rmtree(bm25_backup_dir, ignore_errors=True)
+        if bm25_directory.exists():
+            shutil.copytree(bm25_directory, bm25_backup_dir)
+
+    def _rollback():
+        """用备份恢复旧索引"""
+        restored = False
+        if backup_dir.exists():
+            if persist_directory.exists():
+                shutil.rmtree(persist_directory, ignore_errors=True)
+            shutil.copytree(backup_dir, persist_directory)
+            restored = True
+        if bm25_backup_dir.exists():
+            if bm25_directory.exists():
+                shutil.rmtree(bm25_directory, ignore_errors=True)
+            shutil.copytree(bm25_backup_dir, bm25_directory)
+            restored = True
+        if restored:
+            _invalidate_subject_index(subject_id)
+            logger.warning(f"知识库重建失败，已从备份回滚: {subject_id}")
+
+    def _cleanup_backup():
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        shutil.rmtree(bm25_backup_dir, ignore_errors=True)
+
+    _backup()
+    try:
+        # 删除旧索引后重建（失败会被下面的 except 回滚）
+        if persist_directory.exists():
+            delete_knowledge_base(subject_id=subject_id)
+
+        vector_store = build_knowledge_base(
+            documents=documents,
+            subject_id=subject_id,
+        )
+    except Exception:
+        _rollback()
+        raise
+    _cleanup_backup()
+
+    # 统计过滤效果（供前端提示"知识库体量"是否异常）
+    try:
+        from rag.vector_store import read_index_meta
+        meta = read_index_meta(str(persist_directory)) or {}
+    except Exception:
+        meta = {}
+
+    return {
+        "success": True,
+        "subject_id": subject_id,
+        "document_count": len(documents),
+        "chunk_count": getattr(vector_store, "count", lambda: None)(),
+        "chunks_before_filter": meta.get("chunks_before_filter"),
+        "chunks_dropped": meta.get("chunks_dropped"),
+    }
+
+
+def collect_subject_documents(subject_id: str) -> List[Any]:
+    """解析学科目录下所有可解析文件（供 rebuild / 导入共用）"""
+    subject_dir = _resolve_path(f"data/subjects/{subject_id}")
+    if not subject_dir.exists():
+        raise KnowledgeServiceError(f"学科目录不存在: {subject_id}")
+    supported_extensions = supported_document_extensions()
+    file_paths = [
+        f for f in subject_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in supported_extensions
+    ]
+    if not file_paths:
+        raise KnowledgeServiceError("目录中没有找到支持格式的文件")
+    return load_documents(file_paths)
+
+
 def rebuild_subject_knowledge(subject_id: str) -> Dict[str, Any]:
     """
     重新构建学科知识库
@@ -705,101 +820,12 @@ def rebuild_subject_knowledge(subject_id: str) -> Dict[str, Any]:
         KnowledgeServiceError: 构建失败时抛出
     """
     try:
-        subject_dir = _resolve_path(f"data/subjects/{subject_id}")
-        
-        if not subject_dir.exists():
-            raise KnowledgeServiceError(f"学科目录不存在: {subject_id}")
-        
-        # 收集目录下的所有文件路径
-        supported_extensions = {'.txt', '.md', '.pdf', '.docx', '.png', '.jpg', '.jpeg', '.webp'}
-        file_paths = [
-            f for f in subject_dir.iterdir()
-            if f.is_file() and f.suffix.lower() in supported_extensions
-        ]
-        
-        if not file_paths:
-            raise KnowledgeServiceError(f"目录中没有找到支持格式的文件")
-        
-        # 加载文档
-        documents = load_documents(file_paths)
-
-        # 给课程学科的分块打上**稳定的资料标识**（material_id），供检索期做
-        # "资料可见范围"过滤：改可见范围/删资料无需重建即可生效，
-        # 且不必依赖文件名匹配（文件名可能被重命名或重名）。
-        _attach_material_ids(subject_id, documents)
-
-        # v2.6 关键修复：此前是「先删除旧知识库 → 再重建」，
-        # 一旦重建失败（抽取异常、维度不符、磁盘问题…）旧索引已不可恢复，
-        # 用户会直接丢失整个学科知识库。现在改为：
-        #   1) 先把旧索引备份到 .bak
-        #   2) 构建新索引
-        #   3) 成功则删除备份；失败则回滚备份
-        persist_directory = _resolve_path(f"data/vector_store/{_safe_dir_name(subject_id)}")
-        bm25_directory = _resolve_path(f"data/bm25_index/{subject_id}")
-        backup_dir = persist_directory.parent / f"{persist_directory.name}.bak"
-        bm25_backup_dir = bm25_directory.parent / f"{bm25_directory.name}.bak"
-
-        def _backup():
-            """备份现有索引（存在才备份）"""
-            if backup_dir.exists():
-                shutil.rmtree(backup_dir, ignore_errors=True)
-            if persist_directory.exists():
-                shutil.copytree(persist_directory, backup_dir)
-            if bm25_backup_dir.exists():
-                shutil.rmtree(bm25_backup_dir, ignore_errors=True)
-            if bm25_directory.exists():
-                shutil.copytree(bm25_directory, bm25_backup_dir)
-
-        def _rollback():
-            """用备份恢复旧索引"""
-            restored = False
-            if backup_dir.exists():
-                if persist_directory.exists():
-                    shutil.rmtree(persist_directory, ignore_errors=True)
-                shutil.copytree(backup_dir, persist_directory)
-                restored = True
-            if bm25_backup_dir.exists():
-                if bm25_directory.exists():
-                    shutil.rmtree(bm25_directory, ignore_errors=True)
-                shutil.copytree(bm25_backup_dir, bm25_directory)
-                restored = True
-            if restored:
-                _invalidate_subject_index(subject_id)
-                logger.warning(f"知识库重建失败，已从备份回滚: {subject_id}")
-
-        def _cleanup_backup():
-            shutil.rmtree(backup_dir, ignore_errors=True)
-            shutil.rmtree(bm25_backup_dir, ignore_errors=True)
-
-        _backup()
-        try:
-            # 删除旧索引后重建（失败会被下面的 except 回滚）
-            if persist_directory.exists():
-                delete_knowledge_base(subject_id=subject_id)
-
-            vector_store = build_knowledge_base(
-                documents=documents,
-                subject_id=subject_id,
-            )
-        except Exception:
-            _rollback()
-            raise
-        _cleanup_backup()
-
-        # 统计过滤效果（供前端提示"知识库体量"是否异常）
-        try:
-            from rag.vector_store import read_index_meta
-            meta = read_index_meta(str(persist_directory)) or {}
-        except Exception:
-            meta = {}
-
+        documents = collect_subject_documents(subject_id)
+        if not documents:
+            raise KnowledgeServiceError("目录中没有可解析的文件内容")
+        result = _build_index_with_rollback(subject_id, documents)
         return {
-            "success": True,
-            "subject_id": subject_id,
-            "document_count": len(documents),
-            "chunk_count": getattr(vector_store, "count", lambda: None)(),
-            "chunks_before_filter": meta.get("chunks_before_filter"),
-            "chunks_dropped": meta.get("chunks_dropped"),
+            **result,
             "status": "rebuilt",
             "message": f"知识库 {subject_id} 重新构建成功",
         }
@@ -809,6 +835,28 @@ def rebuild_subject_knowledge(subject_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"知识库重新构建异常: {str(e)}", exc_info=True)
         raise KnowledgeServiceError("知识库重新构建失败，请稍后重试")
+
+
+def rebuild_subject_knowledge_from_documents(subject_id: str,
+                                             documents: List[Any]) -> Dict[str, Any]:
+    """
+    用**已解析**的完整 documents 集合重建学科知识库（批量导入专用）。
+
+    导入任务先把本批资料与既有资料一起解析好，再统一调用一次，
+    避免"每个文件触发整库重建"，也避免重复解析。
+    """
+    try:
+        result = _build_index_with_rollback(subject_id, documents)
+        return {
+            **result,
+            "status": "rebuilt",
+            "message": f"知识库 {subject_id} 构建成功",
+        }
+    except KnowledgeServiceError:
+        raise
+    except Exception as e:
+        logger.error(f"知识库构建异常: {str(e)}", exc_info=True)
+        raise KnowledgeServiceError("知识库构建失败，请稍后重试")
 
 
 def format_file_size(size_bytes: int) -> str:
