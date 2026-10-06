@@ -22,7 +22,7 @@ import { createRecorder } from '../../utils/recorder';
 import ChatMessageItem from './ChatMessageItem';
 import './ChatBox.css';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 const { TextArea } = Input;
 
 // 流式 delta 批处理间隔（ms）：合并渲染刷新，不丢字符（V2.5.4）
@@ -53,6 +53,8 @@ interface ChatBoxProps {
   preset?: ChatPreset;
   /** 预设已应用，父组件可清理以免重复应用 */
   onPresetConsumed?: () => void;
+  /** 首屏引导区（学习工作台注入：提问标题 + 快捷动作），只在还没开始对话时显示 */
+  headerSlot?: React.ReactNode;
 }
 
 /**
@@ -76,7 +78,7 @@ const MORE_MODES: { label: string; value: ChatMode }[] = [
 
 // 各学习模式动态 Placeholder（V2.5.1 统一交互）
 const MODE_PLACEHOLDERS: Record<ChatMode, string> = {
-  chat: '输入你的问题，例如：什么是二叉树？',
+  chat: '输入问题，或粘贴一道不会的题',
   smart_note: '输入知识点，例如：二叉树、牛顿第二定律',
   summary: '输入要总结的主题，例如：总结二叉树的核心知识点',
   explanation: '输入题目或问题，例如：为什么完全二叉树适合顺序存储？',
@@ -85,11 +87,11 @@ const MODE_PLACEHOLDERS: Record<ChatMode, string> = {
   agent: '说出目标与限制，例如：我周五要考这一章，每天只有半小时，帮我复习',
 };
 // 统一快捷键提示（所有模式一致）
-const ENTER_HINT = ' · Enter发送，Shift+Enter换行';
+const ENTER_HINT = ' · Enter 发送';
 
 const ChatBox: React.FC<ChatBoxProps> = ({
-  subjectId, subjects, conversationId, onConversationCreated,
-  isCourseSubject, preset, onPresetConsumed,
+  subjectId, conversationId, onConversationCreated,
+  isCourseSubject, preset, onPresetConsumed, headerSlot,
 }) => {
   const navigate = useNavigate();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -830,7 +832,10 @@ const ChatBox: React.FC<ChatBoxProps> = ({
     {
       key: 'model',
       label: '回答模型',
-      children: modelOptions.map((m) => ({ key: 'model:' + m.value, label: m.label })),
+      children: modelOptions.map((m) => ({
+        key: 'model:' + m.value,
+        label: m.label + (m.value === serverDefaultModel ? '（默认）' : ''),
+      })),
     },
   ];
   const onMoreClick: MenuProps['onClick'] = ({ key }) => {
@@ -849,36 +854,21 @@ const ChatBox: React.FC<ChatBoxProps> = ({
       boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
       overflow: 'hidden',
     }}>
-      {/* 头部 */}
-      <div style={{
-        padding: '16px 24px',
-        borderBottom: '1px solid #f0f0f0',
-        background: '#fafafa',
-      }}>
-        <Space size={8} wrap align="start">
-          <Title level={5} style={{ margin: 0 }}>
-            AI学习助手
-          </Title>
-          <Space direction="vertical" size={0}>
-            <Text type="secondary">
-              当前课程: {subjects.find(s => s.subject_id === subjectId)?.name || '未选择'}
+      {/* 顶部：首屏引导 + 真实检索范围（课程上下文由工作台统一展示，这里不再重复标题） */}
+      <div style={{ padding: '14px 20px 10px', borderBottom: '1px solid #f0f0f0', background: '#fff' }}>
+        {messages.length === 0 && headerSlot}
+        <Space size={8} wrap align="center">
+          {subjectId && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              资料范围：{isCourseSubject ? '本课程资料' : '个人资料'}
+              {kbScope
+                ? (kbScope.available
+                  ? '（已收录 ' + kbScope.documentCount + ' 份文档）'
+                  : '（暂无可检索资料）')
+                : '（读取中…）'}
             </Text>
-            {subjectId && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                知识库范围：{isCourseSubject ? '本课程资料' : '个人资料'}
-                {kbScope
-                  ? (kbScope.available
-                    ? '（已收录 ' + kbScope.documentCount + ' 份文档）'
-                    : '（暂无可检索资料）')
-                  : '（读取中…）'}
-              </Text>
-            )}
-          </Space>
-          {retrievalTag && (
-            <Tag color={retrievalTag.color} style={{ marginLeft: 8 }}>
-              {retrievalTag.text}
-            </Tag>
           )}
+          {retrievalTag && <Tag color={retrievalTag.color}>{retrievalTag.text}</Tag>}
         </Space>
       </div>
 
@@ -889,10 +879,10 @@ const ChatBox: React.FC<ChatBoxProps> = ({
         className="chat-messages"
         style={{
           flex: 1,
+          minHeight: 0,
           overflow: 'auto',
-          padding: '24px',
+          padding: '16px 20px',
           background: '#fff',
-          maxHeight: 'calc(100vh - 260px)',
         }}
       >
         {messages.length === 0 ? (
@@ -904,11 +894,8 @@ const ChatBox: React.FC<ChatBoxProps> = ({
             height: '100%',
             color: '#999',
           }}>
-            <RobotOutlined style={{ fontSize: '48px', marginBottom: '16px' }} />
-            <Text type="secondary">开始你的智能问答之旅</Text>
-            <Text type="secondary" style={{ fontSize: '12px', marginTop: '8px' }}>
-              选择学科后，输入你的问题
-            </Text>
+            <RobotOutlined style={{ fontSize: '40px', marginBottom: '12px', color: '#cbd5e1' }} />
+            <Text type="secondary">在主区输入问题即可开始，回答会标注课程资料出处</Text>
           </div>
         ) : (
           <List
@@ -969,7 +956,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({
 
       {/* 输入区域 */}
       <div style={{
-        padding: '16px 24px',
+        padding: '12px 16px 14px',
         borderTop: '1px solid #f0f0f0',
         background: '#fafafa',
       }}>
@@ -992,10 +979,6 @@ const ChatBox: React.FC<ChatBoxProps> = ({
               {moreMode ? '更多：' + moreMode.label : '更多'}
             </Button>
           </Dropdown>
-          <Text type="secondary" style={{ fontSize: 12, marginLeft: 'auto' }}>
-            模型：{modelOptions.find((m) => m.value === (selectedModel || serverDefaultModel))?.label
-              || serverDefaultModel}
-          </Text>
         </div>
         <Space.Compact style={{ width: '100%' }}>
           {/* 麦克风按钮（录音/停止，V2.5.1 Checkpoint D） */}

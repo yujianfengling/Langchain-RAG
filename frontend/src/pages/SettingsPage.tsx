@@ -1,5 +1,5 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Layout, Typography, Space, Card } from 'antd';
 import {
   SettingOutlined, InfoCircleOutlined, UserOutlined, DatabaseOutlined,
@@ -16,6 +16,7 @@ const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
 
 const SettingsPage: React.FC = () => {
+  const [params] = useSearchParams();
   const [selectedSubject, setSelectedSubject] = React.useState<string>('');
   // 版本从后端取，不要在页面里硬编码（此前写死 1.0.0，而实际已是 2.2.1）
   const [version, setVersion] = React.useState<string>('');
@@ -27,6 +28,13 @@ const SettingsPage: React.FC = () => {
       .catch(() => { /* 后端未启动时不显示版本，也不弹错打扰用户 */ });
     return () => { alive = false; };
   }, []);
+
+  // 头像菜单「讲解偏好」深链：滚动到偏好区（不新增页面）
+  React.useEffect(() => {
+    if (params.get('tab') !== 'preference') return;
+    const el = document.getElementById('preference');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [params]);
 
   return (
     <Layout style={{ height: '100%' }}>
@@ -61,8 +69,8 @@ const SettingsPage: React.FC = () => {
             <UserProfileDashboard userId="default_user" subjectId={selectedSubject} />
           </div>
 
-          {/* 个性化设置 */}
-          <div style={{ marginBottom: 24 }}>
+          {/* 个性化设置（讲解偏好）：头像菜单的「讲解偏好」直达这里 */}
+          <div id="preference" style={{ marginBottom: 24 }}>
             <PersonalizationSettings userId="default_user" subjectId={selectedSubject} />
           </div>
 
