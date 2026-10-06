@@ -55,9 +55,10 @@
 | 文档切分 | `rag/text_splitter.py` | `RecursiveCharacterTextSplitter`（`CHUNK_SIZE/CHUNK_OVERLAP` 实际生效） |
 | 向量化 | `rag/embedding.py` | `langchain_community.embeddings.HuggingFaceEmbeddings` + `Embeddings` 接口，逐批容错 |
 | 文档抽象 | `rag/vector_store.py`、`rag/hybrid_retriever.py`、`rag/rag_service.py` | `langchain_core.documents.Document` 贯穿检索与上下文组装 |
-| 思维导图链 | `mindmap_service.py` | `ChatPromptTemplate | ChatOpenAI` 链（既有能力，本轮保留） |
+| 思维导图链 | `mindmap_service.py` | `ChatPromptTemplate` + `ChatOpenAI` 组成的链（既有能力，本轮保留） |
 
-**本项目自己实现（非 LangChain）**：FAISS + BM25 混合检索与 RRK 融合、资料范围过滤与稳定 doc_id、
+**本项目自己实现（非 LangChain）**：FAISS + BM25 混合检索与 RRF 融合（Reciprocal Rank Fusion，
+见 `rag/hybrid_retriever.py` 的 `rrf_k`/`reciprocal_rank_fusion`；此前文档误写成 "RRK"）、资料范围过滤与稳定 doc_id、
 统一 Agent 运行环与工具注册表、学习地图与稳定性 ID、成果版本管理、掌握度与复习调度。
 
 **统一伴学主链路**：`资料解析 → 文档切分 → 本地向量化 → 有权限的资料检索 → 上下文组装 →
@@ -79,11 +80,16 @@ retrieve_and_build_context_scoped` + `services/tutor_agent.py`）。问答、地
 本轮只改前端布局，不改检索/权限/会话隔离。参考实现均**只读源码**后按需重写，
 未整文件搬运，也未引入第二套系统。版本与 SHA 见本文档开头表格。
 
+**采用方式澄清（避免夸大）**：下表所有条目的"采用方式"都是
+**「参考其设计/机制后自行实现」**——只读了源码，没有复制任何文件或代码块进本仓库；
+表中出现的"采纳/参考"一律指这种情形。若将来确实直接复制了源码，
+必须在该行明确写 **"直接复用源码（文件:行）"** 并保留许可证头。
+
 | 我们的实现 | 位置 | 参考出处（文件:行） | 许可证 | 采纳了什么 / 没采纳什么 |
 |---|---|---|---|---|
 | 右栏默认收起、关闭后不留占位列 | `frontend/src/components/TutorWorkspace/index.tsx`（rightOpen 条件渲染 + .tutor-panel-overlay） | DeepTutor `web/components/reading/workspace/ReadingWorkspace.tsx:602-611` | Apache-2.0 | 采纳"关栏即去掉列轨道"；未采纳拖动改宽与 4 轨 grid（我们只读三种内容） |
 | 右栏偏好持久化（按学科） | 同上 panelPrefKey + sessionStorage | DeepTutor `web/components/reading/workspace/useLearningMode.ts:44,67-71` | Apache-2.0 | 采纳"按工作区归属的开关快照"；键名与结构自建 |
-| 覆盖式抽屉 + 遮罩 + Esc/外点关闭 | `tutor.css` .tutor-panel-overlay 与键盘 useEffect | Archify `reader-layout.js:145-166,270-278,354-376` | MIT | 强采纳"默认收起 + 记忆 + overlay 关闭"；未采纳其 SVG 尺寸测量 |
+| 覆盖式抽屉 + 遮罩 + Esc/外点关闭 | `tutor.css` .tutor-panel-overlay 与键盘 useEffect | Archify `reader-layout.js:145-166,270-278,354-376` | MIT | 参考其机制后自行实现"默认收起 + 记忆 + overlay 关闭"；未采纳其 SVG 尺寸测量 |
 | 收起后入口仍可发现 | `App.tsx` 导航折叠按钮、`tutor-main-actions` | Archify `reader-layout.js:361` | MIT | 采纳可发现性与基础无障碍 |
 | 学习路线状态中文 + 当前节点高亮 | `MapTree.tsx` STATUS_FALLBACK / statusText | DeepTutor `SourceNavigator.tsx:135-138,288-324` | Apache-2.0 | 采纳"当前行归约高亮"；滚动居中未做 |
 | 资料范围"一行摘要 + 点开勾选" | `TutorWorkspace/index.tsx` Popover + .tutor-scope-btn | DeepTutor `web/components/workspaces/WorkspaceResourcePicker.tsx:116-152,172-176` | Apache-2.0 | 部分采纳：只取勾选交互与计数文案；未采纳其 settings 页资源模型 |
