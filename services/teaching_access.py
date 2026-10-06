@@ -36,6 +36,12 @@ def subject_scope(subject_id: str) -> Dict[str, Any]:
     if owner:
         return {"scope": "owned", "subject_id": subject_id,
                 "course_id": owner["course_id"], "owner_user_id": owner["owner_user_id"]}
+    # 学生自己创建的个人学科：有创建者，读写都按归属判断（2026-10-07）
+    from services import subject_service
+    personal_owner = subject_service.get_subject_owner(subject_id)
+    if personal_owner:
+        return {"scope": "personal", "subject_id": subject_id,
+                "course_id": None, "owner_user_id": personal_owner}
     return {"scope": "legacy", "subject_id": subject_id, "course_id": None, "owner_user_id": None}
 
 
@@ -46,6 +52,11 @@ def is_admin(user_id: Optional[str]) -> bool:
 def can_read_subject(user_id: Optional[str], subject_id: str) -> bool:
     """读学科（资料清单/下载/图谱/统计）"""
     bound = subject_scope(subject_id)
+    if bound["scope"] == "personal":
+        # 个人学科只对创建者与管理员可见，避免别人的资料被读到
+        if is_admin(user_id):
+            return True
+        return bool(user_id) and user_id == bound["owner_user_id"]
     if bound["scope"] == "legacy":
         return True  # 历史资料：登录用户可读（与既有行为一致）
     if is_admin(user_id):
@@ -60,6 +71,10 @@ def can_read_subject(user_id: Optional[str], subject_id: str) -> bool:
 def can_write_subject(user_id: Optional[str], subject_id: str) -> bool:
     """写学科（上传/删除资料、重建索引、生成图谱）"""
     bound = subject_scope(subject_id)
+    if bound["scope"] == "personal":
+        if is_admin(user_id):
+            return True
+        return bool(user_id) and user_id == bound["owner_user_id"]
     if bound["scope"] == "legacy":
         return False  # 由调用方回退到既有 knowledge admin 白名单
     if is_admin(user_id):

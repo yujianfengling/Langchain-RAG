@@ -355,6 +355,90 @@ def retrieve_and_build_context(
     }
 
 
+def retrieve_and_build_context_scoped(
+    question: str,
+    subject_id: Optional[str] = None,
+    top_k: int = 5,
+    viewer_user_id: Optional[str] = None,
+    scope: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    按「资料范围」可靠检索（2026-10-07 修复上一轮的召回缺口）。
+
+    上一轮做法是"取 top_k*8 再按 basename 过滤"，问题是**过滤后可能一条都不剩**——
+    所选资料确实在库里、也确实相关，只是没进候选池，于是回答显示"资料未覆盖"。
+
+    这里改为三段式：
+    1. 先用原问题扩大候选池（top_k*6），按稳定 doc_id 过滤；
+    2. 命中不足 top_k 时，对每份所选资料再做一次"资料名 + 原问题"的补充检索；
+    3. 合并去重（按 chunk 内容指纹）后重新组装上下文与来源。
+
+    整个过程仍然只在**有权访问**的文档内进行：筛选发生在 teaching_access 可见性过滤之后。
+    """
+    from services import material_scope
+
+    if not scope or scope.get("mode") == "all":
+        result = retrieve_and_build_context(question, subject_id, top_k,
+                                            viewer_user_id=viewer_user_id)
+        result["scope"] = {"mode": "all", "signature": (scope or {}).get("signature")}
+        result["supplemented"] = 0
+        return result
+
+    if scope.get("mode") == "empty":
+        return {"context": "", "sources": [], "context_used": False, "documents": [],
+                "scope": {"mode": "empty", "signature": scope.get("signature")},
+                "supplemented": 0}
+
+    fetch_k = max(top_k, top_k * 6)
+    base = retrieve_and_build_context(question, subject_id, fetch_k,
+                                      viewer_user_id=viewer_user_id)
+    docs = material_scope.filter_documents_for_scope(scope, base.get("documents") or [])
+
+    def _fingerprint(doc: Any) -> str:
+        content = getattr(doc, "page_content", "") or ""
+        meta = getattr(doc, "metadata", {}) or {}
+        return f"{meta.get('material_id') or meta.get('source') or ''}::{content[:120]}"
+
+    seen = {_fingerprint(d) for d in docs}
+    supplemented = 0
+    if len(docs) < top_k:
+        for item in scope.get("selected") or []:
+            if len(docs) >= top_k:
+                break
+            name = item.get("file_name") or ""
+            if not name:
+                continue
+            try:
+                extra = retrieve_and_build_context(
+                    f"{name} {question}", subject_id, max(2, top_k - len(docs)),
+                    viewer_user_id=viewer_user_id)
+            except Exception as e:
+                logger.debug(f"补充检索失败（{name}）: {e}")
+                continue
+            kept = material_scope.filter_documents_for_scope(
+                {"mode": "selected", "selected": [item], "signature": ""},
+                extra.get("documents") or [])
+            for doc in kept:
+                fp = _fingerprint(doc)
+                if fp in seen:
+                    continue
+                seen.add(fp)
+                docs.append(doc)
+                supplemented += 1
+
+    docs = docs[:top_k]
+    context = build_context_string(docs) if docs else ""
+    return {
+        "context": context,
+        "sources": extract_sources(docs) if docs else [],
+        "context_used": bool(docs),
+        "documents": docs,
+        "scope": {"mode": scope.get("mode"), "signature": scope.get("signature"),
+                  "label": scope.get("label")},
+        "supplemented": supplemented,
+    }
+
+
 def retrieve_for_teaching(
     question: str,
     subject_id: Optional[str] = None,
@@ -431,6 +515,7 @@ __all__ = [
     "call_llm",
     "get_model_info",
     "retrieve_and_build_context",
+    "retrieve_and_build_context_scoped",
     "retrieve_for_teaching",
     "check_ai_service_status",
 ]

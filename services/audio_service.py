@@ -21,12 +21,7 @@ MiMo ASR 走 OpenAI 兼容 /v1/chat/completions（不是 /audio/* 路径）：
     }
     识别文本：choices[0].message.content
 
-    {base}/chat/completions
-    {
-          "messages": [{"role":"assistant","content":"要朗读的文本"}],
-      "audio": {"format":"wav","voice":"mimo_default"}
-    }
-    音频：choices[0].message.audio.data（base64）→ decode → WAV bytes
+（2026-10-01：回答朗读 TTS 已整体移除，这里的文档也不再保留已删除的合成请求示例。）
 
 复用 MIMO_API_KEY / MIMO_BASE_URL，URL 规范化保证只拼一次 /chat/completions。
 不发送 Windows 路径；不打印 Base64 / API Key / Authorization / 完整音频。

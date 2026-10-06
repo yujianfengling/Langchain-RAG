@@ -6,7 +6,7 @@ from typing import List
 
 from api.schemas.knowledge_schema import SubjectInfo
 from api.deps import (
-    require_current_user, require_knowledge_admin,
+    require_current_user,
     require_subject_read, require_subject_write,
 )
 from api.schemas.response_schema import SuccessResponse
@@ -78,21 +78,49 @@ async def get_subject_info(subject_id: str,
 
 @router.post("/subjects", response_model=SubjectInfo)
 async def create_new_subject(subject_id: str, name: str, description: str = None,
-                             user_id: str = Depends(require_knowledge_admin)):
+                             user_id: str = Depends(require_current_user)):
     """
-    创建新学科
+    创建新学科（个人学科，2026-10-07）
+
+    产品要求"创建学科就能开始"：任何登录用户都可以创建**自己的**学科并上传资料。
+    权限边界（不让个人学科变成绕过课程权限的入口）：
+    - 已归属课程的学科：一律拒绝，由课程管理维护；
+    - 已存在的个人学科：只有创建者本人或管理员可以重申（幂等返回）；
+    - 历史全局学科（无 owner）：沿用既有管理白名单，学生不能借创建接口抢占。
 
     - **subject_id**: 学科ID
     - **name**: 学科名称
     - **description**: 学科描述（可选）
     """
-    # 教师端：已归属课程的学科由课程管理，禁止通过本接口抢占/覆盖
-    from services import teaching_access
-    if teaching_access.subject_scope(subject_id)["scope"] == "owned":
+    from services import teaching_access, auth_service
+    from api.deps import knowledge_admins
+
+    bound = teaching_access.subject_scope(subject_id)
+    if bound["scope"] == "owned":
         raise HTTPException(status_code=403,
                             detail="该学科属于某门课程，请通过课程管理维护")
+
+    existing = None
     try:
-        new_subject = create_subject(subject_id, name, description)
+        existing = get_subject(subject_id)
+    except SubjectServiceError:
+        existing = None
+    if existing is not None:
+        owner = existing.get("owner_user_id")
+        if owner and (owner == user_id or auth_service.is_admin(user_id)):
+            return SubjectInfo(subject_id=existing.get("id", ""),
+                               name=existing.get("name", ""),
+                               description=existing.get("description"))
+        if owner:
+            raise HTTPException(status_code=403, detail="该学科已存在且不属于你")
+        admins = knowledge_admins()
+        username = (auth_service.get_user(user_id) or {}).get("username", "").lower()
+        if admins and username not in admins:
+            raise HTTPException(status_code=403, detail="该学科属于历史全局学科，需管理员维护")
+        raise HTTPException(status_code=409, detail=f"学科ID已存在: {subject_id}")
+
+    try:
+        new_subject = create_subject(subject_id, name, description, owner_user_id=user_id)
         
         return SubjectInfo(
             subject_id=new_subject.get("id", ""),

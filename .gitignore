@@ -122,3 +122,7 @@ data/backups/
 
 # 计划调整确认流程验收的种子文件（本地生成，不提交）
 tests/_plan_confirm_seed.json
+
+# ====== 开源参考仓库（仅研究用，不提交）======
+.refs/
+tests/_browser/

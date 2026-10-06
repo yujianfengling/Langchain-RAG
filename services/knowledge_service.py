@@ -138,11 +138,16 @@ def _resolve_path(path_str: str) -> Path:
 # 说明：建库接口此前接受任意绝对路径，匿名者可以让服务扫描服务器任意目录
 # 并把内容索引进知识库（再经检索接口外泄）。这里把可扫描范围限制在
 # 受控目录内，越界一律拒绝。
-_ALLOWED_SOURCE_ROOTS = (
-    PROJECT_ROOT / "data" / "subjects",
-    PROJECT_ROOT / "data" / "uploads",
-    PROJECT_ROOT / "data" / "knowledge_sources",
-)
+# 注意：受控根目录必须与 _resolve_path 使用**同一个数据根**（get_data_dir()）。
+# 否则当 EDU_DATA_DIR 指向别处时，"data/subjects/x" 会被解析到新数据根，
+# 却拿去和项目内的 <repo>/data 比较 → 隔离部署下建库一律被拒（2026-10-07 修复）。
+def _allowed_source_roots() -> tuple:
+    data_root = get_data_dir()
+    return (
+        data_root / "subjects",
+        data_root / "uploads",
+        data_root / "knowledge_sources",
+    )
 
 
 def ensure_allowed_source_dir(path_str: str) -> Path:
@@ -156,7 +161,7 @@ def ensure_allowed_source_dir(path_str: str) -> Path:
         raise KnowledgeServiceError("源目录不能为空")
     resolved = _resolve_path(path_str)
     allowed = False
-    for root in _ALLOWED_SOURCE_ROOTS:
+    for root in _allowed_source_roots():
         try:
             root_resolved = root.resolve()
         except OSError:

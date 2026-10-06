@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Alert, Button, Card, Form, Input, Menu, Modal, Select, Space, Tag, Typography, message,
 } from 'antd';
 import {
-  BarChartOutlined, BookOutlined, PlusOutlined, ReloadOutlined, SolutionOutlined,
-  UserOutlined,
+  BarChartOutlined, BookOutlined, PlusOutlined, ReloadOutlined, RobotOutlined,
+  SolutionOutlined, UserOutlined,
 } from '@ant-design/icons';
 import {
   TeacherCourse, createCourse, describeTeacherError, isForbiddenError, listTeacherCourses,
@@ -13,43 +14,72 @@ import { isLoggedIn } from '../api/auth';
 import { AUTH_CHANGED_EVENT } from '../components/UserAuth';
 import { EmptyBlock, ErrorAlert, LoadingBlock, PermissionAlert } from '../components/Teacher/common';
 import CoursePrepPanel from '../components/Teacher/CoursePrepPanel';
-import ClassesPanel from '../components/Teacher/ClassesPanel';
 import AssignmentsPanel from '../components/Teacher/AssignmentsPanel';
 import AnalyticsPanel from '../components/Teacher/AnalyticsPanel';
 import StudentsPanel from '../components/Teacher/StudentsPanel';
+import TutorAssistantPanel from '../components/Teacher/TutorAssistantPanel';
 import { useIsNarrow } from '../hooks/useIsNarrow';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
-type MenuKey = 'prep' | 'materials' | 'plans' | 'classes' | 'assignments' | 'analytics' | 'students';
+/** 教师主导航四个入口（2026-10-07 重构，默认「教学助手」） */
+type SectionKey = 'assistant' | 'prep' | 'assignments' | 'analytics';
+type ViewKey = SectionKey | 'students';
+type PrepTab = 'materials' | 'plans' | 'classes';
+
+const SECTION_KEYS: SectionKey[] = ['assistant', 'prep', 'assignments', 'analytics'];
+
+/** 旧入口兼容：materials/plans/classes 归到「课程与备课」，students 归到「学情分析」 */
+const LEGACY_SECTION: Record<string, SectionKey> = {
+  assistant: 'assistant',
+  prep: 'prep',
+  materials: 'prep',
+  plans: 'prep',
+  classes: 'prep',
+  assignments: 'assignments',
+  analytics: 'analytics',
+  students: 'analytics',
+};
+const LEGACY_PREP_TAB: Record<string, PrepTab> = {
+  materials: 'materials',
+  plans: 'plans',
+  classes: 'classes',
+};
 
 export interface TeacherPageProps {
   onNavigate?: (path: string) => void;
 }
 
 /**
- * 教师工作台（2026-10-05 重排）
+ * 教师工作台（2026-10-07 重构）
  *
- * 入口按三组组织：
- * - 课程与备课：课程（课程列表 → 课程空间：资料 → 建库 → 教案生成/编辑/发布）、班级、课程资料、教案
- * - 作业与批改：作业与批改（承接现有面板）
- * - 学情分析：班级学情、学生详情（承接现有面板）
+ * 主导航收敛为四个入口：教学助手 / 课程与备课 / 作业与批改 / 学情分析。
+ * 默认「教学助手」；section 可经 URL 查询参数（?section=assistant）深链，
+ * 旧的 materials/plans/classes/students 入口兼容映射到对应区域，已有面板全部保留。
  *
  * 权限：全部由后端判定；这里的展示判断不构成安全边界。
  */
 const TeacherPage: React.FC<TeacherPageProps> = () => {
   const isNarrow = useIsNarrow();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawSection = searchParams.get('section') || 'assistant';
+  const rawView = searchParams.get('view');
+
+  const navSelected: SectionKey = (SECTION_KEYS as string[]).includes(rawSection)
+    ? (rawSection as SectionKey)
+    : (LEGACY_SECTION[rawSection] || 'assistant');
+
+  const [view, setView] = useState<ViewKey>(navSelected);
+  const [prepTab, setPrepTab] = useState<PrepTab>(LEGACY_PREP_TAB[rawSection] || 'materials');
+  const [prepList, setPrepList] = useState(!LEGACY_PREP_TAB[rawSection]);
   const [loggedIn, setLoggedIn] = useState(isLoggedIn());
-  const [menuKey, setMenuKey] = useState<MenuKey>('prep');
 
   const [courses, setCourses] = useState<TeacherCourse[]>([]);
   const [coursesLoading, setCoursesLoading] = useState(false);
   const [coursesError, setCoursesError] = useState<string | null>(null);
   const [coursesForbidden, setCoursesForbidden] = useState<string | null>(null);
   const [courseId, setCourseId] = useState<string | undefined>();
-  // 课程与备课：true = 显示课程列表；false = 已进入某门课程的备课空间
-  const [prepList, setPrepList] = useState(true);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -64,6 +94,18 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
       window.removeEventListener(AUTH_CHANGED_EVENT, sync);
     };
   }, []);
+
+  // URL 查询参数 → 视图（含旧入口兼容；浏览器前进/后退也同步）
+  useEffect(() => {
+    if (rawView === 'students') { setView('students'); return; }
+    setView(navSelected);
+    if (LEGACY_PREP_TAB[rawSection]) {
+      setPrepTab(LEGACY_PREP_TAB[rawSection]);
+      setPrepList(false);
+    }
+    // navSelected 由 rawSection 派生，依赖 rawSection / rawView 即可
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawSection, rawView]);
 
   const loadCourses = useCallback(async () => {
     if (!isLoggedIn()) {
@@ -106,8 +148,8 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
       await loadCourses();
       if (created?.id) {
         setCourseId(created.id);
-        setPrepList(false);       // 直接进入新课程的备课空间
-        setMenuKey('prep');
+        setPrepList(false);
+        selectSection('prep');
       }
     } catch (e) {
       message.error(describeTeacherError(e, '创建课程失败').message);
@@ -121,29 +163,56 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
     [courses, courseId],
   );
 
-  // 收敛为三个主入口：班级 / 资料 / 教案都在"课程与备课"的课程空间内；
-  // 学生明细从"学情分析"进入（不再单独占一级菜单）。
   const MENU_ITEMS = [
+    { key: 'assistant', icon: <RobotOutlined />, label: '教学助手' },
     { key: 'prep', icon: <BookOutlined />, label: '课程与备课' },
     { key: 'assignments', icon: <SolutionOutlined />, label: '作业与批改' },
     { key: 'analytics', icon: <BarChartOutlined />, label: '学情分析' },
   ];
 
+  const selectSection = useCallback((key: ViewKey) => {
+    setView(key);
+    if (key === 'students') setSearchParams({ section: 'analytics', view: 'students' }, { replace: true });
+    else setSearchParams({ section: key }, { replace: true });
+  }, [setSearchParams]);
+
   const handleMenuClick = ({ key }: { key: string }) => {
-    const k = key as MenuKey;
-    setMenuKey(k);
+    const k = key as SectionKey;
     if (k === 'prep') setPrepList(true);
+    selectSection(k);
   };
 
+  const goPrep = useCallback(() => {
+    setPrepTab('materials');
+    setPrepList(true);
+    selectSection('prep');
+  }, [selectSection]);
+
+  const goCourseWorkspace = useCallback(() => {
+    setPrepList(false);
+    selectSection('prep');
+  }, [selectSection]);
+
   const renderPanel = () => {
-    if (menuKey === 'prep' || menuKey === 'materials' || menuKey === 'plans') {
+    if (view === 'assistant') {
+      return (
+        <TutorAssistantPanel
+          subjectId={currentCourse?.subject_id}
+          courseId={currentCourse?.id}
+          courseTitle={currentCourse?.title}
+          onGoPrep={goPrep}
+        />
+      );
+    }
+
+    if (view === 'prep') {
       return (
         <CoursePrepPanel
           courses={courses}
           loading={coursesLoading}
           courseId={prepList ? undefined : courseId}
           courseTitle={currentCourse?.title}
-          initialTab={menuKey === 'plans' ? 'plans' : 'materials'}
+          initialTab={prepTab}
           onSelectCourse={(id) => { setCourseId(id); setPrepList(false); }}
           onBackToList={() => setPrepList(true)}
           onCreateCourse={() => setCreateOpen(true)}
@@ -155,53 +224,38 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
     if (!courseId) {
       return (
         <Card size="small">
-          <EmptyBlock description="该功能需要先有一门课程。请先在「课程」里选择或创建课程。">
-            <Button type="primary" icon={<BookOutlined />}
-                    onClick={() => { setMenuKey('prep'); setPrepList(true); }}>
-              去课程
-            </Button>
+          <EmptyBlock description="该功能需要先有一门课程。请先在「课程与备课」里选择或创建课程。">
+            <Button type="primary" icon={<BookOutlined />} onClick={goPrep}>去课程与备课</Button>
           </EmptyBlock>
         </Card>
       );
     }
 
-    switch (menuKey) {
-      case 'classes':
-        return (
-          <ClassesPanel
-            key={'classes-' + courseId}
-            courseId={courseId}
-            courseTitle={currentCourse?.title}
-            onBack={() => { setMenuKey('prep'); setPrepList(false); }}
-          />
-        );
+    switch (view) {
       case 'assignments':
         return (
           <AssignmentsPanel
             key={'assignments-' + courseId}
             courseId={courseId}
             courseTitle={currentCourse?.title}
-            onBack={() => { setMenuKey('prep'); setPrepList(false); }}
-            onOpenMaterials={() => { setMenuKey('prep'); setPrepList(false); }}
+            onBack={goCourseWorkspace}
+            onOpenMaterials={() => { setPrepTab('materials'); setPrepList(false); selectSection('prep'); }}
           />
         );
       case 'analytics':
         return (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Button icon={<UserOutlined />} onClick={() => setMenuKey('students')}>
-              学生明细
-            </Button>
+            <Button icon={<UserOutlined />} onClick={() => selectSection('students')}>学生明细</Button>
             <AnalyticsPanel
               key={'analytics-' + courseId}
               courseId={courseId}
               courseTitle={currentCourse?.title}
-              onBack={() => { setMenuKey('prep'); setPrepList(false); }}
+              onBack={goCourseWorkspace}
             />
           </Space>
         );
       case 'students':
-        // 学生明细从"学情分析"进入，返回也回到学情
-        return <StudentsPanel onBack={() => setMenuKey('analytics')} />;
+        return <StudentsPanel onBack={() => selectSection('analytics')} />;
       default:
         return null;
     }
@@ -257,24 +311,13 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
       )}
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        {/* 宽屏：左侧竖向导航；窄屏（≤900px）：顶部紧凑横向导航，避免菜单占据大半屏 */}
-        {!isNarrow && (
-          <Card size="small" style={{ width: 176, minWidth: 176 }}>
-            <Menu
-              mode="inline"
-              selectedKeys={[menuKey]}
-              items={MENU_ITEMS}
-              onClick={handleMenuClick}
-              style={{ border: 'none' }}
-            />
-          </Card>
-        )}
-
+        {/* 主导航在全局侧边栏（教学助手 / 课程与备课 / 作业与批改 / 学情分析），
+            这里不再重复第二套导航；窄屏时全局导航在抽屉里，所以保留顶部横向切换。 */}
         <div style={{ flex: 1, minWidth: isNarrow ? 0 : 480 }}>
           {isNarrow && (
             <Menu
               mode="horizontal"
-              selectedKeys={[menuKey]}
+              selectedKeys={[view === 'students' ? 'analytics' : view]}
               items={MENU_ITEMS}
               onClick={handleMenuClick}
               style={{ marginBottom: 12 }}
@@ -287,8 +330,8 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
       </div>
 
       <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 16, marginBottom: 0 }}>
+        四个入口：教学助手 / 课程与备课 / 作业与批改 / 学情分析。
         所有权限判断以后端为准：这里隐藏或显示的按钮只影响展示，不构成安全边界。
-        「学生加入课程」由学生在「我的学习」页输入班级邀请码完成。
       </Paragraph>
 
       <Modal

@@ -15,7 +15,7 @@ from api.schemas.knowledge_schema import (
     UploadResponse,
 )
 from api.deps import (
-    require_current_user, require_knowledge_admin,
+    require_current_user,
     require_subject_read, require_subject_write,
 )
 from api.schemas.response_schema import SuccessResponse
@@ -151,7 +151,7 @@ def _schedule_quiz_prewarm(subject_id: str) -> None:
 
 @router.post("/knowledge/build", response_model=SuccessResponse)
 async def build_knowledge(request: KnowledgeBuildRequest,
-                          user_id: str = Depends(require_knowledge_admin)):
+                          user_id: str = Depends(require_current_user)):
     """
     构建知识库
 
@@ -252,7 +252,7 @@ async def get_stats(subject_id: str,
 async def upload_file(
     subject_id: str = Form(...),
     file: UploadFile = File(...),
-    user_id: str = Depends(require_knowledge_admin),
+    user_id: str = Depends(require_current_user),
 ):
     """
     上传文件到知识库

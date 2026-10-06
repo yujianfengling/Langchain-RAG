@@ -1,10 +1,10 @@
 import React, { Suspense, lazy } from 'react';
-import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { Layout, Menu, ConfigProvider, Drawer, Button, Spin } from 'antd';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  ReadOutlined, DatabaseOutlined, CheckSquareOutlined, TeamOutlined,
-  MenuOutlined, CloseOutlined,
+  DatabaseOutlined, CheckSquareOutlined, RobotOutlined,
+  EditOutlined, FormOutlined, BarChartOutlined, MenuOutlined, CloseOutlined,
 } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import { AUTH_CHANGED_EVENT } from './components/UserAuth';
@@ -13,31 +13,37 @@ import SystemStatusBanner from './components/SystemStatusBanner';
 import { CourseProvider } from './context/CourseContext';
 import { isLoggedIn, me } from './api/auth';
 import { useIsNarrow } from './hooks/useIsNarrow';
+import { themeConfig } from './theme';
 
 /**
  * 路由级懒加载（首屏只留框架与公共依赖）
  */
-const WorkbenchPage = lazy(() => import('./pages/WorkbenchPage'));
-const MyCoursesPage = lazy(() => import('./pages/MyCoursesPage'));
-const TodoPage = lazy(() => import('./pages/TodoPage'));
-const AssignmentsPage = lazy(() => import('./pages/AssignmentsPage'));
+const StudentLearningPage = lazy(() => import('./pages/StudentLearningPage'));
+const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
+const TasksPage = lazy(() => import('./pages/TasksPage'));
+const ProfilePage = lazy(() => import('./pages/ProfilePage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
-const LearningPlanPage = lazy(() => import('./pages/LearningPlanPage'));
-const KnowledgePage = lazy(() => import('./pages/KnowledgePage'));
 const TeacherPage = lazy(() => import('./pages/TeacherPage'));
 
 const { Sider } = Layout;
 
 /**
- * 主导航只保留三条学习主线（2026-10-06 改版）：
- *   开始学习 / 我的课程 / 作业与复习
- * 设置、账号、讲解偏好收进头像菜单；错题·掌握度·计划·学习记忆不再平铺为导航。
+ * 主导航（2026-10-07 产品结构改版）
+ *   学生：AI伴学 / 资料库 / 任务与复习，头像进入我的主页
+ *   教师：教学助手 / 课程与备课 / 作业与批改 / 学情分析，头像同样进入我的主页
+ * 旧网址通过下方 <Route> 重定向兼容，功能都有明确的新入口。
  */
-const sidebarItems = [
-  { key: '/student', icon: <ReadOutlined />, label: '开始学习' },
-  { key: '/student/courses', icon: <DatabaseOutlined />, label: '我的课程' },
-  { key: '/student/todo', icon: <CheckSquareOutlined />, label: '作业与复习' },
-  { key: '/teacher', icon: <TeamOutlined />, label: '教师工作台', teacherOnly: true },
+const STUDENT_ITEMS = [
+  { key: '/student', icon: <RobotOutlined />, label: 'AI 伴学' },
+  { key: '/student/materials', icon: <DatabaseOutlined />, label: '资料库' },
+  { key: '/student/tasks', icon: <CheckSquareOutlined />, label: '任务与复习' },
+];
+
+const TEACHER_ITEMS = [
+  { key: '/teacher?section=assistant', icon: <RobotOutlined />, label: '教学助手' },
+  { key: '/teacher?section=prep', icon: <EditOutlined />, label: '课程与备课' },
+  { key: '/teacher?section=assignments', icon: <FormOutlined />, label: '作业与批改' },
+  { key: '/teacher?section=analytics', icon: <BarChartOutlined />, label: '学情分析' },
 ];
 
 const PageFallback: React.FC = () => (
@@ -65,18 +71,21 @@ const App: React.FC = () => {
     return () => { alive = false; window.removeEventListener(AUTH_CHANGED_EVENT, load); };
   }, []);
 
-  React.useEffect(() => { setDrawerOpen(false); }, [location.pathname]);
+  React.useEffect(() => { setDrawerOpen(false); }, [location.pathname, location.search]);
 
-  const canSeeTeacher = role === 'teacher' || role === 'admin';
-  const visibleItems = sidebarItems.filter((item: any) => !item.teacherOnly || canSeeTeacher);
+  const isTeacher = role === 'teacher' || role === 'admin';
+  const items = isTeacher ? TEACHER_ITEMS : STUDENT_ITEMS;
 
   /** 每次只高亮一个主导航 */
   const getSelectedKey = () => {
     const path = location.pathname;
-    if (path.startsWith('/teacher')) return '/teacher';
-    if (path.startsWith('/student/courses')) return '/student/courses';
-    if (path.startsWith('/student/todo') || path.startsWith('/student/assignments')) return '/student/todo';
-    if (path.startsWith('/learning')) return '/student/todo';
+    if (path.startsWith('/teacher')) {
+      const section = new URLSearchParams(location.search).get('section') || 'assistant';
+      return '/teacher?section=' + section;
+    }
+    if (path.startsWith('/me')) return 'me';
+    if (path.startsWith('/student/materials')) return '/student/materials';
+    if (path.startsWith('/student/tasks')) return '/student/tasks';
     return '/student';
   };
 
@@ -93,7 +102,7 @@ const App: React.FC = () => {
           {compact ? 'RAG智慧教育' : 'RAG与LangChain融合的智慧教育系统'}
         </div>
         <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, lineHeight: 1.4 }}>
-          {compact ? '检索增强问答' : '基于课程资料的检索增强问答与教学辅助'}
+          {isTeacher ? '备课 · 作业 · 学情' : '资料问答 · 引导学习'}
         </div>
       </div>
     </div>
@@ -103,9 +112,16 @@ const App: React.FC = () => {
     <Menu
       mode="inline"
       selectedKeys={[getSelectedKey()]}
-      onClick={({ key }) => { navigate(key); setDrawerOpen(false); }}
+      onClick={({ key }) => {
+        if (String(key).startsWith('/teacher')) {
+          navigate({ pathname: '/teacher', search: String(key).split('?')[1] || '' });
+        } else {
+          navigate(String(key));
+        }
+        setDrawerOpen(false);
+      }}
       style={{ border: 'none', background: 'transparent' }}
-      items={visibleItems.map((item: any) => ({
+      items={items.map((item: any) => ({
         ...item,
         style: { marginBottom: 2, borderRadius: 10, fontSize: 14, fontWeight: getSelectedKey() === item.key ? 600 : 450 },
       }))}
@@ -119,36 +135,7 @@ const App: React.FC = () => {
   );
 
   return (
-    <ConfigProvider
-      locale={zhCN}
-      theme={{
-        token: {
-          colorPrimary: '#0f766e', colorPrimaryBg: '#f0fdfa', colorLink: '#0f766e', colorLinkHover: '#0d9488',
-          colorSuccess: '#059669', colorWarning: '#d97706', colorError: '#dc2626',
-          colorBgContainer: '#ffffff', colorBgLayout: '#f8fafc', colorBgElevated: '#ffffff',
-          colorText: '#0f172a', colorTextSecondary: '#475569', colorTextTertiary: '#94a3b8',
-          colorBorder: '#e2e8f0', colorBorderSecondary: '#f1f5f9',
-          borderRadius: 10, borderRadiusLG: 14,
-          fontFamily: "'Geist', 'Satoshi', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif",
-          fontSize: 15, controlHeight: 38,
-        },
-        components: {
-          Menu: {
-            itemColor: '#0f172a', itemHoverColor: '#0f766e', itemHoverBg: '#f0fdfa',
-            itemSelectedColor: '#0f766e', itemSelectedBg: '#ccfbf1', itemActiveBg: '#ccfbf1',
-            horizontalItemSelectedColor: '#0f766e', itemHeight: 44,
-          },
-          Card: { borderRadiusLG: 14 },
-          Button: { borderRadius: 8, controlHeight: 38 },
-          Input: { borderRadius: 8, controlHeight: 40 },
-          Select: { borderRadius: 8, controlHeight: 38 },
-          Modal: { borderRadiusLG: 16 },
-          Table: { borderRadius: 12, headerBg: '#f8fafc', rowHoverBg: '#f0fdfa' },
-          Tag: { borderRadiusSM: 6 },
-          Tabs: { inkBarColor: '#0f766e', itemActiveColor: '#0f766e', itemSelectedColor: '#0f766e', itemHoverColor: '#0d9488' },
-        },
-      }}
-    >
+    <ConfigProvider locale={zhCN} theme={themeConfig}>
       <CourseProvider>
         <Layout style={{ minHeight: '100vh', background: '#f8fafc' }}>
           <motion.div
@@ -169,7 +156,9 @@ const App: React.FC = () => {
             >
               <div style={{ padding: '18px 16px 14px', borderBottom: '1px solid #f1f5f9' }}>{brandNode()}</div>
               <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode}</div>
-              <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}><AccountMenu /></div>
+              <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}>
+                <AccountMenu onOpenProfile={() => navigate('/me')} />
+              </div>
               {footerNode}
             </Sider>
           </motion.div>
@@ -177,7 +166,9 @@ const App: React.FC = () => {
           <header className="app-topbar">
             <Button type="text" icon={<MenuOutlined />} aria-label="打开导航菜单" onClick={() => setDrawerOpen(true)} />
             <div className="app-topbar-title" style={{ fontWeight: 700, color: '#0f172a' }}>RAG智慧教育</div>
-            <div style={{ marginLeft: 'auto' }}><AccountMenu compact /></div>
+            <div style={{ marginLeft: 'auto' }}>
+              <AccountMenu compact onOpenProfile={() => navigate('/me')} />
+            </div>
           </header>
 
           <Drawer
@@ -189,7 +180,9 @@ const App: React.FC = () => {
               <Button type="text" icon={<CloseOutlined />} aria-label="关闭导航菜单" style={{ marginLeft: 'auto' }} onClick={() => setDrawerOpen(false)} />
             </div>
             <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode}</div>
-            <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}><AccountMenu /></div>
+            <div style={{ padding: '8px 10px', borderTop: '1px solid #f1f5f9' }}>
+              <AccountMenu onOpenProfile={() => { setDrawerOpen(false); navigate('/me'); }} />
+            </div>
           </Drawer>
 
           <div className={isNarrow ? 'app-content app-content-narrow' : 'app-content'}
@@ -200,16 +193,21 @@ const App: React.FC = () => {
                 <motion.div key={location.pathname} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}>
                   <Suspense fallback={<PageFallback />}>
                     <Routes location={location}>
-                      <Route path="/" element={<WorkbenchPage />} />
-                      <Route path="/student" element={<WorkbenchPage />} />
-                      <Route path="/student/courses" element={<MyCoursesPage />} />
-                      <Route path="/student/todo" element={<TodoPage />} />
-                      <Route path="/student/assignments" element={<AssignmentsPage />} />
-                      <Route path="/chat" element={<WorkbenchPage />} />
+                      <Route path="/" element={<Navigate to="/student" replace />} />
+                      <Route path="/student" element={<StudentLearningPage />} />
+                      <Route path="/student/materials" element={<MaterialsPage />} />
+                      <Route path="/student/tasks" element={<TasksPage />} />
+                      <Route path="/me" element={<ProfilePage />} />
                       <Route path="/teacher" element={<TeacherPage onNavigate={navigate} />} />
-                      <Route path="/knowledge" element={<KnowledgePage />} />
-                      <Route path="/learning" element={<LearningPlanPage />} />
                       <Route path="/settings" element={<SettingsPage />} />
+                      {/* 旧网址兼容：功能都有明确的新入口，不留下找不到的功能 */}
+                      <Route path="/chat" element={<Navigate to="/student" replace />} />
+                      <Route path="/knowledge" element={<Navigate to="/student/materials" replace />} />
+                      <Route path="/student/courses" element={<Navigate to="/student/materials" replace />} />
+                      <Route path="/student/todo" element={<Navigate to="/student/tasks" replace />} />
+                      <Route path="/student/assignments" element={<Navigate to="/student/tasks" replace />} />
+                      <Route path="/learning" element={<Navigate to="/student/tasks" replace />} />
+                      <Route path="*" element={<Navigate to="/student" replace />} />
                     </Routes>
                   </Suspense>
                 </motion.div>

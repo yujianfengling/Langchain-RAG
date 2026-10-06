@@ -11,7 +11,7 @@ const { Text } = Typography;
  * 账号菜单：设置 / 讲解偏好 / 退出登录收进头像菜单（2026-10-06 改版）。
  * 未登录时仍复用既有 UserAuth（登录/注册仍由后端权限判定）。
  */
-const AccountMenu: React.FC<{ compact?: boolean }> = ({ compact }) => {
+const AccountMenu: React.FC<{ compact?: boolean; onOpenProfile?: () => void }> = ({ compact, onOpenProfile }) => {
   const navigate = useNavigate();
   const [user, setUser] = useState<AuthUser | null>(null);
 
@@ -34,6 +34,7 @@ const AccountMenu: React.FC<{ compact?: boolean }> = ({ compact }) => {
   const items = [
     { key: 'who', label: (user.display_name || user.username) + ' · ' + roleLabel, disabled: true },
     { type: 'divider' as const },
+    { key: 'profile', icon: <UserOutlined />, label: '我的主页' },
     { key: 'settings', icon: <SettingOutlined />, label: '设置与运行状态' },
     { key: 'preference', icon: <BulbOutlined />, label: '讲解偏好' },
     { type: 'divider' as const },
@@ -41,7 +42,8 @@ const AccountMenu: React.FC<{ compact?: boolean }> = ({ compact }) => {
   ];
 
   const onClick = async ({ key }: { key: string }) => {
-    if (key === 'settings') navigate('/settings');
+    if (key === 'profile') { if (onOpenProfile) onOpenProfile(); else navigate('/me'); }
+    else if (key === 'settings') navigate('/settings');
     else if (key === 'preference') navigate('/settings?tab=preference');
     else if (key === 'logout') {
       try { await logout(); } catch (e) { /* 后端不可达也允许本地退出 */ }

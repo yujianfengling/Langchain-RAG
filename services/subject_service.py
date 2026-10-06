@@ -111,7 +111,22 @@ def get_subject(subject_id: str) -> Dict[str, Any]:
         raise SubjectServiceError(f"获取学科信息失败: {str(e)}")
 
 
-def create_subject(subject_id: str, name: str, description: Optional[str] = None) -> Dict[str, Any]:
+def get_subject_owner(subject_id: str) -> Optional[str]:
+    """个人学科的创建者（没有归属记录时返回 None）。
+
+    历史全局学科没有 owner，保持既有规则（写操作走 KNOWLEDGE_ADMIN_USERS 白名单）；
+    学生自己创建的"个人学科"有 owner，只有本人与管理员可读写。
+    """
+    try:
+        subject = get_subject(subject_id)
+    except SubjectServiceError:
+        return None
+    owner = subject.get("owner_user_id")
+    return str(owner) if owner else None
+
+
+def create_subject(subject_id: str, name: str, description: Optional[str] = None,
+                   owner_user_id: Optional[str] = None) -> Dict[str, Any]:
     """
     创建新学科
     
@@ -134,12 +149,15 @@ def create_subject(subject_id: str, name: str, description: Optional[str] = None
             if subject.get("id") == subject_id:
                 raise SubjectServiceError(f"学科ID已存在: {subject_id}")
         
-        # 创建新学科
-        new_subject = {
+        # 创建新学科（owner_user_id 只有"个人学科"才有；课程学科的归属在 teaching.db）
+        new_subject: Dict[str, Any] = {
             "id": subject_id,
             "name": name,
             "description": description
         }
+        if owner_user_id:
+            new_subject["owner_user_id"] = owner_user_id
+            new_subject["kind"] = "personal"
         
         subjects.append(new_subject)
         _save_subjects(subjects)

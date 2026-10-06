@@ -18,7 +18,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import settings, APP_VERSION
-from api.routes import chat, knowledge, subjects, models, education, notes, learning, conversations, audio, agent, auth, quiz, student, memory, plan_agent, agent_run, teacher
+from api.routes import (
+    agent, agent_run, audio, auth, chat, conversations, education, knowledge, learning,
+    memory, models, notes, plan_agent, quiz, student, subjects, teacher, tutor,
+)
 from api.middleware import RequestIDMiddleware, get_request_id
 # 注册学习闭环事件处理器（阶段一：作答→画像→错题→复习→计划）
 import services.learning_handlers  # noqa: F401
@@ -69,6 +72,8 @@ app.include_router(memory.router, prefix="/api", tags=["学习记忆"])
 app.include_router(plan_agent.router, prefix="/api", tags=["计划调整"])
 app.include_router(agent_run.router, prefix="/api", tags=["学习Agent"])
 app.include_router(teacher.router, prefix="/api", tags=["教师端"])
+# 统一伴学（2026-10-07）：同一工作区内的问答/讲解/练习/地图/整理
+app.include_router(tutor.router, prefix="/api", tags=["统一伴学"])
 
 
 # ============ 全局异常处理（统一返回格式，带request_id） ============

@@ -129,6 +129,22 @@ class ModelProvider:
         """
         raise NotImplementedError
     
+    def chat_with_tools(self, messages: List[Dict[str, Any]],
+                        tools: Optional[List[Dict[str, Any]]] = None,
+                        **kwargs) -> Dict[str, Any]:
+        """
+        带原生工具调用的对话（统一 Agent 运行机制的基础能力）。
+
+        返回结构在 chat() 基础上额外包含 tool_calls / raw_message / finish_reason。
+        是否调用工具由模型决定（程序不强制 tool_choice），程序只负责校验与执行。
+        """
+        raise NotImplementedError(f"模型 {self.model_name} 不支持工具调用")
+
+    def stream_with_tools(self, messages: List[Dict[str, Any]],
+                          tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
+        """流式 + 工具调用（默认不支持，由具体 Provider 覆盖）。"""
+        raise NotImplementedError(f"模型 {self.model_name} 不支持流式工具调用")
+
     def vision(self, messages: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         """
         调用模型进行视觉理解（多模态）
@@ -177,7 +193,13 @@ class ModelProvider:
             "temperature": kwargs.get("temperature", 0.7),
             "max_tokens": kwargs.get("max_tokens", 2048),
         }
-        
+        # 原生 tool-calling 支持（2026-10-07 统一 Agent）：调用方把 tools / tool_choice /
+        # response_format 等 OpenAI 兼容字段放进 extra_payload，直接并入请求体。
+        # 放在这里而不是新写一个 HTTP 客户端，是为了复用既有的超时、重试、错误分类。
+        _extra = kwargs.get("extra_payload")
+        if _extra:
+            payload.update(_extra)
+
         url = f"{self.config['base_url']}/chat/completions"
         
         last_error = None
@@ -198,7 +220,12 @@ class ModelProvider:
                 
                 # 解析响应
                 if "choices" in data and len(data["choices"]) > 0:
-                    answer = data["choices"][0]["message"]["content"]
+                    _choice = data["choices"][0]
+                    _msg = _choice.get("message") or {}
+                    # content 在纯 tool_calls 轮里是 None，不能当成错误
+                    answer = _msg.get("content") or ""
+                    raw_message = _msg
+                    finish_reason = _choice.get("finish_reason")
                 else:
                     raise ValueError(f"模型 {self.model_name} 返回格式异常")
                 
@@ -216,6 +243,10 @@ class ModelProvider:
                     "latency": latency,
                     "usage": data.get("usage", {}),
                     "retries": attempt,  # 记录重试次数
+                    # 原生 tool-calling：把原始 message 与结束原因透出，调用方据此决定是否继续
+                    "raw_message": raw_message,
+                    "tool_calls": raw_message.get("tool_calls") or [],
+                    "finish_reason": finish_reason,
                 }
                 
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError,
@@ -310,6 +341,143 @@ class OpenAICompatibleProvider(ModelProvider):
             reason=f"model={(self.config or {}).get('model_name') or self.model_name}")
         usage_ledger.record(usage_ledger.KIND_LLM)
         return result
+
+    def chat_with_tools(self, messages: List[Dict[str, Any]],
+                        tools: Optional[List[Dict[str, Any]]] = None,
+                        **kwargs) -> Dict[str, Any]:
+        """
+        带工具调用的非流式对话（统一 Agent 运行机制）。
+
+        观测/记账与 chat() 一致：这是**一次真实模型调用**，必须计入能力状态与用量账本，
+        否则 Agent 的工具决策轮次在预算上不可见。
+        """
+        from services import capability_status, usage_ledger
+        call_kwargs: Dict[str, Any] = {
+            "temperature": kwargs.get("temperature", 0.3),
+            "max_tokens": kwargs.get("max_tokens", 2048),
+        }
+        if kwargs.get("timeout"):
+            call_kwargs["timeout"] = kwargs["timeout"]
+        if tools:
+            extra: Dict[str, Any] = {"tools": tools}
+            if kwargs.get("tool_choice"):
+                extra["tool_choice"] = kwargs["tool_choice"]
+            call_kwargs["extra_payload"] = extra
+        try:
+            result = self._call_openai_compatible_api(messages, **call_kwargs)
+        except Exception as e:
+            capability_status.safe_report(
+                capability_status.CAP_LLM, False,
+                reason=f"{type(e).__name__}: {e}")
+            raise
+        capability_status.safe_report(
+            capability_status.CAP_LLM, True,
+            reason=f"model={(self.config or {}).get('model_name') or self.model_name}（tools）")
+        usage_ledger.record(usage_ledger.KIND_LLM)
+        return result
+
+    def stream_with_tools(self, messages: List[Dict[str, Any]],
+                          tools: Optional[List[Dict[str, Any]]] = None, **kwargs):
+        """
+        真流式 + 原生工具调用（统一 Agent 的主路径）。
+
+        OpenAI 兼容的流式协议里，工具调用是**分片到达**的（delta.tool_calls[i].function
+        .arguments 逐段拼接），所以必须在生成器内部累积，不能只看单个 chunk。
+
+        Yields:
+            {"type": "content", "text": str}      文本增量
+            {"type": "end", "content": str, "tool_calls": [...], "finish_reason": str}
+                                                  本轮流结束（可能是工具调用，也可能是终答）
+        """
+        from services import capability_status, usage_ledger
+        if not self.api_key:
+            raise ModelAPIError("模型未配置API密钥", status_code=None, error_type="invalid_api_key")
+        timeout = kwargs.get("timeout", VISION_DEFAULT_TIMEOUT)
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: Dict[str, Any] = {
+            "model": self.config["model_name"],
+            "messages": messages,
+            "temperature": kwargs.get("temperature", 0.3),
+            "max_tokens": kwargs.get("max_tokens", 2048),
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = kwargs.get("tool_choice", "auto")
+        url = f"{self.config['base_url']}/chat/completions"
+        text_parts: List[str] = []
+        tool_calls: Dict[int, Dict[str, Any]] = {}
+        finish_reason = None
+        try:
+            import json as _json
+            _body = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            with requests.post(url, headers=headers, data=_body,
+                               timeout=timeout, stream=True) as resp:
+                if resp.status_code != 200:
+                    resp.raise_for_status()
+                for raw in resp.iter_lines(decode_unicode=False):
+                    if raw is None:
+                        continue
+                    line = raw.decode("utf-8", errors="ignore").strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        data = _json.loads(data_str)
+                    except _json.JSONDecodeError:
+                        logger.warning(
+                            f"[TutorStream] SSE JSON 解析失败: prefix={data_str[:60]!r}")
+                        raise ModelAPIError("模型流式响应格式异常(JSON解析失败)",
+                                            status_code=200, error_type="response_parse_error")
+                    choices = data.get("choices") or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    delta = choice.get("delta") or {}
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+                    piece = delta.get("content")
+                    if piece:
+                        text_parts.append(piece)
+                        yield {"type": "content", "text": piece}
+                    for tc in (delta.get("tool_calls") or []):
+                        idx = int(tc.get("index") or 0)
+                        slot = tool_calls.setdefault(idx, {"id": None, "type": "function",
+                                                           "function": {"name": None,
+                                                                        "arguments": ""}})
+                        if tc.get("id"):
+                            slot["id"] = tc["id"]
+                        fn = tc.get("function") or {}
+                        if fn.get("name"):
+                            slot["function"]["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            slot["function"]["arguments"] += fn["arguments"]
+        except GeneratorExit:
+            raise
+        except ModelAPIError:
+            capability_status.safe_report(capability_status.CAP_LLM, False,
+                                          reason="stream_with_tools 失败")
+            raise
+        except Exception as e:
+            capability_status.safe_report(capability_status.CAP_LLM, False,
+                                          reason=f"{type(e).__name__}: {e}")
+            raise
+
+        capability_status.safe_report(
+            capability_status.CAP_LLM, True,
+            reason=f"model={(self.config or {}).get('model_name') or self.model_name}（tutor）")
+        usage_ledger.record(usage_ledger.KIND_LLM)
+        ordered = [tool_calls[k] for k in sorted(tool_calls)]
+        for i, call in enumerate(ordered):
+            if not call.get("id"):
+                call["id"] = f"call_{i}"
+        yield {"type": "end", "content": "".join(text_parts),
+               "tool_calls": ordered, "finish_reason": finish_reason}
 
     def chat_stream(self, messages: List[Dict[str, str]], **kwargs):
         """

@@ -15,7 +15,12 @@ import re
 from typing import Dict, List, Any, Optional
 
 from utils.logger import logger
-from services.ai_service import call_llm, AIServiceError, retrieve_and_build_context
+from services.ai_service import (
+    call_llm,
+    AIServiceError,
+    retrieve_and_build_context,
+    retrieve_and_build_context_scoped,
+)
 from services.kb_guard import require_kb_ready, KBError
 
 # 自测题类型
@@ -381,6 +386,7 @@ def generate_quiz(
     top_k: int = 6,
     count: int = 5,
     user_id: Optional[str] = None,
+    scope: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     生成自测题（V2.5.1 Chat 自测模式）
@@ -405,9 +411,9 @@ def generate_quiz(
         # 知识库就绪守卫
         require_kb_ready(subject_id)
 
-        # RAG 检索证据（按查看者可见范围过滤课程资料）
-        ctx = retrieve_and_build_context(topic, subject_id, top_k=top_k,
-                                         viewer_user_id=user_id)
+        # RAG 检索证据（按查看者可见范围过滤课程资料；传 scope 时只在所选资料内检索）
+        ctx = retrieve_and_build_context_scoped(topic, subject_id, top_k=top_k,
+                                                viewer_user_id=user_id, scope=scope)
         context = ctx.get("context", "")
         sources = ctx.get("sources", [])
         context_used = ctx.get("context_used", False)
@@ -486,6 +492,7 @@ def generate_smart_note(
     model: Optional[str] = None,
     top_k: int = 8,
     user_id: Optional[str] = None,
+    scope: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     生成五段式智能笔记
@@ -519,9 +526,9 @@ def generate_smart_note(
         # 0. 知识库就绪守卫（快速失败，不调 RAG/LLM）
         require_kb_ready(subject_id)
 
-        # 1. RAG 检索证据（按查看者可见范围过滤课程资料）
-        ctx = retrieve_and_build_context(topic, subject_id, top_k=top_k,
-                                         viewer_user_id=user_id)
+        # 1. RAG 检索证据（按查看者可见范围过滤课程资料；传 scope 时只在所选资料内检索）
+        ctx = retrieve_and_build_context_scoped(topic, subject_id, top_k=top_k,
+                                                viewer_user_id=user_id, scope=scope)
         context = ctx.get("context", "")
         sources = ctx.get("sources", [])
         context_used = ctx.get("context_used", False)
