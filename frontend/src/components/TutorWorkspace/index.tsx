@@ -684,7 +684,9 @@ const includeNodeSources = useCallback(() => {
                 {greeting || (role === 'teacher' ? '今天想先备哪一部分？' : '今天想学什么？')}
               </div>
               <div className="tutor-welcome-sub">
-                可以直接提问，或从下面的操作开始。回答会给出来自课程资料的引用，可点开核对原文。
+                可以直接提问，或点下面的按钮。
+                想切换「开始学习 / 做练习 / 检测」时，用底部的快捷命令。
+                回答会给出来自课程资料的引用，可点开核对原文。
               </div>
               <Space wrap size={8} style={{ marginTop: 14 }}>
                 {(QUICK_PROMPTS[ability] || []).map((q) => (
