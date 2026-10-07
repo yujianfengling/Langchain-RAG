@@ -561,6 +561,8 @@ def create_vector_store(
             "meta_wrapper_dropped": stats.get("meta_wrapper_dropped"),
             "filter_relaxed": stats.get("relaxed"),
             "collection_name": collection_name,
+            # 供应商：决定查询向量必须用哪一套编码器（cloud=百炼 / local=BGE）
+            "embedding_provider": getattr(embeddings, "provider", None) or "local",
             "build_id": build_id,
             "built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             # 2026-10-08：向量化统计（增量复用是否生效的直接证据）
@@ -681,6 +683,21 @@ def load_vector_store(
                 except Exception:
                     pass
         
+        # 编码器必须与索引同一供应商/模型：**绝不能用云端查询向量搜索本地索引（反之亦然）**。
+        # 迁移期间旧（本地 BGE）索引继续在线，就靠这里按 meta 选回本地编码器。
+        try:
+            from rag.embedding import get_embedding_for_index
+            matched = get_embedding_for_index(meta)
+            if matched is not None:
+                if matched is not embeddings:
+                    logger.info(f"索引编码器已按 meta 匹配: provider={meta.get('embedding_provider')} "
+                                f"model={meta.get('embedding_model')}")
+                embeddings = matched
+        except IndexMetaMismatch:
+            raise
+        except Exception as e:
+            logger.warning(f"无法解析索引匹配的 Embedding 编码器: {e}")
+
         logger.info(f"已加载FAISS索引: {persist_dir}, 包含 {len(documents)} 个文档")
         
         return FAISSVectorStore(

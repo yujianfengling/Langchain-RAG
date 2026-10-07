@@ -1,4 +1,4 @@
-"""
+﻿"""
 Embedding模块
 负责管理本地Embedding模型，提供文本向量化功能
 使用LangChain Embeddings接口，支持HuggingFace模型
@@ -506,6 +506,76 @@ def _load_with_strategy(load_mode: str):
     return _build_embeddings(model_name, local_files_only=False), "online"
 
 
+
+_CLOUD_MODEL = None
+
+
+def get_embedding_provider() -> str:
+    """当前 Embedding 供应商：cloud（默认，阿里云百炼）| local（本地 BGE）。"""
+    value = os.getenv("EMBEDDING_PROVIDER", "cloud").strip().lower()
+    return value if value in ("cloud", "local") else "cloud"
+
+
+def _get_cloud_model(force_reload: bool = False):
+    """云端 Embedding 单例。**不会加载/下载任何本地模型。**"""
+    global _CLOUD_MODEL
+    if _CLOUD_MODEL is not None and not force_reload:
+        return _CLOUD_MODEL
+    from .embedding_providers import CloudEmbeddings
+    model = CloudEmbeddings()
+    _CLOUD_MODEL = model
+    with _state_lock:
+        _state.update({
+            "status": "ready",
+            "source": "cloud",
+            "provider": "dashscope",
+            "model": model.model_name,
+            "dimension": model.dimensions,
+            "error": None,
+            "error_type": None,
+        })
+    logger.info(f"Embedding ready: provider=dashscope model={model.model_name} "
+                f"dim={model.dimensions} base_url={model.base_url}")
+    return model
+
+
+
+def get_embedding_for_index(meta: Any = None):
+    """按索引 meta 返回**匹配的**编码器，保证文档向量与查询向量来自同一模型。
+
+    - meta.embedding_provider == "dashscope" → 云端编码器；
+    - 其余（含旧索引无该字段）→ 本地编码器（迁移期间旧库继续可用）；
+    - 无法判定时返回 None，调用方应降级到 BM25，**不得混用向量**。
+    """
+    meta = meta if isinstance(meta, dict) else {}
+    provider = str(meta.get("embedding_provider") or "").strip().lower()
+    model = str(meta.get("embedding_model") or "").strip()
+    cloud_model = os.getenv("EMBEDDING_CLOUD_MODEL", "text-embedding-v4")
+    if provider == "dashscope" or provider == "cloud" or model == cloud_model:
+        return _get_cloud_model()
+    if provider == "local" or provider == "":
+        prev = os.environ.get("EMBEDDING_PROVIDER")
+        os.environ["EMBEDDING_PROVIDER"] = "local"
+        try:
+            return get_embedding_model()
+        finally:
+            if prev is None:
+                os.environ.pop("EMBEDDING_PROVIDER", None)
+            else:
+                os.environ["EMBEDDING_PROVIDER"] = prev
+    if model:
+        prev = os.environ.get("EMBEDDING_PROVIDER")
+        os.environ["EMBEDDING_PROVIDER"] = "local"
+        try:
+            return get_embedding_model()
+        finally:
+            if prev is None:
+                os.environ.pop("EMBEDDING_PROVIDER", None)
+            else:
+                os.environ["EMBEDDING_PROVIDER"] = prev
+    return None
+
+
 def get_embedding_model(force_reload: bool = False) -> Embeddings:
     """
     获取Embedding模型实例（线程安全单例）
@@ -527,6 +597,11 @@ def get_embedding_model(force_reload: bool = False) -> Embeddings:
     """
     global _embedding_model
     load_mode = get_load_mode()
+
+    # 云端优先（默认）：直接返回云端适配器，**不加载/下载任何本地模型**。
+    # 本地 BGE 只在 EMBEDDING_PROVIDER=local（或按旧索引回退）时加载。
+    if get_embedding_provider() == "cloud":
+        return _get_cloud_model(force_reload)
 
     if not HUGGINGFACE_AVAILABLE:
         raise ImportError("缺少langchain-community包")

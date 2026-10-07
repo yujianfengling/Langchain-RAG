@@ -23,7 +23,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 logger = __import__("logging").getLogger(__name__)
 
-SCHEMA = "emb-v1"
+# emb-v2（2026-10-08）：签名加入"供应商 + 维度"。
+# 旧 BGE 向量与云端向量**维度可能相同但语义空间不同**，绝不能互相复用；
+# 提升 schema 版本可让旧缓存整体失效，杜绝混用。
+SCHEMA = "emb-v2"
 
 _LOCK = threading.Lock()
 _CACHE: Optional["EmbeddingCache"] = None
@@ -31,7 +34,16 @@ _CACHE_PATH: Optional[str] = None
 
 
 def _model_signature(embeddings: Any) -> str:
-    """尽最大努力拿到稳定的模型签名（换模型必须让缓存失效）。"""
+    """稳定的模型签名（换供应商/模型/维度必须让缓存失效）。
+
+    云端适配器带 provider/dimensions，签名形如 "dashscope/text-embedding-v4/1024"；
+    本地模型形如 "local/BAAI/bge-small-zh-v1.5"。
+    """
+    provider = getattr(embeddings, "provider", None)
+    if provider:
+        model = getattr(embeddings, "model_name", None) or getattr(embeddings, "model", None) or "unknown"
+        dim = getattr(embeddings, "dimensions", None)
+        return f"{provider}/{model}/{dim if dim is not None else '?'}"
     for attr in ("model_name", "model", "model_id", "model_path"):
         value = getattr(embeddings, attr, None)
         if isinstance(value, str) and value.strip():
