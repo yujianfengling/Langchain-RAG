@@ -114,6 +114,10 @@
 .tutor-node-questions {
   padding: 10px 16px 4px;
   border-top: 1px dashed var(--color-primary-100);
+  /* 一个知识点可能积累十几道题，不限高会把下面的输入框顶出视野；
+     限高 + 内部滚动，让"做题"和"提问"两个区域都够用。 */
+  max-height: 340px;
+  overflow-y: auto;
 }
 .tutor-node-questions > div:first-child { display: block; margin-bottom: 6px; }
 

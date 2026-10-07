@@ -12,6 +12,8 @@ export interface PracticeQuestion {
   options?: any[];
   knowledge_point?: string;
   node_id?: string | null;
+  /** 后端带回的"我上次的作答"（历史回看时用；本次会话内的提交走内部 state） */
+  attempt?: any;
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -61,7 +63,10 @@ const PracticeCard: React.FC<{
   return (
     <div className="tutor-practice">
       {questions.map((q, index) => {
-        const result = results[q.id];
+        // 后端带回来的"上次作答"要能当成本次结果展示——否则已答过的题看起来
+        // 像没做过，学生会重复作答，历史记录与知识点状态也就对不上了。
+        const prior = q.attempt ? { attempt: q.attempt, prior: true } : undefined;
+        const result = results[q.id] || prior;
         const attempt = result?.attempt;
         const options = (q.options || []).map((o: any) =>
           typeof o === 'string' ? { id: o, text: o } : { id: o.id, text: o.text });
@@ -106,7 +111,8 @@ const PracticeCard: React.FC<{
                 type={attempt.is_correct ? 'success' : 'warning'}
                 showIcon
                 icon={attempt.is_correct ? <CheckCircleOutlined /> : <CloseCircleOutlined />}
-                message={attempt.is_correct ? '本次答对' : '本次答错'}
+                message={(attempt.is_correct ? '答对' : '答错')
+                  + ((result as any)?.prior ? '（这是你上次的作答）' : '本次')}
                 description={(
                   <div style={{ fontSize: 12 }}>
                     {attempt.explanation && <div>{attempt.explanation}</div>}

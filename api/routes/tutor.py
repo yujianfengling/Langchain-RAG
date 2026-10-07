@@ -261,13 +261,19 @@ async def set_node_status(request: NodeStatusRequest,
     if request.status == knowledge_map.STATUS_PASSED:
         from services import teaching_access
         scope = teaching_access.subject_scope(request.subject_id)
-        self_owned = (scope.get("scope") == "personal"
-                      and scope.get("owner_user_id") == user_id)
-        if not self_owned:
+        kind = scope.get("scope")
+        # 本人创建的个人学科
+        self_owned = (kind == "personal" and scope.get("owner_user_id") == user_id)
+        # 没有被任何课程认领的学科（legacy）：从学生视角就是"自己整理的知识库"，
+        # 没有老师参与，自己确认学会了是合理的。
+        # 注意：这里曾只看 personal，导致「材料力学（个人资料）」这类
+        # 无归属记录的学科被误判成老师提供的资料而拒绝（2026-10-03 修正）。
+        unsupervised = (kind == "legacy")
+        if not (self_owned or unsupervised):
             raise HTTPException(
                 status_code=400,
                 detail="这门课的资料由老师提供，是否通过要以检测结果为准，不能自己标记。"
-                       "（只有你自己上传资料的自学内容，才可以手动标记为通过）")
+                       "（只有你自己整理、没有绑定课程的内容，才可以手动标记为通过）")
     try:
         result = knowledge_map.set_node_status(user_id, request.subject_id,
                                                request.node_id, request.status)
