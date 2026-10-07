@@ -186,6 +186,11 @@ export const listQuestionsForPoint = async (
   return (res?.data ?? res)?.questions ?? [];
 };
 
+export const deleteTurn = async (turnId: string): Promise<boolean> => {
+  const res: any = await apiClient.delete('/tutor/turns/' + turnId);
+  return Boolean((res?.data ?? res)?.deleted);
+};
+
 export const cancelTurn = async (turnId: string): Promise<boolean> => {
   const res: any = await apiClient.post('/tutor/turns/' + turnId + '/cancel');
   return Boolean((res?.data ?? res)?.cancelled);

@@ -176,6 +176,21 @@ async def list_turns(subject_id: Optional[str] = None, limit: int = 30,
                                                        node_id=node_id)}}
 
 
+@router.delete("/tutor/turns/{turn_id}")
+async def delete_turn(turn_id: str,
+                      user_id: str = Depends(require_current_user)):
+    """
+    删除一条历史轮次。
+
+    **只删对话历史**；题库里的题目与作答记录不受影响——错题本、复习安排与掌握度
+    都由作答记录推导，不能因为清理历史就被抹掉。
+    """
+    ok = await run_in_threadpool(tutor_session.delete_turn, turn_id, user_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在或无权删除")
+    return {"success": True, "data": {"deleted": turn_id}}
+
+
 @router.get("/tutor/turns/{turn_id}")
 async def get_turn(turn_id: str, after_seq: int = 0,
                    user_id: str = Depends(require_current_user)):

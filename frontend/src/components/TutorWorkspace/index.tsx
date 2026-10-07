@@ -6,14 +6,15 @@ import {
 } from 'antd';
 import {
   BookOutlined, BulbOutlined, CheckCircleOutlined, CheckSquareOutlined, CloseOutlined, DatabaseOutlined,
-  DownOutlined, FileTextOutlined, FormOutlined, HistoryOutlined, MenuOutlined, MoreOutlined,
+  DeleteOutlined, DownOutlined, FileTextOutlined, FormOutlined, HistoryOutlined, MenuOutlined,
+  MoreOutlined,
   PartitionOutlined, ReloadOutlined, RightOutlined, RobotOutlined, SendOutlined,
   StopOutlined,
 } from '@ant-design/icons';
 import { useCourse } from '../../context/CourseContext';
 import { useIsNarrow } from '../../hooks/useIsNarrow';
 import {
-  ABILITY_LABELS, deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode,
+  ABILITY_LABELS, deleteArtifact, deleteTurn, generateKnowledgeMap, getKnowledgeMap, getMapNode,
   listQuestionsForPoint, setNodeStatus,
   getTutorSession, listArtifacts, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
   type TutorSource,
@@ -140,6 +141,8 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const [history, setHistory] = useState<any[]>([]);
   // 当前知识点出过的题：历史对话里写着"已出 3 道题"，得让那些题真的能再做一遍
   const [nodeQuestions, setNodeQuestions] = useState<any[]>([]);
+  // 题目可能积累十几道，默认只露一道、其余折叠——否则把输入框顶出视野
+  const [questionsExpanded, setQuestionsExpanded] = useState(false);
   const [input, setInput] = useState('');
   const [running, setRunning] = useState(false);
   const [stages, setStages] = useState<string[]>([]);
@@ -839,11 +842,21 @@ const includeNodeSources = useCallback(() => {
             学生既看不到题、也无法作答。这里把它们从题库重新摆出来。 */}
         {nodeQuestions.length > 0 && (
           <div className="tutor-node-questions">
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              这个知识点出过的题（可以重做）
-            </Text>
+            <div className="tutor-node-questions-head">
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                这个知识点出过的题（共 {nodeQuestions.length} 道，可以重做）
+              </Text>
+              {nodeQuestions.length > 1 && (
+                <Button type="link" size="small"
+                        onClick={() => setQuestionsExpanded((v) => !v)}>
+                  {questionsExpanded ? '收起' : '展开全部 ' + nodeQuestions.length + ' 道'}
+                </Button>
+              )}
+            </div>
             <PracticeCard
-              questions={nodeQuestions as PracticeQuestion[]}
+              questions={(questionsExpanded
+                ? nodeQuestions
+                : nodeQuestions.slice(0, 1)) as PracticeQuestion[]}
               subjectId={subjectId}
               nodeId={currentNode || null}
               onAnswered={() => {
@@ -950,13 +963,32 @@ const includeNodeSources = useCallback(() => {
               key: String(t.id),
               label: (
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 500, whiteSpace: 'normal' }}>
-                    {t.user_message || '（这一轮没有提问内容）'}
-                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ fontWeight: 500, whiteSpace: 'normal', flex: 1, minWidth: 0 }}>
+                      {t.user_message || '（这一轮没有提问内容）'}
+                    </div>
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     {String(t.created_at || '').replace('T', ' ').slice(0, 16)}
                     {t.ability ? ' · ' + (ABILITY_LABELS[t.ability] || t.ability) : ''}
-                  </Text>
+                    </Text>
+                  </div>
+                  <Button
+                    type="text"
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                    style={{ marginLeft: 'auto' }}
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      try {
+                        await deleteTurn(t.id);
+                        setHistory((prev) => prev.filter((x) => x.id !== t.id));
+                        antdMessage.success('已删除这条记录');
+                      } catch {
+                        antdMessage.error('删除失败');
+                      }
+                    }}
+                  >删除</Button>
                 </div>
               ),
               children: t.answer

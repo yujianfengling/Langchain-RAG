@@ -379,10 +379,30 @@ def is_cancelled(turn_id: str) -> bool:
     return bool(row["cancel_requested"]) or row["status"] == STATE_CANCELLED
 
 
+def delete_turn(turn_id: str, user_id: str) -> bool:
+    """删除一条历史轮次（连同它的事件）。
+
+    只允许删自己的记录。
+    **只删对话历史**：题库里的题目与作答记录不动——那是学习证据（错题本、复习、
+    掌握度都由它推导），不该被一次界面上的删除带走。
+    """
+    conn = _get_db()
+    try:
+        row = conn.execute("SELECT user_id FROM tutor_turns WHERE id=?", (turn_id,)).fetchone()
+        if not row or row["user_id"] != user_id:
+            return False
+        conn.execute("DELETE FROM tutor_turn_events WHERE turn_id=?", (turn_id,))
+        conn.execute("DELETE FROM tutor_turns WHERE id=?", (turn_id,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
 __all__ = [
     "ABILITY_CHAT", "ABILITY_EXPLAIN", "ABILITY_PRACTICE", "ABILITY_MAP", "ABILITY_ORGANIZE",
     "ABILITIES", "STATE_RUNNING", "STATE_SUCCEEDED", "STATE_FAILED", "STATE_CANCELLED",
     "TERMINAL_STATES", "default_context", "load_context", "save_context", "update_context",
-    "set_material_scope", "create_turn", "append_event", "list_events", "finish_turn",
+    "set_material_scope", "create_turn", "delete_turn", "append_event", "list_events", "finish_turn",
     "get_turn", "list_turns", "request_cancel", "is_cancelled", "DB_PATH",
 ]
