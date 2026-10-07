@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import MarkdownIt from 'markdown-it';
+import { createMarkdown } from '../../utils/markdown';
 
 /**
  * 伴学消息的 Markdown 渲染 + 可点击引用。
@@ -7,7 +8,8 @@ import MarkdownIt from 'markdown-it';
  * 引用 [1] 会在正文里变成可点击角标，点击后打开右侧"引用原文"面板对应片段——
  * 学生能核对"回答依据的到底是哪段话"，而不是只看到编号。
  */
-const md: MarkdownIt = new MarkdownIt({ html: false, linkify: true, breaks: true });
+// 用统一工厂：它会挂上 KaTeX，AI 讲解里的公式才会被渲染而不是原样显示
+const md: MarkdownIt = createMarkdown();
 
 export const MarkdownText: React.FC<{
   text: string;
