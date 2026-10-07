@@ -253,9 +253,21 @@ async def get_map_node(node_id: str, subject_id: str = Query(...),
 async def set_node_status(request: NodeStatusRequest,
                           user_id: str = Depends(require_current_user)):
     await require_subject_read(request.subject_id, user_id)
-    # 权威规则：passed 只能由检测结果推出，不接受直接设置
+    # 权威规则：passed 只能由检测结果推出，不接受直接设置。
+    #
+    # 例外（2026-10-03）：**学生自己上传资料的个人学科**属于自学场景，
+    # 由学生自己判断"我已通过"是合理的；而老师提供的课程资料，
+    # 自己声明通过就不算数了——成绩与掌握度必须可信。
     if request.status == knowledge_map.STATUS_PASSED:
-        raise HTTPException(status_code=400, detail="“检测通过”只能由检测结果产生，不能手动设置")
+        from services import teaching_access
+        scope = teaching_access.subject_scope(request.subject_id)
+        self_owned = (scope.get("scope") == "personal"
+                      and scope.get("owner_user_id") == user_id)
+        if not self_owned:
+            raise HTTPException(
+                status_code=400,
+                detail="这门课的资料由老师提供，是否通过要以检测结果为准，不能自己标记。"
+                       "（只有你自己上传资料的自学内容，才可以手动标记为通过）")
     try:
         result = knowledge_map.set_node_status(user_id, request.subject_id,
                                                request.node_id, request.status)

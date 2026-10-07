@@ -5,7 +5,7 @@ import {
   Tooltip, Typography, message as antdMessage,
 } from 'antd';
 import {
-  BookOutlined, BulbOutlined, CheckSquareOutlined, CloseOutlined, DatabaseOutlined,
+  BookOutlined, BulbOutlined, CheckCircleOutlined, CheckSquareOutlined, CloseOutlined, DatabaseOutlined,
   DownOutlined, FileTextOutlined, FormOutlined, HistoryOutlined, MenuOutlined, MoreOutlined,
   PartitionOutlined, ReloadOutlined, RightOutlined, RobotOutlined, SendOutlined,
   StopOutlined,
@@ -13,7 +13,7 @@ import {
 import { useCourse } from '../../context/CourseContext';
 import { useIsNarrow } from '../../hooks/useIsNarrow';
 import {
-  ABILITY_LABELS, deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode,
+  ABILITY_LABELS, deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode, setNodeStatus,
   getTutorSession, listArtifacts, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
   type TutorSource,
 } from '../../api/tutor';
@@ -246,6 +246,23 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       /* ignore */
     }
   }, []);
+
+  /** 手动把当前知识点标记为「本次检测通过」。
+   *
+   *  只有**自己上传资料的个人学科**允许这么做（自学场景）；
+   *  老师提供的课程资料会被后端拒绝，这里如实把原因显示出来。
+   */
+  const markPassed = useCallback(async () => {
+    if (!subjectId || !currentNode) return;
+    try {
+      await setNodeStatus(subjectId, currentNode, 'passed');
+      antdMessage.success('已标记为「本次检测通过」');
+      await loadNode(subjectId, currentNode);
+      if (typeof loadMap === 'function') await loadMap(subjectId);
+    } catch (e: any) {
+      antdMessage.warning(e?.response?.data?.detail || e?.message || '标记失败');
+    }
+  }, [subjectId, currentNode, loadNode, loadMap]);
 
   useEffect(() => {
     if (subjectId && currentNode) loadNode(subjectId, currentNode);
@@ -841,10 +858,15 @@ const includeNodeSources = useCallback(() => {
                   items: [
                     { key: 'note', icon: <FileTextOutlined />, label: '记笔记' },
                     { key: 'trace', icon: <RightOutlined />, label: '引用与执行详情' },
+                    { type: 'divider' as const },
+                    // 自学场景：自己上传的资料可以自己确认"已通过"。
+                    // 老师提供的课程资料会被后端拒绝（成绩必须以检测为准）。
+                    { key: 'passed', icon: <CheckCircleOutlined />, label: '我已通过' },
                   ],
                   onClick: ({ key }) => {
                     if (key === 'note') startNodeActivity('note');
                     if (key === 'trace') toggleRightPanel(true);
+                    if (key === 'passed') markPassed();
                   },
                 }}
               >
