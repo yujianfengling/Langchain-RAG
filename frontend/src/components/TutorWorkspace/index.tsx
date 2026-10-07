@@ -1,20 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Alert, Button, Checkbox, Dropdown, Input, Popover, Select, Space, Spin, Tag,
+  Alert, Button, Checkbox, Collapse, Drawer, Dropdown, Input, Popover, Select, Space, Spin, Tag,
   Tooltip, Typography, message as antdMessage,
 } from 'antd';
 import {
   BookOutlined, BulbOutlined, CheckSquareOutlined, CloseOutlined, DatabaseOutlined,
-  DownOutlined, FileTextOutlined, FormOutlined, MenuOutlined, MoreOutlined,
+  DownOutlined, FileTextOutlined, FormOutlined, HistoryOutlined, MenuOutlined, MoreOutlined,
   PartitionOutlined, ReloadOutlined, RightOutlined, RobotOutlined, SendOutlined,
   StopOutlined,
 } from '@ant-design/icons';
 import { useCourse } from '../../context/CourseContext';
 import { useIsNarrow } from '../../hooks/useIsNarrow';
 import {
-  deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode,
-  getTutorSession, listArtifacts, streamTutorTurn, updateArtifact, updateTutorSession,
+  ABILITY_LABELS, deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode,
+  getTutorSession, listArtifacts, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
   type TutorSource,
 } from '../../api/tutor';
 import { MarkdownText } from './markdown';
@@ -114,6 +114,11 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const [nodeDetail, setNodeDetail] = useState<any>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // 历史记录（2026-10-03）：后端一直有 /tutor/turns，但学生端此前没有任何入口，
+  // 关掉页面就再也找不回之前的讲解。这里补上列表与回看。
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [history, setHistory] = useState<any[]>([]);
   const [input, setInput] = useState('');
   const [running, setRunning] = useState(false);
   const [stages, setStages] = useState<string[]>([]);
@@ -656,6 +661,26 @@ const includeNodeSources = useCallback(() => {
           {/* 范围摘要原先在这里又出现一份（与左栏重复）。现在范围只有左栏一个入口，
               这里放右栏开关：默认收起，点开才占位（窄屏由移动端栏的「引用」承接）。 */}
           <div className="tutor-main-actions">
+            <Tooltip title="回看这个学科以前的问答与讲解">
+              <Button
+                size="small"
+                icon={<HistoryOutlined />}
+                onClick={async () => {
+                  setHistoryOpen(true);
+                  setHistoryLoading(true);
+                  try {
+                    const rows = await listTurns(subjectId, 50);
+                    setHistory(Array.isArray(rows) ? rows : []);
+                  } catch {
+                    antdMessage.error('历史记录加载失败');
+                  } finally {
+                    setHistoryLoading(false);
+                  }
+                }}
+              >
+                历史记录
+              </Button>
+            </Tooltip>
             {!isNarrow && (
               <Tooltip title={rightOpen ? '收起引用与成果' : '展开引用原文、学习成果与执行详情'}>
                 <Button
@@ -824,6 +849,41 @@ const includeNodeSources = useCallback(() => {
           )}
         </div>
       </main>
+
+      {/* 历史记录：复用后端 /tutor/turns（此前只有接口、学生端没有入口） */}
+      <Drawer
+        title="历史记录"
+        width={440}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+      >
+        {historyLoading ? (
+          <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
+        ) : history.length === 0 ? (
+          <Text type="secondary">还没有历史记录。提问、出题或做练习之后，这里会留下记录。</Text>
+        ) : (
+          <Collapse
+            accordion
+            items={history.map((t) => ({
+              key: String(t.id),
+              label: (
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 500, whiteSpace: 'normal' }}>
+                    {t.user_message || '（这一轮没有提问内容）'}
+                  </div>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {String(t.created_at || '').replace('T', ' ').slice(0, 16)}
+                    {t.ability ? ' · ' + (ABILITY_LABELS[t.ability] || t.ability) : ''}
+                  </Text>
+                </div>
+              ),
+              children: t.answer
+                ? <MarkdownText text={t.answer} />
+                : <Text type="secondary">这一轮没有留下回答（可能已取消或失败）。</Text>,
+            }))}
+          />
+        )}
+      </Drawer>
 
       {/* 右栏默认收起：关闭后不渲染任何占位列，主区自动占满。
           宽屏才内嵌并排；1366px 及以下改为覆盖式抽屉，避免把正文挤窄。 */}
