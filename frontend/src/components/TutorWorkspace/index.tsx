@@ -15,7 +15,7 @@ import { useCourse } from '../../context/CourseContext';
 import { useIsNarrow } from '../../hooks/useIsNarrow';
 import {
   ABILITY_LABELS, deleteArtifact, deleteTurn, generateKnowledgeMap, getKnowledgeMap, getMapNode,
-  listQuestionsForPoint, setNodeStatus,
+  setNodeStatus,
   getTutorSession, listArtifacts, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
   type TutorSource,
 } from '../../api/tutor';
@@ -79,6 +79,17 @@ const historyToMessages = (rows: any[]): ChatMessage[] => {
     if (t.answer) {
       out.push({ id: 'hist-a-' + t.id, role: 'assistant', content: t.answer });
     }
+    // 这一轮出的题挂在**同一条历史**下面：题目属于那次出题，
+    // 删掉这条历史时它们一起消失（后端软删），不再另起一块。
+    if (Array.isArray(t.questions) && t.questions.length > 0) {
+      out.push({
+        id: 'hist-q-' + t.id,
+        role: 'assistant',
+        content: '',
+        messageType: 'quiz',
+        payload: { quiz: t.questions },
+      });
+    }
   });
   return out;
 };
@@ -139,10 +150,6 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
-  // 当前知识点出过的题：历史对话里写着"已出 3 道题"，得让那些题真的能再做一遍
-  const [nodeQuestions, setNodeQuestions] = useState<any[]>([]);
-  // 题目可能积累十几道，默认只露一道、其余折叠——否则把输入框顶出视野
-  const [questionsExpanded, setQuestionsExpanded] = useState(false);
   const [input, setInput] = useState('');
   const [running, setRunning] = useState(false);
   const [stages, setStages] = useState<string[]>([]);
@@ -240,17 +247,6 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     try {
       const data = await getMapNode(sid, nodeId);
       setNodeDetail(data.node);
-      // 把这个知识点出过的题也摆出来，否则历史里"已出 3 道题"是一句空话
-      const label = data.node?.label;
-      if (label) {
-        try {
-          setNodeQuestions(await listQuestionsForPoint(sid, label));
-        } catch {
-          setNodeQuestions([]);
-        }
-      } else {
-        setNodeQuestions([]);
-      }
     } catch {
       setNodeDetail(null);
     }
@@ -836,36 +832,6 @@ const includeNodeSources = useCallback(() => {
             </div>
           ))}
         </div>
-
-        {/* 这个知识点出过的题。
-            历史对话里写着"已出 3 道题"，如果那些题找不回来，历史就是一句空话——
-            学生既看不到题、也无法作答。这里把它们从题库重新摆出来。 */}
-        {nodeQuestions.length > 0 && (
-          <div className="tutor-node-questions">
-            <div className="tutor-node-questions-head">
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                这个知识点出过的题（共 {nodeQuestions.length} 道，可以重做）
-              </Text>
-              {nodeQuestions.length > 1 && (
-                <Button type="link" size="small"
-                        onClick={() => setQuestionsExpanded((v) => !v)}>
-                  {questionsExpanded ? '收起' : '展开全部 ' + nodeQuestions.length + ' 道'}
-                </Button>
-              )}
-            </div>
-            <PracticeCard
-              questions={(questionsExpanded
-                ? nodeQuestions
-                : nodeQuestions.slice(0, 1)) as PracticeQuestion[]}
-              subjectId={subjectId}
-              nodeId={currentNode || null}
-              onAnswered={() => {
-                loadNode(subjectId, currentNode);
-                loadMap(subjectId);
-              }}
-            />
-          </div>
-        )}
 
         {nodeDetail && (
           <div className="tutor-node-bar">

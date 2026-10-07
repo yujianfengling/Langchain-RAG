@@ -149,6 +149,7 @@ def _persist_and_publicize(
     topic: str,
     quiz: List[Dict[str, Any]],
     source: str = "note",
+    turn_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     将生成的题目持久化到题库，并返回"可下发给前端"的公开题目。
@@ -182,9 +183,11 @@ def _persist_and_publicize(
         by_kp, pending = kp_attribution.resolve_items(quiz, allowed)
         out: List[Dict[str, Any]] = []
         for kp_name, group in by_kp.items():
-            out += persist_questions(subject_id, kp_name, group, source=source)
+            out += persist_questions(subject_id, kp_name, group, source=source,
+                                     turn_id=turn_id)
         if pending:
-            out += persist_questions(subject_id, None, pending, source=source)
+            out += persist_questions(subject_id, None, pending, source=source,
+                                     turn_id=turn_id)
         return out
     except Exception as e:
         logger.warning(f"题目入库失败（降级为未入库题目，不参与判分）: {e}")
@@ -387,6 +390,7 @@ def generate_quiz(
     count: int = 5,
     user_id: Optional[str] = None,
     scope: Optional[Dict[str, Any]] = None,
+    turn_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     生成自测题（V2.5.1 Chat 自测模式）
@@ -478,7 +482,8 @@ def generate_quiz(
             logger.info(f"基于证据出题为空，降级出题（subject={subject_id}, topic={topic}）")
             return _generate_fallback_quiz(subject_id, topic, model, count)
         # 阶段一：题目入库并返回服务端题目 ID（测验模式提交前不返回标准答案）
-        public_quiz = _persist_and_publicize(subject_id, topic, quiz, source="quiz")
+        public_quiz = _persist_and_publicize(subject_id, topic, quiz, source="quiz",
+                                            turn_id=turn_id)
         return {
             "quiz": public_quiz,
             "model": _resolved_model_name(model),

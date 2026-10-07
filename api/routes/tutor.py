@@ -171,9 +171,15 @@ async def list_turns(subject_id: Optional[str] = None, limit: int = 30,
     if subject_id:
         await require_subject_read(subject_id, user_id)
     # node_id 给定时只返回该知识点的轮次：学生点某个知识点，右侧要显示它以前讲过什么
-    return {"success": True,
-            "data": {"turns": tutor_session.list_turns(user_id, subject_id, limit,
-                                                       node_id=node_id)}}
+    turns = tutor_session.list_turns(user_id, subject_id, limit, node_id=node_id)
+    # 题目挂在产生它的那一轮下面——历史里写着"已出 3 道题"，题就该在那条消息下，
+    # 而不是另起一块（那样删了历史题还在，说不通）。
+    from services import quiz_service
+    qmap = await run_in_threadpool(quiz_service.questions_by_turns,
+                                   [t.get("id") for t in turns], user_id)
+    for t in turns:
+        t["questions"] = qmap.get(t.get("id"), [])
+    return {"success": True, "data": {"turns": turns}}
 
 
 @router.delete("/tutor/turns/{turn_id}")

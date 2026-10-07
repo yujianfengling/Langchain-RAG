@@ -278,6 +278,7 @@ def persist_questions(
     questions: List[Dict[str, Any]],
     source: str = "note",
     kp_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     持久化题目并返回"可发给前端"的题目（不含标准答案）。
@@ -319,6 +320,9 @@ def persist_questions(
             if row:
                 qid = row["id"]
                 version = row["version"]
+                if turn_id:
+                    conn.execute("UPDATE quiz_questions SET turn_id=? WHERE id=?", (turn_id, qid))
+                    conn.commit()
             else:
                 qid = _new_id("q")
                 version = 1
@@ -326,13 +330,13 @@ def persist_questions(
                     """INSERT INTO quiz_questions
                        (id, subject_id, knowledge_point_id, knowledge_point_name, question_type,
                         stem, options_json, correct_option_id, reference_answer, explanation,
-                        version, source, content_hash, created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        version, source, content_hash, created_at, turn_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (qid, subject_id, kp_id, kp_name, qtype, stem,
                      json.dumps(options, ensure_ascii=False),
                      mapping["correct_option_id"], mapping["reference_answer"],
                      str(q.get("explanation", "") or "").strip(),
-                     version, source, chash, now))
+                     version, source, chash, now, turn_id))
                 conn.commit()
             out.append(to_public({
                 "id": qid,
@@ -762,6 +766,41 @@ def list_attempts(
         conn.close()
 
 
+def questions_by_turns(turn_ids: List[str],
+                       user_id: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
+    """按轮次批量取题（供历史记录组装：题目要挂在产生它的那一轮下面）。
+
+    一次查询取回所有轮次的题，避免历史列表每条都发一次请求。
+    只下发公开字段，不含标准答案。
+    """
+    ids = [t for t in (turn_ids or []) if t]
+    if not ids:
+        return {}
+    conn = _get_db()
+    try:
+        marks = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            "SELECT * FROM quiz_questions WHERE turn_id IN (" + marks + ")"
+            " AND (deleted_at IS NULL OR deleted_at = '')"
+            " ORDER BY created_at ASC, rowid ASC", tuple(ids)).fetchall()
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rows:
+            item = to_public(r)
+            if user_id:
+                att = conn.execute(
+                    """SELECT id, is_correct, grade_status, user_answer, user_answer_text,
+                              attempt_kind, ai_feedback, created_at
+                       FROM quiz_attempts
+                       WHERE user_id=? AND question_id=?
+                       ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                    (user_id, r["id"])).fetchone()
+                item["attempt"] = dict(att) if att else None
+            out.setdefault(r["turn_id"], []).append(item)
+        return out
+    finally:
+        conn.close()
+
+
 def list_questions_for_point(subject_id: str, knowledge_point_name: str,
                              user_id: Optional[str] = None,
                              limit: int = 20) -> List[Dict[str, Any]]:
@@ -778,6 +817,7 @@ def list_questions_for_point(subject_id: str, knowledge_point_name: str,
         rows = conn.execute(
             """SELECT * FROM quiz_questions
                WHERE subject_id=? AND knowledge_point_name=?
+                 AND (deleted_at IS NULL OR deleted_at = '')
                ORDER BY created_at DESC, rowid DESC LIMIT ?""",
             (subject_id, knowledge_point_name, int(limit))).fetchall()
         items: List[Dict[str, Any]] = []

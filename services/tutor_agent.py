@@ -280,7 +280,8 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
 
         tool_ctx = tutor_tools.ToolContext(
             user_id=user_id, subject_id=subject_id, role=role, ability=ability,
-            scope=scope, model=model, conversation_id=conversation_id, node_id=node_id)
+            scope=scope, model=model, conversation_id=conversation_id, node_id=node_id,
+            turn_id=turn_id)
 
         system_prompt = build_system_prompt(subject_name, ability, scope, context_state, node)
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]

@@ -33,6 +33,8 @@ class ToolContext:
     model: Optional[str] = None
     conversation_id: Optional[str] = None
     node_id: Optional[str] = None
+    # 本轮的 id：出题时要写进题目，删掉这条历史时它的题要跟着消失
+    turn_id: Optional[str] = None
     sources: List[Dict[str, Any]] = field(default_factory=list)   # 本轮检索到的真实片段
     artifacts: List[Dict[str, Any]] = field(default_factory=list)  # 本轮生成的成果
     events: List[Dict[str, Any]] = field(default_factory=list)     # 需要前端展示的中间结果
@@ -225,7 +227,8 @@ def _t_generate_practice(ctx: ToolContext, topic: Optional[str] = None,
         return {"ok": False, "error": "缺少练习主题"}
     quiz = note_service.generate_quiz(subject_id=ctx.subject_id, topic=topic,
                                       model=ctx.model, count=count,
-                                      user_id=ctx.user_id, scope=ctx.scope)
+                                      user_id=ctx.user_id, scope=ctx.scope,
+                                      turn_id=ctx.turn_id)
     items = quiz.get("quiz") or []
     coverage = scope_covers_node(ctx.scope, node) if node else {"checked": False, "covered": True}
     if node_id and coverage.get("covered"):

@@ -393,6 +393,12 @@ def delete_turn(turn_id: str, user_id: str) -> bool:
             return False
         conn.execute("DELETE FROM tutor_turn_events WHERE turn_id=?", (turn_id,))
         conn.execute("DELETE FROM tutor_turns WHERE id=?", (turn_id,))
+        # 这一轮出的题跟着消失（软删）：题属于那次出题，历史删了题还留着说不通。
+        # 用软删而不是硬删——作答记录、错题本、复习与掌握度都引用题目，
+        # 硬删会让它们变成指向不存在题目的孤儿。
+        conn.execute(
+            "UPDATE quiz_questions SET deleted_at=? WHERE turn_id=? AND (deleted_at IS NULL OR deleted_at='')",
+            (_now(), turn_id))
         conn.commit()
         return True
     finally:
