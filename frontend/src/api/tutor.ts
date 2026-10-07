@@ -175,6 +175,17 @@ export const listTurns = async (subjectId?: string, limit = 30, nodeId?: string)
   return (res?.data ?? res)?.turns ?? [];
 };
 
+export const listQuestionsForPoint = async (
+  subjectId: string,
+  knowledgePoint: string,
+  limit = 20,
+): Promise<any[]> => {
+  const res: any = await apiClient.get('/quiz/questions', {
+    params: { subject_id: subjectId, knowledge_point: knowledgePoint, limit },
+  });
+  return (res?.data ?? res)?.questions ?? [];
+};
+
 export const cancelTurn = async (turnId: string): Promise<boolean> => {
   const res: any = await apiClient.post('/tutor/turns/' + turnId + '/cancel');
   return Boolean((res?.data ?? res)?.cancelled);

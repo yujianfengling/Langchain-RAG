@@ -107,6 +107,20 @@ async def list_attempts(subject_id: Optional[str] = None,
     return SuccessResponse(data=data, message="获取作答历史成功")
 
 
+@router.get("/quiz/questions")
+async def list_questions(subject_id: str, knowledge_point: str, limit: int = 20,
+                         user_id: str = Depends(require_current_user)):
+    """
+    列出某知识点下的题目（含该用户最近一次作答，若有）。
+
+    学生点知识地图里的知识点时，用它把"以前出过的题"重新摆出来。
+    **不下发标准答案**，答案仍只在提交作答或显式查看时给出。
+    """
+    data = await run_in_threadpool(quiz_service.list_questions_for_point,
+                                   subject_id, knowledge_point, user_id, limit)
+    return SuccessResponse(data={"questions": data}, message="获取题目成功")
+
+
 @router.get("/quiz/wrong")
 async def list_wrong(subject_id: Optional[str] = None,
                      user_id: str = Depends(require_current_user)):

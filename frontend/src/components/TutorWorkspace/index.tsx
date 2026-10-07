@@ -13,7 +13,8 @@ import {
 import { useCourse } from '../../context/CourseContext';
 import { useIsNarrow } from '../../hooks/useIsNarrow';
 import {
-  ABILITY_LABELS, deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode, setNodeStatus,
+  ABILITY_LABELS, deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode,
+  listQuestionsForPoint, setNodeStatus,
   getTutorSession, listArtifacts, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
   type TutorSource,
 } from '../../api/tutor';
@@ -137,6 +138,8 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
+  // 当前知识点出过的题：历史对话里写着"已出 3 道题"，得让那些题真的能再做一遍
+  const [nodeQuestions, setNodeQuestions] = useState<any[]>([]);
   const [input, setInput] = useState('');
   const [running, setRunning] = useState(false);
   const [stages, setStages] = useState<string[]>([]);
@@ -234,6 +237,17 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     try {
       const data = await getMapNode(sid, nodeId);
       setNodeDetail(data.node);
+      // 把这个知识点出过的题也摆出来，否则历史里"已出 3 道题"是一句空话
+      const label = data.node?.label;
+      if (label) {
+        try {
+          setNodeQuestions(await listQuestionsForPoint(sid, label));
+        } catch {
+          setNodeQuestions([]);
+        }
+      } else {
+        setNodeQuestions([]);
+      }
     } catch {
       setNodeDetail(null);
     }
@@ -819,6 +833,26 @@ const includeNodeSources = useCallback(() => {
             </div>
           ))}
         </div>
+
+        {/* 这个知识点出过的题。
+            历史对话里写着"已出 3 道题"，如果那些题找不回来，历史就是一句空话——
+            学生既看不到题、也无法作答。这里把它们从题库重新摆出来。 */}
+        {nodeQuestions.length > 0 && (
+          <div className="tutor-node-questions">
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              这个知识点出过的题（可以重做）
+            </Text>
+            <PracticeCard
+              questions={nodeQuestions as PracticeQuestion[]}
+              subjectId={subjectId}
+              nodeId={currentNode || null}
+              onAnswered={() => {
+                loadNode(subjectId, currentNode);
+                loadMap(subjectId);
+              }}
+            />
+          </div>
+        )}
 
         {nodeDetail && (
           <div className="tutor-node-bar">

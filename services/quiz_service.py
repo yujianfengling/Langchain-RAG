@@ -762,6 +762,42 @@ def list_attempts(
         conn.close()
 
 
+def list_questions_for_point(subject_id: str, knowledge_point_name: str,
+                             user_id: Optional[str] = None,
+                             limit: int = 20) -> List[Dict[str, Any]]:
+    """列出某知识点下的题目（可选带上该用户最近一次作答）。
+
+    用途：学生点知识地图里的知识点时，把"以前出过的题"重新摆出来——
+    否则历史对话里明明写着"已出 3 道题"，却再也找不到那些题、无法作答。
+    只下发公开字段（**不含标准答案**）；答案仍只在提交作答或显式查看时给出。
+    """
+    if not subject_id or not knowledge_point_name:
+        return []
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            """SELECT * FROM quiz_questions
+               WHERE subject_id=? AND knowledge_point_name=?
+               ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+            (subject_id, knowledge_point_name, int(limit))).fetchall()
+        items: List[Dict[str, Any]] = []
+        for r in rows:
+            item = to_public(r)
+            if user_id:
+                att = conn.execute(
+                    """SELECT id, is_correct, grade_status, user_answer, user_answer_text,
+                              attempt_kind, ai_feedback, created_at
+                       FROM quiz_attempts
+                       WHERE user_id=? AND question_id=?
+                       ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                    (user_id, r["id"])).fetchone()
+                item["attempt"] = dict(att) if att else None
+            items.append(item)
+        return items
+    finally:
+        conn.close()
+
+
 def list_wrong_questions(user_id: str, subject_id: Optional[str] = None,
                          include_answers: bool = False) -> List[Dict[str, Any]]:
     """

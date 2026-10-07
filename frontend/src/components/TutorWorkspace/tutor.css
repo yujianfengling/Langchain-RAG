@@ -111,6 +111,12 @@
 .tutor-main-head .ant-segmented { flex-shrink: 0; }
 .tutor-main-scope { margin-left: auto; }
 
+.tutor-node-questions {
+  padding: 10px 16px 4px;
+  border-top: 1px dashed var(--color-primary-100);
+}
+.tutor-node-questions > div:first-child { display: block; margin-bottom: 6px; }
+
 .tutor-node-bar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 8px 16px; background: var(--color-primary-50);
