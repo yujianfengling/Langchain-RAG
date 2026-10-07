@@ -637,6 +637,30 @@ def delete_subject_document(subject_id: str, filename: str) -> Dict[str, Any]:
         # 答案仍然引用那份已删文件的内容（100% 必然触发，不依赖并发或重启）。
         stale = _invalidate_subject_index(subject_id)
 
+        # 2026-10-08 修复（真实复现）：**只失效缓存是不够的**。
+        # 磁盘索引里仍然带着该文件的 chunk，下一次检索重新加载后依旧会召回已删内容
+        # （实测：删除 ALPHA-R9.txt 后提问，答案与来源里仍然出现它）。
+        # 因此删除后必须用**剩余资料**重建一次；增量向量化会复用未变化资料的分块与向量，
+        # 所以这次重建代价很小。若已无剩余资料，则直接清掉知识库。
+        try:
+            remaining = [
+                f for f in subject_dir.iterdir()
+                if f.is_file() and f.suffix.lower() in supported_document_extensions()
+            ]
+        except OSError:
+            remaining = []
+        try:
+            if remaining:
+                rebuild_subject_knowledge(subject_id)
+                logger.info(f"删除后已重建索引（剩余 {len(remaining)} 份资料）: {subject_id}")
+            else:
+                delete_subject_knowledge(subject_id)
+                logger.info(f"删除最后一份资料，已清理知识库: {subject_id}")
+        except Exception as e:
+            # 重建失败不能把"删除"本身变成失败：文件已删、缓存已失效，
+            # 但要留下明确告警，提示需要手动重建。
+            logger.warning(f"删除后重建索引失败（文件已删除，请手动重建）: {subject_id}: {e}")
+
         return {
             "success": True,
             "subject_id": subject_id,
