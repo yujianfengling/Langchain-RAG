@@ -675,21 +675,15 @@ def _decide_target(subject_dir: Path, desired_name: str,
         return {"name": desired, "skip": True, "reason": "同名同内容，已跳过（不重复导入）",
                 "renamed": False, "existed": True}
 
-    stem = Path(desired).stem
-    suffix = Path(desired).suffix
-    for i in range(2, 200):
-        candidate = f"{stem} ({i}){suffix}"
-        cand_path = subject_dir / candidate
-        if not cand_path.exists():
-            return {"name": candidate, "skip": False,
-                    "reason": "同名不同内容，已另存为",
-                    "renamed": True, "existed": True}
-        if _sha256(cand_path) == new_hash:
-            return {"name": candidate, "skip": True,
-                    "reason": "同名同内容，已跳过（不重复导入）",
-                    "renamed": False, "existed": True}
-    return {"name": f"{stem}_{uuid.uuid4().hex[:6]}{suffix}", "skip": False,
-            "reason": "同名不同内容，已另存为", "renamed": True, "existed": True}
+    # 2026-10-08：同名不同内容按"**修改**"处理 —— 替换旧版本，而不是再存一份副本。
+    # 语义变化的原因：把修改当作"新增一份副本"会让同一份资料在库里越积越多，
+    # 旧分块不会被撤除，检索可能同时召回新旧两个版本。
+    # 旧版本字节移入 <学科>/_superseded/ 留档（建库只扫学科根目录下的文件，
+    # 子目录不会被索引），因此"替换"既不丢数据、也不会让旧版本继续被召回。
+    return {"name": desired, "skip": False,
+            "reason": "同名不同内容，已替换旧版本（旧版本留档于 _superseded/）",
+            "renamed": True, "existed": True, "replace": True,
+            "old_sha": existing_hash}
 
 
 # ==================== 登记 / 解析 ====================
@@ -1537,6 +1531,9 @@ def _run_job_locked(job_id: str, executor_id: str,
         subject_dir = _subject_dir(subject_id)
         subject_dir.mkdir(parents=True, exist_ok=True)
         copied_all: List[str] = []
+        # 被"修改"替换掉的旧版本留档：(superseded_path, original_path)，
+        # 仅在建库成功前用于回滚；建库成功后清空（留档保留）。
+        replaced_all: List[tuple] = []
         max_batches = _batch_max_count()
         total_limit = float(limits.get("max_seconds") or 0)
         batch_seconds = _batch_seconds()
@@ -1551,6 +1548,7 @@ def _run_job_locked(job_id: str, executor_id: str,
                 return
             if _is_cancelled(job_id):
                 _remove_copied(subject_dir, copied_all)
+                _restore_replaced(replaced_all)
                 _cancel_finish(job_id, "任务已取消（已导入的资料不会删除）")
                 return
             if _is_pause_requested(job_id):
@@ -1585,6 +1583,7 @@ def _run_job_locked(job_id: str, executor_id: str,
                     return
                 if _is_cancelled(job_id):
                     _remove_copied(subject_dir, copied_all)
+                    _restore_replaced(replaced_all)
                     _cancel_finish(job_id, "任务已取消（已导入的资料不会删除）")
                     return
                 if _is_pause_requested(job_id):
@@ -1707,6 +1706,21 @@ def _run_job_locked(job_id: str, executor_id: str,
 
                 _fence_guard()
                 existed_before = final_path.exists()
+                # 修改（同名不同内容）：把旧版本移入 _superseded/ 留档，再写入新版本。
+                # 这样旧分块随之从下一次建库中消失（文件已不在根目录），新分块生效。
+                if existed_before and decision.get("replace"):
+                    try:
+                        sup_dir = subject_dir / "_superseded"
+                        sup_dir.mkdir(parents=True, exist_ok=True)
+                        old_sha12 = str(decision.get("old_sha") or "old")[:12]
+                        sup_path = sup_dir / f"{final_path.name}.{old_sha12}"
+                        if sup_path.exists():
+                            final_path.unlink()
+                        else:
+                            shutil.move(str(final_path), str(sup_path))
+                        replaced_all.append((str(sup_path), str(final_path)))
+                    except Exception as e:
+                        logger.warning(f"旧版本留档失败（继续替换，不影响新版本生效）: {e}")
                 final_path.write_bytes(content)
                 if not existed_before:
                     copied_new_name = decision["name"]
@@ -1781,6 +1795,23 @@ def _run_job_locked(job_id: str, executor_id: str,
                         chunk_count = None
                     if isinstance(chunk_count, int):
                         stage_timings["build_chunks"] = chunk_count
+                    # 2026-10-08：把"向量化增量"的实测计数写进任务，便于验收与排障
+                    try:
+                        _emb = (build_result or {}).get("embedding_stats") or {}
+                        if _emb:
+                            stage_timings["embed_total"] = int(_emb.get("total") or 0)
+                            stage_timings["embed_cache_hits"] = int(_emb.get("hits") or 0)
+                            stage_timings["embed_misses"] = int(_emb.get("misses") or 0)
+                            stage_timings["embed_calls"] = int(_emb.get("embed_calls") or 0)
+                            stage_timings["embed_embedded_texts"] = int(
+                                _emb.get("embedded_texts") or 0)
+                            stage_timings["embed_ms"] = int(_emb.get("embed_ms") or 0)
+                            stage_timings["embed_lookup_ms"] = int(_emb.get("lookup_ms") or 0)
+                    except Exception:
+                        pass
+                    # 修改过的资料：旧版本已移入 _superseded/，替换属于成功结果，
+                    # 不参与"取消回滚"（回滚只针对本批新增但尚未建库的文件）。
+                    replaced_all.clear()
                     for iid in new_indexing:
                         _update_item(iid, status="ready", stage="indexing", progress=1.0,
                                      message="可学习", error_type=None, retryable=0)
@@ -1797,6 +1828,7 @@ def _run_job_locked(job_id: str, executor_id: str,
 
             if _is_cancelled(job_id):
                 _remove_copied(subject_dir, copied_all)
+                _restore_replaced(replaced_all)
                 _cancel_finish(job_id, "任务已取消（已导入的资料不会删除）")
                 return
             if _is_pause_requested(job_id):
@@ -1862,6 +1894,20 @@ def _extract(stored: Path, dest: Path, limits: Dict[str, Any],
         "max_seconds": int(limits.get("max_seconds", 300)),
     }
     return archive_service.extract_archive(str(stored), str(dest), limits=archive_limits)
+
+
+def _restore_replaced(replaced: List[tuple]) -> None:
+    """取消/失败回滚：把"修改"替换掉的旧版本放回原位，避免用户丢失原文件。"""
+    for sup_path, original in list(replaced or []):
+        try:
+            sup = Path(sup_path)
+            orig = Path(original)
+            if sup.exists():
+                if orig.exists():
+                    orig.unlink()
+                shutil.move(str(sup), str(orig))
+        except Exception as e:
+            logger.warning(f"回滚被替换的旧版本失败: {sup_path}: {e}")
 
 
 def _remove_copied(subject_dir: Path, names: List[str]) -> None:

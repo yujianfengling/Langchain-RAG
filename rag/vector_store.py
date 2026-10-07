@@ -512,13 +512,15 @@ def create_vector_store(
         logger.info(f"正在为 {len(texts)} 个文档创建FAISS索引...")
         
         # 使用嵌入模型生成向量
-        if hasattr(embeddings, 'embed_documents'):
-            vectors = embeddings.embed_documents(texts)
-        elif hasattr(embeddings, 'embed_query'):
-            # 单个处理
-            vectors = [embeddings.embed_query(text) for text in texts]
-        else:
-            raise RuntimeError("嵌入模型不支持embed_documents或embed_query方法")
+        # 2026-10-08：改为 **chunk 级缓存**——未变化的分块直接复用已有向量，
+        # 不再调用 Embedding。整库重建仍会重组 FAISS/BM25 索引文件，但"向量化"
+        # 变成增量：只有新增/变化的分块真正被编码。键含 模型签名 + 分块正文。
+        from .embedding_cache import embed_texts_cached
+        vectors, embed_stats = embed_texts_cached(texts, embeddings)
+        logger.info(
+            f"向量化: 共 {embed_stats['total']} 条，命中缓存 {embed_stats['hits']} 条，"
+            f"实编码 {embed_stats['embedded_texts']} 条"
+            f"（lookup {embed_stats['lookup_ms']}ms / embed {embed_stats['embed_ms']}ms）")
         
         vectors = np.array(vectors, dtype='float32')
         
@@ -553,17 +555,24 @@ def create_vector_store(
             "collection_name": collection_name,
             "build_id": build_id,
             "built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            # 2026-10-08：向量化统计（增量复用是否生效的直接证据）
+            "embedding_stats": dict(embed_stats or {}),
         })
         
         logger.info(f"FAISS索引已创建并保存至: {persist_dir}")
         
-        # 返回包装对象
-        return FAISSVectorStore(
+        # 返回包装对象（embed_stats 供上层计入 stage_timings）
+        store = FAISSVectorStore(
             index=index,
             documents=docs,
             embeddings=embeddings,
             persist_dir=persist_dir
         )
+        try:
+            store.embed_stats = dict(embed_stats or {})
+        except Exception:
+            pass
+        return store
         
     except Exception as e:
         raise RuntimeError(f"创建FAISS向量存储失败: {str(e)}")

@@ -1035,6 +1035,11 @@ def _build_index_with_rollback(subject_id: str, documents: List[Any]) -> Dict[st
         "chunks_before_filter": meta.get("chunks_before_filter"),
         "chunks_dropped": meta.get("chunks_dropped"),
         "build_id": build_id,
+        # 2026-10-08：向量化增量统计（命中缓存 = 未变化分块，未调用 Embedding）
+        "embedding_stats": dict(
+            getattr(vector_store, "embed_stats", None)
+            or (meta.get("embedding_stats") if isinstance(meta, dict) else None)
+            or {}),
     }
 
 
