@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Alert, Button, Checkbox, Dropdown, Input, Popover, Segmented, Select, Space, Spin, Tag,
+  Alert, Button, Checkbox, Dropdown, Input, Popover, Select, Space, Spin, Tag,
   Tooltip, Typography, message as antdMessage,
 } from 'antd';
 import {
@@ -13,7 +13,7 @@ import {
 import { useCourse } from '../../context/CourseContext';
 import { useIsNarrow } from '../../hooks/useIsNarrow';
 import {
-  ABILITY_LABELS, deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode,
+  deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode,
   getTutorSession, listArtifacts, streamTutorTurn, updateArtifact, updateTutorSession,
   type TutorSource,
 } from '../../api/tutor';
@@ -650,14 +650,9 @@ const includeNodeSources = useCallback(() => {
 
       <main className="tutor-main">
         <div className="tutor-main-head">
-          <Segmented
-            value={ability}
-            onChange={(v) => {
-              setAbility(String(v));
-              updateTutorSession({ subject_id: subjectId, ability: String(v) });
-            }}
-            options={Object.entries(ABILITY_LABELS).map(([key, label]) => ({ label, value: key }))}
-          />
+          {/* 2026-10-03：原「资料问答 / 引导讲解 / 练习检测 / 知识地图 / 学习整理」模式栏已移除。
+              它和底部「快捷命令：开始学习 / 做练习 / 检测」功能重叠，两处都能切能力只会让人犹豫；
+              现在能力统一由快捷命令（以及会话恢复）决定，这里只留右栏开关。 */}
           {/* 范围摘要原先在这里又出现一份（与左栏重复）。现在范围只有左栏一个入口，
               这里放右栏开关：默认收起，点开才占位（窄屏由移动端栏的「引用」承接）。 */}
           <div className="tutor-main-actions">
