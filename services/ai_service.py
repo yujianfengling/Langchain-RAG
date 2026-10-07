@@ -210,6 +210,9 @@ def extract_sources(context_docs: List) -> List[Dict[str, Any]]:
             "section": section,
             "score": score,
             "retrieval_type": metadata.get('retrieval_type'),
+            # 资料有效性：verified = 已核实仍在库且有权；unverified_* = 无法核实（原因见值）。
+            # 保留该字段是为了"明确降级原因"，避免把未核实的片段冒充有效依据。
+            "validity": metadata.get('validity') or 'unchecked',
         })
 
     return sources
@@ -311,55 +314,105 @@ def get_model_info() -> Dict[str, Any]:
         return {"model": "unknown", "provider": "unknown", "available": False}
 
 
-def _filter_existing_materials(docs: List[Any], subject_id: Optional[str]) -> List[Any]:
-    """检索进入上下文前的**有效性校验**（2026-10-08）。
+def _filter_existing_materials(docs: List[Any], subject_id: Optional[str],
+                               viewer_user_id: Optional[str] = None) -> List[Any]:
+    """检索进入上下文前的**资料有效性校验**（2026-10-08，第二轮加固）。
 
-    为什么不能只依赖"删除后重建成功"：
-    - 重建可能失败、可能还没跑完，而磁盘索引里仍然带着被删资料的分块；
-    - 用户删完立刻提问时，旧内容会照样进入模型上下文与来源列表。
+    为什么不能只依赖"删除后重建成功"：重建可能失败或还没跑完，而磁盘索引里仍然带着
+    被删资料的分块；用户删完立刻提问时，旧内容会照样进入上下文与来源列表。
 
-    因此这里再做一道 fail-closed 的校验：只保留"来源文件此刻仍存在于学科目录"的片段。
-    - 文件已删除 → 丢弃（不再进上下文/来源/引用原文）；
-    - 来源落在 _superseded/ 等留档目录 → 丢弃（留档不是有效资料）；
-    - 拿不到任何来源标识 → 保守保留（避免误伤历史资料）；
-    - 学科目录不存在（只读/历史部署）→ 不做过滤。
+    校验顺序（**身份 + 权限优先，basename 只是兜底**）：
+    1. 先用 material_scope.list_scope_materials(viewer, subject) 取"当前仍存在、且对该用户
+       有权"的资料的稳定身份（课程资料是 material_id，个人/历史学科是 f:<文件名>）。
+       命中 → 保留；未命中 → 丢弃（已删除 / 已被替换 / 已失权）。
+    2. 该清单为空（个人学科无登记、或登记不可用）时，退回"学科目录里文件是否还在"的检查。
+    3. 学科目录不可访问 → **不静默放行**：保留片段但标记 validity='unverified_no_dir' 并告警；
+       调用方可据此降级展示，不会把它当成已核实的有效依据。
+    4. 片段连来源标识都没有 → 标记 validity='unverified_no_source' 并告警。
+
+    注意：这里**不做**"目录不可访问就全丢"的一刀切，也不做"没有标识就当有效"的静默放行——
+    两种情况都带明确原因标记，避免误删合法历史资料、也避免冒充有效依据。
     """
-    if not docs or not subject_id:
+    if not docs:
         return docs
+    if not subject_id:
+        for doc in docs:
+            meta = getattr(doc, 'metadata', None)
+            if isinstance(meta, dict):
+                meta.setdefault('validity', 'unverified_no_subject')
+        logger.warning('检索有效性校验：未提供学科，无法核实资料身份，全部标记为未核实')
+        return docs
+
+    # ---- 第 1 层：稳定身份 + 权限（课程资料有 material_id，个人学科是 f:<文件名>）----
+    live_ids: Optional[set] = None
+    live_names: Optional[set] = None
+    try:
+        from services import material_scope
+        items = material_scope.list_scope_materials(viewer_user_id, subject_id) or []
+        if items:
+            live_ids = {(it.get('doc_id') or '') for it in items if it.get('doc_id')}
+            live_names = {(it.get('file_name') or '') for it in items if it.get('file_name')}
+    except Exception as e:
+        logger.warning(f'检索有效性校验：资料身份清单不可用（降级为文件存在性检查）: {e}')
+
+    # ---- 第 2 层：文件是否还在（兜底，且用于第 1 层无法判定的情况）----
+    present: Optional[set] = None
+    dir_reason = ''
     try:
         import os as _os
         from config.path_config import get_data_dir
-        subject_dir = _os.path.join(str(get_data_dir()), "subjects", str(subject_id))
-    except Exception:
-        return docs
-    if not _os.path.isdir(subject_dir):
-        return docs
-    try:
-        present = {name for name in _os.listdir(subject_dir)
-                   if _os.path.isfile(_os.path.join(subject_dir, name))}
-    except OSError:
-        return docs
+        subject_dir = _os.path.join(str(get_data_dir()), 'subjects', str(subject_id))
+        if _os.path.isdir(subject_dir):
+            present = {name for name in _os.listdir(subject_dir)
+                       if _os.path.isfile(_os.path.join(subject_dir, name))}
+        else:
+            dir_reason = 'unverified_no_dir'
+    except Exception as e:
+        dir_reason = 'unverified_no_dir'
+        logger.warning(f'检索有效性校验：学科目录不可访问，标记为未核实: {e}')
 
     kept: List[Any] = []
     dropped = 0
+    unverified = 0
     for doc in docs:
-        meta = getattr(doc, "metadata", None) or {}
-        name = meta.get("file_name")
+        meta = getattr(doc, 'metadata', None)
+        if not isinstance(meta, dict):
+            meta = {}
+        material_id = meta.get('material_id')
+        name = meta.get('file_name')
         if not name:
-            src = meta.get("source") or meta.get("source_path") or ""
-            name = str(src).replace("\\", "/").split("/")[-1] if src else ""
-        if not name:
-            kept.append(doc)          # 无法判定 → 保守保留
-            continue
-        if name in present:
-            kept.append(doc)
-        else:
-            dropped += 1
-    if dropped:
-        logger.info(f"检索有效性校验：丢弃 {dropped} 条已不在学科目录的资料片段"
-                    f"（subject={subject_id}）")
-    return kept
+            src = meta.get('source') or meta.get('source_path') or ''
+            name = str(src).replace(chr(92), '/').split('/')[-1] if src else ''
+        doc_id = f'm:{material_id}' if material_id else (f'f:{name}' if name else '')
 
+        if live_ids is not None:
+            # 有权威清单：身份必须在清单里（覆盖已删除/已替换/已失权）
+            if doc_id and (doc_id in live_ids
+                          or (name and live_names and name in live_names)):
+                meta['validity'] = 'verified'
+                kept.append(doc)
+            else:
+                dropped += 1
+            continue
+
+        if name and present is not None:
+            if name in present and not name.startswith('_superseded'):
+                meta['validity'] = 'verified'
+                kept.append(doc)
+            else:
+                dropped += 1
+            continue
+
+        # 无法核实：保留但**明确标记原因**，不冒充有效依据
+        reason = dir_reason or 'unverified_no_source'
+        meta['validity'] = reason
+        unverified += 1
+        kept.append(doc)
+
+    if dropped or unverified:
+        logger.info(f'检索有效性校验（subject={subject_id}）: 丢弃 {dropped} 条失效资料片段，'
+                    f'标记未核实 {unverified} 条')
+    return kept
 
 def retrieve_and_build_context(
     question: str,
@@ -391,7 +444,7 @@ def retrieve_and_build_context(
                                    viewer_user_id=viewer_user_id)
     # 1.5 有效性校验：已删除/已替换掉的资料不得进入上下文与来源
     #     （不依赖"删除后重建成功"，重建失败或未完成时同样生效）
-    context_docs = _filter_existing_materials(context_docs, subject_id)
+    context_docs = _filter_existing_materials(context_docs, subject_id, viewer_user_id)
     context_used = len(context_docs) > 0
     
     # 2. 构建上下文字符串
