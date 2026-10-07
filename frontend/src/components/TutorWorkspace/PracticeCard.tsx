@@ -113,9 +113,9 @@ const PracticeCard: React.FC<{
                     {attempt.standard_answer && <div>参考答案：{attempt.standard_answer}</div>}
                     {result?.node && (
                       <div style={{ marginTop: 4 }}>
-                        知识点状态：{result.node.status_label}
+                        这个知识点：{result.node.status_label}
                         {result.node.mastery_level != null &&
-                          '（当前掌握度 ' + Math.round(result.node.mastery_level * 100) + '%）'}
+                          '（掌握度约 ' + Math.round(result.node.mastery_level * 100) + '%）'}
                       </div>
                     )}
                   </div>
