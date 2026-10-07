@@ -677,56 +677,6 @@ const includeNodeSources = useCallback(() => {
           </div>
         </div>
 
-        {nodeDetail && (
-          <div className="tutor-node-bar">
-            <div className="tutor-node-info">
-              <span className="tutor-node-eyebrow">正在学</span>
-              <Tag color="green">
-                {nodeDetail.status_label || STATUS_FALLBACK[nodeDetail.status] || '未开始'}
-              </Tag>
-              <span className="tutor-node-name" title={nodeDetail.label}>{nodeDetail.label}</span>
-              {nodeDetail.source_docs?.length > 0 && (
-                <Tooltip title={nodeDetail.source_docs.join('、')}>
-                  <span className="tutor-node-src">· {nodeDetail.source_docs.length} 份来源</span>
-                </Tooltip>
-              )}
-            </div>
-            {nodeScopeMissing.length > 0 && (
-              <Tooltip title={'缺少来源资料：' + nodeScopeMissing.join('、')}>
-                <Button size="small" style={{ color: '#d97706' }}
-                        onClick={includeNodeSources}>
-                  范围缺少该知识点资料，点此加入
-                </Button>
-              </Tooltip>
-            )}
-            {/* 同一动作只保留一个主要入口：学习/练习/检测是主操作，
-                「记笔记」等次级能力收进"更多"，避免与顶部模式栏功能重叠、按钮成排。 */}
-            <Space size={6} wrap className="tutor-node-actions">
-              <Button size="small" type="primary" ghost icon={<BulbOutlined />}
-                      onClick={() => startNodeActivity('learn')}>开始学习</Button>
-              <Button size="small" icon={<FormOutlined />}
-                      onClick={() => startNodeActivity('practice')}>做练习</Button>
-              <Button size="small" icon={<CheckSquareOutlined />}
-                      onClick={() => startNodeActivity('quiz')}>检测</Button>
-              <Dropdown
-                trigger={['click']}
-                menu={{
-                  items: [
-                    { key: 'note', icon: <FileTextOutlined />, label: '记笔记' },
-                    { key: 'trace', icon: <RightOutlined />, label: '引用与执行详情' },
-                  ],
-                  onClick: ({ key }) => {
-                    if (key === 'note') startNodeActivity('note');
-                    if (key === 'trace') toggleRightPanel(true);
-                  },
-                }}
-              >
-                <Button size="small" icon={<MoreOutlined />}>更多</Button>
-              </Dropdown>
-            </Space>
-          </div>
-        )}
-
         <div className="tutor-messages" ref={listRef}>
           {sessionError && (
             <Alert type="error" showIcon message="会话加载失败" description={sessionError}
@@ -804,6 +754,57 @@ const includeNodeSources = useCallback(() => {
             </div>
           ))}
         </div>
+
+        {nodeDetail && (
+          <div className="tutor-node-bar">
+            <div className="tutor-node-info">
+              <span className="tutor-node-eyebrow">正在学</span>
+              <Tag color="green">
+                {nodeDetail.status_label || STATUS_FALLBACK[nodeDetail.status] || '未开始'}
+              </Tag>
+              <span className="tutor-node-name" title={nodeDetail.label}>{nodeDetail.label}</span>
+              {nodeDetail.source_docs?.length > 0 && (
+                <Tooltip title={nodeDetail.source_docs.join('、')}>
+                  <span className="tutor-node-src">· {nodeDetail.source_docs.length} 份来源</span>
+                </Tooltip>
+              )}
+            </div>
+            {nodeScopeMissing.length > 0 && (
+              <Tooltip title={'缺少来源资料：' + nodeScopeMissing.join('、')}>
+                <Button size="small" style={{ color: '#d97706' }}
+                        onClick={includeNodeSources}>
+                  范围缺少该知识点资料，点此加入
+                </Button>
+              </Tooltip>
+            )}
+            {/* 同一动作只保留一个主要入口：学习/练习/检测是主操作，
+                「记笔记」等次级能力收进"更多"，避免与顶部模式栏功能重叠、按钮成排。 */}
+            <Space size={6} wrap className="tutor-node-actions">
+              <Text type="secondary" className="tutor-quick-label">快捷命令：</Text>
+              <Button size="small" type="primary" ghost icon={<BulbOutlined />}
+                      onClick={() => startNodeActivity('learn')}>开始学习</Button>
+              <Button size="small" icon={<FormOutlined />}
+                      onClick={() => startNodeActivity('practice')}>做练习</Button>
+              <Button size="small" icon={<CheckSquareOutlined />}
+                      onClick={() => startNodeActivity('quiz')}>检测</Button>
+              <Dropdown
+                trigger={['click']}
+                menu={{
+                  items: [
+                    { key: 'note', icon: <FileTextOutlined />, label: '记笔记' },
+                    { key: 'trace', icon: <RightOutlined />, label: '引用与执行详情' },
+                  ],
+                  onClick: ({ key }) => {
+                    if (key === 'note') startNodeActivity('note');
+                    if (key === 'trace') toggleRightPanel(true);
+                  },
+                }}
+              >
+                <Button size="small" icon={<MoreOutlined />}>更多</Button>
+              </Dropdown>
+            </Space>
+          </div>
+        )}
 
         <div className="tutor-composer">
           <TextArea

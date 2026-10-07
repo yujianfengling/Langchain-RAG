@@ -114,8 +114,11 @@
 .tutor-node-bar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 8px 16px; background: var(--color-primary-50);
-  border-bottom: 1px solid var(--color-primary-100);
+  /* 2026-10-03：这条栏从消息区上方移到了输入框上方，分隔线跟着改到上沿 */
+  border-top: 1px solid var(--color-primary-100);
 }
+/* 「快捷命令：」标签 */
+.tutor-quick-label { flex-shrink: 0; font-size: 12px; }
 .tutor-node-info { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; overflow: hidden; }
 .tutor-node-name {
   font-weight: 650; color: var(--color-text);
