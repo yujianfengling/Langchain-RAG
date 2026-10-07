@@ -12,6 +12,7 @@ v2.0 更新：
 import os
 import shutil
 import logging
+import time
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Any
 
@@ -162,18 +163,22 @@ def build_knowledge_base(
         # 读取配置
         use_semantic = settings.USE_SEMANTIC_SPLIT if CONFIG_AVAILABLE else True
         
-        # 1. 文本分割
+        # 1. 文本分割（计时：切分是 Python 逐块操作，13k 块时不可忽略）
+        _t_split = time.monotonic()
         split_docs = split_documents(
             documents, chunk_size, chunk_overlap,
             use_semantic=use_semantic
         )
+        _split_ms = int((time.monotonic() - _t_split) * 1000)
         
         logger.info(f"文本分割完成: {len(documents)}个文档 → {len(split_docs)}个chunk")
 
         # 1.5 过滤碎片 chunk（v2.6）：FAISS 与 BM25 共用同一份过滤后文档，
         # 修复此前"向量索引与 BM25 索引条目数不一致"的问题
+        _t_filter = time.monotonic()
         split_docs, filter_stats = filter_documents_by_min_length(
             split_docs, chunk_min_length)
+        _filter_ms = int((time.monotonic() - _t_filter) * 1000)
         if not split_docs:
             raise ValueError(
                 f"过滤后无可用 chunk（min_length={chunk_min_length}，"
@@ -194,6 +199,7 @@ def build_knowledge_base(
         # 获取嵌入模型
         embeddings = get_embedding_model()
         
+        _t_vector = time.monotonic()
         vector_store = create_vector_store(
             docs=split_docs,
             embeddings=embeddings,
@@ -212,8 +218,11 @@ def build_knowledge_base(
         #    保证两个索引条目数严格一致（同一版本）。
         #    此前用 split_docs：create_vector_store 清洗后可能再丢弃空 chunk，
         #    FAISS 实际条目数少于 split_docs，会留下"索引与 meta 不一致"的隐患。
+        _vector_ms = int((time.monotonic() - _t_vector) * 1000)
+        _bm25_ms = 0
         if HYBRID_AVAILABLE:
             bm25_docs = getattr(vector_store, "documents", None) or split_docs
+            _t_bm25 = time.monotonic()
             try:
                 build_hybrid_index(
                     subject_id=subject_id,
@@ -229,7 +238,23 @@ def build_knowledge_base(
                     logger.error(f"BM25索引构建失败（strict，拒绝发布半版本）: {e}")
                     raise
                 logger.warning(f"BM25索引构建失败（不影响向量检索）: {str(e)}")
-        
+            _bm25_ms = int((time.monotonic() - _t_bm25) * 1000)
+
+        # 阶段计时汇总（写入返回对象，供上层透传进任务 stage_timings）
+        try:
+            _emb = dict(getattr(vector_store, "embed_stats", None) or {})
+            _emb.update({"split_ms": _split_ms, "filter_ms": _filter_ms,
+                         "vector_ms": _vector_ms, "bm25_ms": _bm25_ms})
+            vector_store.embed_stats = _emb
+            logger.info(
+                f"建库阶段: 切分 {_split_ms}ms / 过滤 {_filter_ms}ms / "
+                f"向量 {_vector_ms}ms（缓存命中 {_emb.get('hits')}、"
+                f"实编码 {_emb.get('embedded_texts')}、矩阵 {_emb.get('matrix_ms')}ms、"
+                f"FAISS {_emb.get('faiss_ms')}ms、写盘 {_emb.get('write_ms')}ms）/ "
+                f"BM25 {_bm25_ms}ms")
+        except Exception:
+            pass
+
         return vector_store
         
     except Exception as e:

@@ -311,6 +311,56 @@ def get_model_info() -> Dict[str, Any]:
         return {"model": "unknown", "provider": "unknown", "available": False}
 
 
+def _filter_existing_materials(docs: List[Any], subject_id: Optional[str]) -> List[Any]:
+    """检索进入上下文前的**有效性校验**（2026-10-08）。
+
+    为什么不能只依赖"删除后重建成功"：
+    - 重建可能失败、可能还没跑完，而磁盘索引里仍然带着被删资料的分块；
+    - 用户删完立刻提问时，旧内容会照样进入模型上下文与来源列表。
+
+    因此这里再做一道 fail-closed 的校验：只保留"来源文件此刻仍存在于学科目录"的片段。
+    - 文件已删除 → 丢弃（不再进上下文/来源/引用原文）；
+    - 来源落在 _superseded/ 等留档目录 → 丢弃（留档不是有效资料）；
+    - 拿不到任何来源标识 → 保守保留（避免误伤历史资料）；
+    - 学科目录不存在（只读/历史部署）→ 不做过滤。
+    """
+    if not docs or not subject_id:
+        return docs
+    try:
+        import os as _os
+        from config.path_config import get_data_dir
+        subject_dir = _os.path.join(str(get_data_dir()), "subjects", str(subject_id))
+    except Exception:
+        return docs
+    if not _os.path.isdir(subject_dir):
+        return docs
+    try:
+        present = {name for name in _os.listdir(subject_dir)
+                   if _os.path.isfile(_os.path.join(subject_dir, name))}
+    except OSError:
+        return docs
+
+    kept: List[Any] = []
+    dropped = 0
+    for doc in docs:
+        meta = getattr(doc, "metadata", None) or {}
+        name = meta.get("file_name")
+        if not name:
+            src = meta.get("source") or meta.get("source_path") or ""
+            name = str(src).replace("\\", "/").split("/")[-1] if src else ""
+        if not name:
+            kept.append(doc)          # 无法判定 → 保守保留
+            continue
+        if name in present:
+            kept.append(doc)
+        else:
+            dropped += 1
+    if dropped:
+        logger.info(f"检索有效性校验：丢弃 {dropped} 条已不在学科目录的资料片段"
+                    f"（subject={subject_id}）")
+    return kept
+
+
 def retrieve_and_build_context(
     question: str,
     subject_id: Optional[str] = None,
@@ -339,6 +389,9 @@ def retrieve_and_build_context(
     # 1. 获取RAG上下文（min_score 为 None 时用配置阈值；内部已按可见范围过滤）
     context_docs = get_rag_context(question, subject_id, top_k, min_score=min_score,
                                    viewer_user_id=viewer_user_id)
+    # 1.5 有效性校验：已删除/已替换掉的资料不得进入上下文与来源
+    #     （不依赖"删除后重建成功"，重建失败或未完成时同样生效）
+    context_docs = _filter_existing_materials(context_docs, subject_id)
     context_used = len(context_docs) > 0
     
     # 2. 构建上下文字符串

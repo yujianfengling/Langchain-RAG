@@ -78,6 +78,7 @@ const MapTree: React.FC<{
               <button
                 type="button"
                 className={'tutor-map-node' + (active ? ' is-active' : '') + (isNext ? ' is-next' : '')}
+                data-node-id={node.node_id}
                 onClick={() => onSelect(node.node_id)}
                 title={(node.source_docs || []).join('、') || node.label}
               >

@@ -522,15 +522,23 @@ def create_vector_store(
             f"实编码 {embed_stats['embedded_texts']} 条"
             f"（lookup {embed_stats['lookup_ms']}ms / embed {embed_stats['embed_ms']}ms）")
         
+        # 阶段计时（2026-10-08）：把"向量矩阵装配 / FAISS 构建 / 写盘"分开，
+        # 避免把整个 build 时间笼统归给 FAISS。
+        _t_matrix = time.monotonic()
         vectors = np.array(vectors, dtype='float32')
-        
+        embed_stats['matrix_ms'] = int((time.monotonic() - _t_matrix) * 1000)
+
         # 创建FAISS索引
+        _t_faiss = time.monotonic()
         dimension = vectors.shape[1]
         index = faiss.IndexFlatL2(dimension)
         index.add(vectors)
-        
+        embed_stats['faiss_ms'] = int((time.monotonic() - _t_faiss) * 1000)
+
         # 原子写入索引与文档
+        _t_write = time.monotonic()
         _atomic_write_index(index, docs, persist_dir)
+        embed_stats['write_ms'] = int((time.monotonic() - _t_write) * 1000)
 
         # 写入元数据（供加载时一致性校验）
         model_name = None

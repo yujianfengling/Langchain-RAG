@@ -185,13 +185,28 @@ class BM25Retriever:
         占位文档不会命中任何查询（空 token 列表），但保证两索引一一对应。
         """
         placeholder = 0
-        for doc in documents:
-            text = doc.page_content if hasattr(doc, 'page_content') else str(doc)
-            tokens = _tokenize_chinese(text)
+        # 2026-10-08：整批分词并走缓存。此前逐条 _tokenize_chinese（jieba），
+        # 实测 1,560 块热构建中 BM25 占 1.69s（约热构建 89%）；缓存后未变化的分块
+        # 直接复用 token，13k 块大库的热构建不再重复分词。
+        texts = [doc.page_content if hasattr(doc, 'page_content') else str(doc)
+                 for doc in documents]
+        try:
+            from .token_cache import tokenize_many
+            token_lists, token_stats = tokenize_many(texts)
+        except Exception as e:      # 缓存不可用不影响正确性
+            logger.warning(f"分词缓存不可用，回退逐条分词: {e}")
+            token_stats = {}
+            token_lists = [_tokenize_chinese(t) for t in texts]
+        for doc, tokens in zip(documents, token_lists):
             if not tokens:
                 placeholder += 1
             self._documents.append(doc)
-            self._tokenized_corpus.append(tokens)
+            self._tokenized_corpus.append(list(tokens))
+        if token_stats:
+            self.token_stats = token_stats
+            logger.info(f"BM25 分词: 共 {token_stats.get('total')} 条，命中缓存 "
+                        f"{token_stats.get('hits')} 条，实分词 {token_stats.get('misses')} 条"
+                        f"（{token_stats.get('tokenize_ms')}ms）")
 
         # 重建BM25索引
         self._rebuild_index()
