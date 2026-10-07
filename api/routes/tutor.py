@@ -166,10 +166,14 @@ async def put_session(request: TutorSessionUpdate,
 
 @router.get("/tutor/turns")
 async def list_turns(subject_id: Optional[str] = None, limit: int = 30,
+                     node_id: Optional[str] = None,
                      user_id: str = Depends(require_current_user)):
     if subject_id:
         await require_subject_read(subject_id, user_id)
-    return {"success": True, "data": {"turns": tutor_session.list_turns(user_id, subject_id, limit)}}
+    # node_id 给定时只返回该知识点的轮次：学生点某个知识点，右侧要显示它以前讲过什么
+    return {"success": True,
+            "data": {"turns": tutor_session.list_turns(user_id, subject_id, limit,
+                                                       node_id=node_id)}}
 
 
 @router.get("/tutor/turns/{turn_id}")

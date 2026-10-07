@@ -168,8 +168,10 @@ export const getTurn = async (turnId: string, afterSeq = 0): Promise<any> => {
   return res?.data ?? res;
 };
 
-export const listTurns = async (subjectId?: string, limit = 30): Promise<any[]> => {
-  const res: any = await apiClient.get('/tutor/turns', { params: { subject_id: subjectId, limit } });
+export const listTurns = async (subjectId?: string, limit = 30, nodeId?: string): Promise<any[]> => {
+  const res: any = await apiClient.get('/tutor/turns', {
+    params: { subject_id: subjectId, limit, node_id: nodeId },
+  });
   return (res?.data ?? res)?.turns ?? [];
 };
 

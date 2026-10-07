@@ -63,6 +63,24 @@ interface ChatMessage {
   notices?: { level: string; message: string }[];
 }
 
+/** 把历史轮次转成消息气泡。
+ *
+ *  接口按时间**倒序**返回，这里翻回正序；一问一答各占一条，
+ *  这样点知识点时看到的就是"当时的对话"，而不是一堆摘要。
+ */
+const historyToMessages = (rows: any[]): ChatMessage[] => {
+  const out: ChatMessage[] = [];
+  [...(rows || [])].reverse().forEach((t) => {
+    if (t.user_message) {
+      out.push({ id: 'hist-u-' + t.id, role: 'user', content: t.user_message });
+    }
+    if (t.answer) {
+      out.push({ id: 'hist-a-' + t.id, role: 'assistant', content: t.answer });
+    }
+  });
+  return out;
+};
+
 const QUICK_PROMPTS: Record<string, { label: string; text: string }[]> = {
   chat: [
     { label: '解释这个概念', text: '请用简单的语言解释当前知识点，并指出资料中的依据。' },
@@ -218,6 +236,14 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       setNodeDetail(data.node);
     } catch {
       setNodeDetail(null);
+    }
+    // 顺带把这个知识点最近两轮摆出来：学生点知识点，就是想看它以前讲过什么。
+    // 取不到历史不影响节点详情展示，所以失败只吞掉不报错。
+    try {
+      const rows = await listTurns(sid, 2, nodeId);
+      setMessages(historyToMessages(Array.isArray(rows) ? rows : []));
+    } catch {
+      /* ignore */
     }
   }, []);
 

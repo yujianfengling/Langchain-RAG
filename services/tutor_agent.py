@@ -221,7 +221,9 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
         context_state["conversation_id"] = conversation_id
     context_state = tutor_session.save_context(user_id, subject_id, context_state)
 
-    turn_id = tutor_session.create_turn(user_id, subject_id, ability, message, conversation_id)
+    # 记录 node_id：历史记录要按知识点归集（点某知识点时右侧显示它以前讲过什么）
+    turn_id = tutor_session.create_turn(user_id, subject_id, ability, message, conversation_id,
+                                        node_id=node_id)
     context_state["last_turn_id"] = turn_id
     tutor_session.save_context(user_id, subject_id, context_state)
 

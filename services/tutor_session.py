@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS tutor_turns (
     user_id TEXT NOT NULL,
     subject_id TEXT,
     conversation_id TEXT,
+    node_id TEXT,
     ability TEXT,
     status TEXT NOT NULL DEFAULT 'RUNNING',
     user_message TEXT,
@@ -100,8 +101,25 @@ def _get_db() -> sqlite3.Connection:
     conn.execute(_SESSIONS_DDL)
     conn.execute(_TURNS_DDL)
     conn.execute(_EVENTS_DDL)
+    _ensure_columns(conn)
     conn.commit()
     return conn
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """加法迁移：给已有表补列。
+
+    CREATE TABLE IF NOT EXISTS 只对新库生效，老库不会自动获得新字段，
+    所以这里显式补。2026-10-03 加 node_id：历史记录需要按知识点归集，
+    否则"点某个知识点看它以前的讲解"做不到。
+    """
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(tutor_turns)").fetchall()}
+        if "node_id" not in cols:
+            conn.execute("ALTER TABLE tutor_turns ADD COLUMN node_id TEXT")
+            logger.info("tutor_sessions: tutor_turns 已补列 node_id")
+    except sqlite3.Error as e:
+        logger.warning(f"tutor_sessions 补列失败（忽略）: {e}")
 
 
 def _loads(raw: Any, default: Any) -> Any:
@@ -207,15 +225,16 @@ def set_material_scope(user_id: str, subject_id: str,
 # =====================================================================
 
 def create_turn(user_id: str, subject_id: Optional[str], ability: str,
-                user_message: str, conversation_id: Optional[str] = None) -> str:
+                user_message: str, conversation_id: Optional[str] = None,
+                node_id: Optional[str] = None) -> str:
     turn_id = "turn_" + uuid.uuid4().hex[:12]
     now = _now()
     conn = _get_db()
     try:
         conn.execute(
-            "INSERT INTO tutor_turns (id, user_id, subject_id, conversation_id, ability, status,"
-            " user_message, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (turn_id, user_id, subject_id, conversation_id, ability, STATE_RUNNING,
+            "INSERT INTO tutor_turns (id, user_id, subject_id, conversation_id, node_id, ability,"
+            " status, user_message, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (turn_id, user_id, subject_id, conversation_id, node_id, ability, STATE_RUNNING,
              (user_message or "")[:4000], now, now))
         conn.commit()
     finally:
@@ -304,19 +323,28 @@ def get_turn(turn_id: str, user_id: Optional[str] = None) -> Optional[Dict[str, 
 
 
 def list_turns(user_id: str, subject_id: Optional[str] = None,
-               limit: int = 30) -> List[Dict[str, Any]]:
+               limit: int = 30, node_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """列出历史轮次。
+
+    node_id 给定时只返回**该知识点**的轮次——学生点某个知识点时，右侧要显示
+    它以前讲过什么，而不是整个学科的所有记录。
+    """
+    fields = ("id, subject_id, conversation_id, node_id, ability, status, user_message,"
+              " answer, created_at, finished_at")
+    where = ["user_id=?"]
+    args: List[Any] = [user_id]
+    if subject_id:
+        where.append("subject_id=?")
+        args.append(subject_id)
+    if node_id:
+        where.append("node_id=?")
+        args.append(node_id)
+    args.append(int(limit))
     conn = _get_db()
     try:
-        if subject_id:
-            rows = conn.execute(
-                "SELECT id, subject_id, conversation_id, ability, status, user_message, answer,"
-                " created_at, finished_at FROM tutor_turns WHERE user_id=? AND subject_id=?"
-                " ORDER BY created_at DESC LIMIT ?", (user_id, subject_id, int(limit))).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, subject_id, conversation_id, ability, status, user_message, answer,"
-                " created_at, finished_at FROM tutor_turns WHERE user_id=?"
-                " ORDER BY created_at DESC LIMIT ?", (user_id, int(limit))).fetchall()
+        rows = conn.execute(
+            "SELECT " + fields + " FROM tutor_turns WHERE " + " AND ".join(where)
+            + " ORDER BY created_at DESC LIMIT ?", tuple(args)).fetchall()
     finally:
         conn.close()
     return [dict(r) for r in rows]
