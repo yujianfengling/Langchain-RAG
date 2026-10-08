@@ -14,7 +14,7 @@ from services.model_service import ModelProvider, get_model_provider
 
 logger = logging.getLogger(__name__)
 
-# 图片安全限制
+# 图片安全限制（提供方**硬上限**，超过会被拒绝）
 MAX_IMAGE_DIMENSION = 4096  # 最大边长（像素）
 MAX_IMAGE_PIXELS = 2048 * 2048  # 最大像素数（约400万像素）
 
@@ -30,7 +30,14 @@ def _vision_image_timeout() -> float:
 
 
 def _scale_to_limits(width: int, height: int) -> float:
-    """返回把 (width,height) 压到提供方上限内所需的缩放系数（<=1）"""
+    """返回把 (width,height) 压到提供方上限内所需的缩放系数（<=1）
+
+    注意：这里只守**提供方硬上限**（4096px / 400 万像素）。
+    2026-10-03 曾加过"送审软上限 1536px"想省传输，但实测 350MB / 16 份 PPTX
+    的总耗时只从 281.8s 降到 271.2s（-3.8%）——瓶颈是模型推理本身，
+    不是图片传输。收益不抵复杂度，已撤回。真正有效的是并发（见
+    multimodal_enricher._vision_max_concurrency）。
+    """
     scale = 1.0
     if width > MAX_IMAGE_DIMENSION or height > MAX_IMAGE_DIMENSION:
         scale = min(scale,

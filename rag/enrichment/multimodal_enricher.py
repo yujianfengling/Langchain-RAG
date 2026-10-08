@@ -39,15 +39,23 @@ def _min_content_image_bytes() -> int:
 
 
 def _vision_max_concurrency() -> int:
-    """受控并发的视觉调用数（默认 3）。过大反而会被提供方限流。
+    """受控并发的视觉调用数（默认 6）。
+
+    2026-10-03 实测（350MB / 16 份 PPTX，视觉缓存全空，全部成功、无失败）：
+        并发 3  -> 总耗时 281.8s（解析 266.9s）
+        并发 6  -> 总耗时 200.7s（解析 180.1s）   -29%
+        并发 10 -> 总耗时 170.8s（解析 152.1s）   -15%（收益递减）
+    三种并发下失败数都是 0，说明该提供方并未限流；6→10 收益变小是因为还有
+    pptx 解析、文本提取这类**串行**开销（视觉累计耗时三次都约 490s，工作量相同）。
+    默认取拐点 6；确认提供方吃得消可调高，出现 429/重试则应调低。
 
     2026-10-08（任务 6）：额外受 IMPORT_MAX_INFLIGHT 约束（若设置），
     让导入任务可以按“实测内存/提供方限流”统一压这个上限，而不必同时改两处配置。
     """
     try:
-        value = int(os.getenv("VISION_MAX_CONCURRENCY", "3"))
+        value = int(os.getenv("VISION_MAX_CONCURRENCY", "6"))
     except (TypeError, ValueError):
-        value = 3
+        value = 6
     value = max(1, value)
     try:
         inflight = int(os.getenv("IMPORT_MAX_INFLIGHT", "0"))
