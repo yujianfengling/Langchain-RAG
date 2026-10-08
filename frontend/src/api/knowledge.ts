@@ -1,4 +1,4 @@
-import apiClient from './axios';
+import apiClient, { LONG_TASK_TIMEOUT } from './axios';
 import { ApiResponse, KnowledgeBase, KnowledgeBuildRequest } from '../types';
 
 /**
@@ -21,7 +21,8 @@ export const getKnowledgeStats = async (subjectId: string): Promise<KnowledgeBas
  * 构建知识库
  */
 export const buildKnowledge = async (request: KnowledgeBuildRequest): Promise<ApiResponse<any>> => {
-  return apiClient.post('/knowledge/build', request);
+  // 建库要分块 + 向量化 + 建索引，大库远超默认 180s
+  return apiClient.post('/knowledge/build', request, { timeout: LONG_TASK_TIMEOUT });
 };
 
 /**
@@ -43,6 +44,7 @@ export const uploadFile = async (subjectId: string, file: File): Promise<ApiResp
     headers: {
       'Content-Type': 'multipart/form-data',
     },
+    timeout: LONG_TASK_TIMEOUT,
   });
 };
 

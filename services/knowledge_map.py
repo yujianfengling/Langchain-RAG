@@ -418,8 +418,10 @@ def generate_map(user_id: Optional[str], subject_id: str, scope: Dict[str, Any],
                     "evidence": "所选资料没有可用内容", "fix": "先上传资料并建库"}],
                 "source_signature": signature, "generated": False, "reused": False}
 
+    # 输入上限（2026-10-03 由 12000 提到 40000）：一份多章资料只送前 12000 字符，
+    # 后面的章节模型根本看不到，生成的地图自然少章。
     evidence_text = "\n\n".join(
-        f"【{ev['file_name']}】{ev['snippet']}" for ev in evidence)[:12000]
+        f"【{ev['file_name']}】{ev['snippet']}" for ev in evidence)[:40000]
     raw: Optional[Dict[str, Any]] = None
     try:
         from services.model_service import get_model_provider
@@ -427,8 +429,16 @@ def generate_map(user_id: Optional[str], subject_id: str, scope: Dict[str, Any],
         prompt = _MAP_PROMPT.replace("{evidence}", evidence_text)
         result = provider.chat(
             [{"role": "system", "content": _MAP_SYSTEM}, {"role": "user", "content": prompt}],
-            temperature=0.2, max_tokens=2600,
+            # 输出上限（2026-10-03 由 2600 提到 8000）：2600 tokens 约合 1700 汉字，
+            # 十章的路线根本写不完，会被**静默截断**——JSON 仍是合法的，
+            # 只是少了后面几章，从结果上看不出任何异常。
+            temperature=0.2, max_tokens=8000,
             extra_payload={"response_format": {"type": "json_object"}})
+        if str(result.get("finish_reason") or "").lower() == "length":
+            diagnostics.append({
+                "code": "output_truncated", "subject": "response",
+                "evidence": "模型输出达到长度上限被截断（可能少了后面的章节）",
+                "fix": "资料章节较多时会出现：可重试，或缩小资料范围后分批生成"})
         raw = _extract_json(result.get("answer") or "")
         if raw is None:
             diagnostics.append({"code": "bad_json", "subject": "response",
