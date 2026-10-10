@@ -205,6 +205,9 @@ _MAP_SYSTEM = (
 
 _MAP_PROMPT = """请根据下面的课程资料片段，整理一份**章节 → 知识点**的学习路线。
 
+## 本次范围的**全部资料**（共 {doc_count} 份）
+{doc_list}
+
 要求：
 1. 严格返回 JSON，结构为：
 {{"title": "课程名", "nodes": [{{"label": "知识点名", "level": "chapter|section|point",
@@ -213,10 +216,15 @@ _MAP_PROMPT = """请根据下面的课程资料片段，整理一份**章节 →
    "prerequisites": ["先修知识点label"],
    "source_docs": ["支持该节点的资料文件名"], "coverage_note": "资料覆盖情况（可空）"}}],
  "uncovered": ["没有整理出节点的资料文件名"]}}
-2. 层级不超过 3 层，节点总数 8-24 个；先给章节，再给该章下的知识点。
-3. 先修关系只写资料中确有依赖的；不要为了好看而连边。
-4. source_docs 只能填写下面出现过的文件名。
-5. 每个知识点名称不超过 20 个字，准确反映资料内容。
+2. 层级不超过 3 层，节点总数 **{min_nodes}-{max_nodes} 个**；先给章节，再给该章下的知识点。
+3. **上面列出的每一份资料都必须有交代**：要么出现在某个节点的 source_docs 里，
+   要么写进 uncovered（确实提炼不出内容时）。**不要静默漏掉任何一份**——
+   宁可多给一个节点，也不要让一份资料凭空消失。
+4. 先修关系只写资料中确有依赖的；不要为了好看而连边。
+5. source_docs 只能填写上面列出的文件名（不要改写或翻译文件名）。
+6. 每个知识点名称不超过 20 个字，准确反映资料内容。
+7. 若资料文件名里带有章节信息（如"第3章"），**按它组织章节层级**，
+   不要自己另起一套编号。
 
 资料片段：
 {evidence}
@@ -426,7 +434,25 @@ def generate_map(user_id: Optional[str], subject_id: str, scope: Dict[str, Any],
     try:
         from services.model_service import get_model_provider
         provider = get_model_provider(model)
-        prompt = _MAP_PROMPT.replace("{evidence}", evidence_text)
+        # 显式告诉模型"总共有哪些资料"，并要求每份都有交代。
+        # 2026-10-03：此前提示词只写"节点总数 8-24 个"，16 份课件的课程被压到最多
+        # 24 个节点，模型只能砍掉几章；而且它不知道范围内共有几份资料，
+        # 也就无从发现自己漏了谁。
+        doc_names = [m.get("file_name") for m in (scope.get("selected") or [])
+                     if m.get("file_name")]
+        if not doc_names:
+            doc_names = sorted({ev.get("file_name") for ev in evidence if ev.get("file_name")})
+        doc_list = "\n".join("- " + n for n in doc_names) or "（无）"
+        # 节点数按资料数自适应：每份资料大致对应 1~3 个知识点
+        doc_count = max(1, len(doc_names))
+        min_nodes = max(8, doc_count)
+        max_nodes = max(24, doc_count * 3)
+        prompt = (_MAP_PROMPT
+                  .replace("{doc_count}", str(doc_count))
+                  .replace("{doc_list}", doc_list)
+                  .replace("{min_nodes}", str(min_nodes))
+                  .replace("{max_nodes}", str(max_nodes))
+                  .replace("{evidence}", evidence_text))
         result = provider.chat(
             [{"role": "system", "content": _MAP_SYSTEM}, {"role": "user", "content": prompt}],
             # 输出上限（2026-10-03 由 2600 提到 8000）：2600 tokens 约合 1700 汉字，
