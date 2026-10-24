@@ -496,6 +496,11 @@ _MASTERY_COLUMNS = {
 #   + 教师改判（2026-10-04）：原判定 / 教师判定 / 理由 / 改判人 / 改判时间
 _ATTEMPT_COLUMNS = {
     "ai_feedback": "TEXT",
+    # 错因（2026-10-24）：学生自报"错在哪一类"，用于错题诊所与班级错因聚合。
+    # 只记录错误作答，不参与判分/掌握度（掌握度仍由对错与证据决定）。
+    "error_code": "TEXT",
+    "error_note": "TEXT",
+    "error_reported_at": "TEXT",
     "orig_is_correct": "INTEGER",
     "orig_grade_status": "TEXT",
     "teacher_is_correct": "INTEGER",

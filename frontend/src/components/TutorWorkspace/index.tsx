@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Alert, Button, Checkbox, Collapse, Drawer, Dropdown, Input, Popover, Select, Space, Spin, Tag,
-  Tooltip, Typography, message as antdMessage,
+  Alert, Button, Checkbox, Collapse, Drawer, Dropdown, Input, Popover, Segmented, Select, Space, Spin,
+  Tag, Tooltip, Typography, message as antdMessage,
 } from 'antd';
 import {
-  BookOutlined, BulbOutlined, CheckCircleOutlined, CheckSquareOutlined, CloseOutlined, DatabaseOutlined,
-  DeleteOutlined, DownOutlined, FileTextOutlined, FormOutlined, HistoryOutlined, MenuOutlined,
-  MoreOutlined,
+  AudioOutlined, BookOutlined, BulbOutlined, CheckCircleOutlined, CheckSquareOutlined, CloseOutlined, DatabaseOutlined,
+  DeleteOutlined, DownOutlined, FileTextOutlined, FormOutlined, HighlightOutlined, HistoryOutlined,
+  MenuOutlined, MoreOutlined,
   PartitionOutlined, ReloadOutlined, RightOutlined, RobotOutlined, SendOutlined,
   StopOutlined,
 } from '@ant-design/icons';
@@ -16,13 +16,15 @@ import { useIsNarrow } from '../../hooks/useIsNarrow';
 import {
   ABILITY_LABELS, deleteArtifact, deleteTurn, generateKnowledgeMap, getKnowledgeMap, getMapNode,
   setNodeStatus,
-  getTutorSession, listArtifacts, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
-  type TutorSource,
+  getTurn, getTutorSession, listArtifacts, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
+  type GuidanceMode, type TutorSource,
 } from '../../api/tutor';
 import { MarkdownText } from './markdown';
 import MapTree, { type MapNode } from './MapTree';
 import PracticeCard, { type PracticeQuestion } from './PracticeCard';
 import SourcePanel from './SourcePanel';
+import WhiteboardModal from './WhiteboardModal';
+import LectureNotesModal from './LectureNotesModal';
 import './tutor.css';
 
 const { Text, Title } = Typography;
@@ -139,6 +141,14 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const [scopeInvalid, setScopeInvalid] = useState<any[]>([]);
 
   const [ability, setAbility] = useState('chat');
+  // 讲解方式：direct=直接回答（默认，保持旧行为）；socratic=先问再提示，不直接给答案。
+  const [guidanceMode, setGuidanceMode] = useState<GuidanceMode>('direct');
+  const [modeSaving, setModeSaving] = useState(false);
+  const [boardOpen, setBoardOpen] = useState(false);
+  /** 白板当前要展示的课件依据：直接来自本轮回答，或从历史轮次的事件里恢复 */
+  const [boardSources, setBoardSources] = useState<TutorSource[]>([]);
+  const [boardCitedIds, setBoardCitedIds] = useState<number[]>([]);
+  const [lectureOpen, setLectureOpen] = useState(false);
   const [map, setMap] = useState<any>(null);
   const [mapLoading, setMapLoading] = useState(false);
   const [currentNode, setCurrentNode] = useState<string>(initialNodeId || '');
@@ -150,6 +160,8 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
+  /** 当前展开的历史轮次：打开白板时优先用这一轮的 sources */
+  const [historyFocusId, setHistoryFocusId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [running, setRunning] = useState(false);
   const [stages, setStages] = useState<string[]>([]);
@@ -213,6 +225,7 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
         setSelectedDocs(stored);
       }
       if (data.context?.ability) setAbility(data.context.ability);
+      setGuidanceMode(data.context?.guidance_mode === 'socratic' ? 'socratic' : 'direct');
       if (data.context?.current_node_id && !initialNodeId) setCurrentNode(data.context.current_node_id);
       setArtifacts(await listArtifacts(sid).catch(() => []));
     } catch (e: any) {
@@ -259,6 +272,36 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       /* ignore */
     }
   }, []);
+
+  /**
+   * 打开白板前先把「这一轮回答」的引用找回来。
+   * 实时回答的 sources 在 lastSourcesRef；历史回答只存了文本，
+   * 需要按 turn_id 取回 sources 事件，否则历史里明明有 [2][6][7]，白板却是空的。
+   */
+  const openWhiteboard = async (explicitTurnId?: string) => {
+    const latest = [...messages].reverse().find((m) => m.role === 'assistant');
+    let nextSources: TutorSource[] = latest?.sources || lastSourcesRef.current || [];
+    let nextCited: number[] = latest?.citedIds || lastCitedRef.current || [];
+    const historyTurnId = explicitTurnId || historyFocusId
+      || (latest?.id?.startsWith('hist-a-') ? latest.id.slice('hist-a-'.length) : '');
+    if (historyTurnId) {
+      const turnId = historyTurnId;
+      try {
+        const data = await getTurn(turnId);
+        const events = Array.isArray(data?.events) ? data.events : [];
+        const sourceEvent = [...events].reverse().find((e: any) => e.type === 'sources');
+        const doneEvent = [...events].reverse().find((e: any) => e.type === 'done');
+        nextSources = sourceEvent?.payload?.sources
+          || doneEvent?.payload?.sources || [];
+        nextCited = doneEvent?.payload?.cited_source_ids || [];
+      } catch {
+        // 历史事件取不到就保留空状态，白板仍可正常生成
+      }
+    }
+    setBoardSources(nextSources);
+    setBoardCitedIds(nextCited);
+    setBoardOpen(true);
+  };
 
   /** 手动把当前知识点标记为「本次检测通过」。
    *
@@ -334,9 +377,25 @@ const includeNodeSources = useCallback(() => {
     });
   }, []);
 
+  const changeGuidanceMode = useCallback(async (next: GuidanceMode) => {
+    if (!subjectId || next === guidanceMode || modeSaving) return;
+    const prev = guidanceMode;
+    setGuidanceMode(next);
+    setModeSaving(true);
+    try {
+      await updateTutorSession({ subject_id: subjectId, guidance_mode: next });
+    } catch {
+      setGuidanceMode(prev);
+      antdMessage.error('讲解方式保存失败，请重试');
+    } finally {
+      setModeSaving(false);
+    }
+  }, [subjectId, guidanceMode, modeSaving]);
+
   const send = useCallback((text?: string, abilityOverride?: string) => {
     const content = (text ?? input).trim();
     if (!content || running || !subjectId) return;
+    setHistoryFocusId(null);
     const turnAbility = abilityOverride || ability;
     setInput('');
     setStages([]);
@@ -353,6 +412,7 @@ const includeNodeSources = useCallback(() => {
       message: content,
       subject_id: subjectId,
       ability: turnAbility,
+      guidance_mode: guidanceMode,
       doc_ids: selectedDocs,
       node_id: currentNode || null,
     }, {
@@ -458,7 +518,7 @@ const includeNodeSources = useCallback(() => {
         abortRef.current = null;
       },
     });
-  }, [input, running, subjectId, ability, selectedDocs, currentNode, pushMessage, updateLast, loadMap, loadNode]);
+  }, [input, running, subjectId, ability, guidanceMode, selectedDocs, currentNode, pushMessage, updateLast, loadMap, loadNode]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -661,11 +721,12 @@ const includeNodeSources = useCallback(() => {
   const rightPanelBody = (
     <div className="tutor-right">
       <div className="tutor-right-head">
-        <span className="tutor-right-title">引用与成果</span>
-        <Button type="text" size="small" icon={<CloseOutlined />} aria-label="收起引用与成果"
+        <span className="tutor-right-title">学习成果与执行详情</span>
+        <Button type="text" size="small" icon={<CloseOutlined />} aria-label="收起学习成果与执行详情"
                 onClick={() => toggleRightPanel(false)} />
       </div>
       <SourcePanel
+        showSources={false}
         sources={lastSourcesRef.current}
         citedIds={lastCitedRef.current}
         artifacts={artifacts}
@@ -692,7 +753,7 @@ const includeNodeSources = useCallback(() => {
           <div className="tutor-mobile-bar">
             <Button type="text" icon={<MenuOutlined />} onClick={() => setLeftOpen(true)}>资料与路线</Button>
             <span className="tutor-mobile-title">{nodeDetail ? nodeDetail.label : 'AI 伴学'}</span>
-            <Button type="text" icon={<FileTextOutlined />} onClick={() => toggleRightPanel(true)}>引用</Button>
+            <Button type="text" icon={<FileTextOutlined />} onClick={() => toggleRightPanel(true)}>成果</Button>
           </div>
           {leftOpen && (
             <div className="tutor-drawer tutor-drawer-left">
@@ -711,12 +772,42 @@ const includeNodeSources = useCallback(() => {
 
       <main className="tutor-main">
         <div className="tutor-main-head">
+          <div className="tutor-main-title">
+            <div className="tutor-main-title-main">AI 伴学</div>
+            <div className="tutor-main-title-sub">
+              {nodeDetail?.label || '资料问答 · 引导学习'}
+            </div>
+          </div>
           {/* 2026-10-03：原「资料问答 / 引导讲解 / 练习检测 / 知识地图 / 学习整理」模式栏已移除。
               它和底部「快捷命令：开始学习 / 做练习 / 检测」功能重叠，两处都能切能力只会让人犹豫；
               现在能力统一由快捷命令（以及会话恢复）决定，这里只留右栏开关。 */}
           {/* 范围摘要原先在这里又出现一份（与左栏重复）。现在范围只有左栏一个入口，
               这里放右栏开关：默认收起，点开才占位（窄屏由移动端栏的「引用」承接）。 */}
+          <Tooltip title="引导我：先问你思路，再逐层提示，不直接给答案">
+            <Segmented
+              size="small"
+              value={guidanceMode}
+              disabled={!subjectId || modeSaving || running}
+              onChange={(v) => changeGuidanceMode(v as GuidanceMode)}
+              options={[
+                { label: '直接', value: 'direct' },
+                { label: '引导', value: 'socratic' },
+              ]}
+            />
+          </Tooltip>
           <div className="tutor-main-actions">
+            <Tooltip title="让 AI 把当前知识点画成一张板书">
+              <Button size="small" icon={<HighlightOutlined />}
+                      disabled={!subjectId} onClick={() => void openWhiteboard()}>
+                白板
+              </Button>
+            </Tooltip>
+            <Tooltip title="上传课堂录音，生成提纲、重点与待解决问题">
+              <Button size="small" icon={<AudioOutlined />}
+                      disabled={!subjectId} onClick={() => setLectureOpen(true)}>
+                录音笔记
+              </Button>
+            </Tooltip>
             <Tooltip title="回看这个学科以前的问答与讲解">
               <Button
                 size="small"
@@ -738,7 +829,7 @@ const includeNodeSources = useCallback(() => {
               </Button>
             </Tooltip>
             {!isNarrow && (
-              <Tooltip title={rightOpen ? '收起引用与成果' : '展开引用原文、学习成果与执行详情'}>
+              <Tooltip title={rightOpen ? '收起学习成果' : '展开学习成果与执行详情'}>
                 <Button
                   size="small"
                   type={rightOpen ? 'primary' : 'default'}
@@ -746,7 +837,7 @@ const includeNodeSources = useCallback(() => {
                   onClick={() => toggleRightPanel(!rightOpen)}
                   className="tutor-panel-toggle"
                 >
-                  引用与成果
+                  成果与详情
                 </Button>
               </Tooltip>
             )}
@@ -765,9 +856,9 @@ const includeNodeSources = useCallback(() => {
                 {greeting || (role === 'teacher' ? '今天想先备哪一部分？' : '今天想学什么？')}
               </div>
               <div className="tutor-welcome-sub">
-                可以直接提问，或点下面的按钮。
-                想切换「开始学习 / 做练习 / 检测」时，用底部的快捷命令。
-                回答会给出来自课程资料的引用，可点开核对原文。
+                {guidanceMode === 'socratic'
+                  ? '当前是引导模式：先说说你的思路，我会一层层提示，不直接给答案。'
+                  : '可以直接提问，或点下面的按钮。想切换「开始学习 / 做练习 / 检测」时，用底部的快捷命令。回答会给出来自课程资料的引用，可点开核对原文。'}
               </div>
               <Space wrap size={8} style={{ marginTop: 14 }}>
                 {(QUICK_PROMPTS[ability] || []).map((q) => (
@@ -902,6 +993,13 @@ const includeNodeSources = useCallback(() => {
               : '输入问题，或粘贴一道不会的题（Shift + Enter 换行）'}
             disabled={running}
           />
+          {guidanceMode === 'socratic' && !running && (
+            <Tooltip title="只给下一层提示，不直接给答案">
+              <Button icon={<BulbOutlined />} onClick={() => send('先别告诉我答案，给我一点提示。')}>
+                提示
+              </Button>
+            </Tooltip>
+          )}
           {running ? (
             <Button danger icon={<StopOutlined />} onClick={stop}>停止</Button>
           ) : (
@@ -910,6 +1008,20 @@ const includeNodeSources = useCallback(() => {
           )}
         </div>
       </main>
+
+      <WhiteboardModal
+        open={boardOpen}
+        onClose={() => setBoardOpen(false)}
+        subjectId={subjectId}
+        defaultTopic={nodeDetail?.label || ''}
+        sources={boardSources}
+        citedIds={boardCitedIds}
+      />
+      <LectureNotesModal
+        open={lectureOpen}
+        onClose={() => setLectureOpen(false)}
+        subjectId={subjectId}
+      />
 
       {/* 历史记录：复用后端 /tutor/turns（此前只有接口、学生端没有入口） */}
       <Drawer
@@ -925,6 +1037,7 @@ const includeNodeSources = useCallback(() => {
         ) : (
           <Collapse
             accordion
+            onChange={(key) => setHistoryFocusId(key ? String(key) : null)}
             items={history.map((t) => ({
               key: String(t.id),
               label: (
@@ -957,9 +1070,25 @@ const includeNodeSources = useCallback(() => {
                   >删除</Button>
                 </div>
               ),
-              children: t.answer
-                ? <MarkdownText text={t.answer} />
-                : <Text type="secondary">这一轮没有留下回答（可能已取消或失败）。</Text>,
+              children: (
+                <div>
+                  {t.answer
+                    ? <MarkdownText text={t.answer} />
+                    : <Text type="secondary">这一轮没有留下回答（可能已取消或失败）。</Text>}
+                  {t.answer && (
+                    <Button
+                      size="small" type="primary" ghost icon={<HighlightOutlined />}
+                      style={{ marginTop: 12 }}
+                      onClick={() => {
+                        setHistoryFocusId(String(t.id));
+                        void openWhiteboard(String(t.id));
+                      }}
+                    >
+                      用这轮资料打开白板
+                    </Button>
+                  )}
+                </div>
+              ),
             }))}
           />
         )}
@@ -973,7 +1102,7 @@ const includeNodeSources = useCallback(() => {
       {!isNarrow && rightOpen && isNarrowForPanel && (
         <div className="tutor-panel-overlay" role="presentation"
              onClick={() => toggleRightPanel(false)}>
-          <div className="tutor-panel-drawer" role="dialog" aria-label="引用与成果"
+          <div className="tutor-panel-drawer" role="dialog" aria-label="学习成果与执行详情"
                onClick={(e) => e.stopPropagation()}>
             {rightPanelBody}
           </div>

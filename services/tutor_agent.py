@@ -52,11 +52,30 @@ _COMMON_RULES = """
    讲例题要给"已知 → 求 → 思路 → 代入 → 结论"的完整脉络，只丢算式等于没讲。
 """
 
+# 引导模式（2026-10-24）：只改变「怎么讲」，不改变检索、工具权限、判分与掌握度。
+# 放在通用规则之后，确保它覆盖「先给结论再给依据」的默认风格。
+_SOCRATIC_RULES = """
+## 引导模式（socratic，优先级最高）
+学生选择了「引导我」：目标是让他自己想出来，不是把答案递到手里。
+本模式优先于通用规则第 6 条与「资料问答」里的"结论先行"要求：
+1. 除非学生明确说"直接告诉我 / 看答案 / 不会了"，否则**不要给出最终答案、正确选项或完整解题步骤**。
+2. 每轮只做一件事：先用一个问题确认他卡在哪（已知什么、试过什么、哪一步不确定）。
+3. 按提示阶梯逐层给，每次只上一层：
+   L1 复述题意、圈出关键条件；L2 给相关概念或生活类比；L3 只给第一步；
+   L4 给关键中间步骤；L5 才给完整解。
+4. 学生连续两次明确要答案，才进入 L5；进入时先说明"这是完整解，建议你合上后自己复述一遍"，再给解。
+5. 学生给出尝试后，先指出"哪一步是对的"，再只纠正一个最关键的错误；不要一次列出全部问题。
+6. 学生做完后，邀请他用一两句话复述（费曼回讲），并只给一个改进点。
+7. 不要假装学生已经作答；掌握度/是否通过仍由程序判定。
+"""
+
 _ABILITY_PROMPTS: Dict[str, str] = {
     tutor_session.ABILITY_CHAT: """
 ## 当前能力：资料问答与深入追问
 按学生的问题直接回答，需要时先检索资料。回答结构：结论 → 依据（带引用）→ 可选的延伸追问。
 如果资料没有覆盖，明确说明“当前资料未覆盖”，可以补充通用知识但必须单独标注其为通用知识。
+涉及图片、图表、表格、版式或“第几页”的问题，先调用 search_pages 按页检索；
+返回的页面图可点开核对，不要凭文字片段猜图里有什么。
 """,
     tutor_session.ABILITY_EXPLAIN: """
 ## 当前能力：引导学习与知识点讲解
@@ -65,6 +84,7 @@ _ABILITY_PROMPTS: Dict[str, str] = {
 **当学生要求讲解某个具体知识点时，先调用 get_node 或 search_materials 取依据，
 再调用 generate_node_lesson 生成结构化讲解并保存为学习成果**（这样学生才能在“学习成果”里再次打开）。
 讲解完成后，用一两句话总结，并给出下一步（练习/检测/下一节点）。
+涉及图、表、公式版式时，先调用 search_pages 找对应页，再结合页面内容讲解。
 """,
     tutor_session.ABILITY_PRACTICE: """
 ## 当前能力：练习与检测
@@ -91,8 +111,10 @@ _ABILITY_PROMPTS: Dict[str, str] = {
 
 def build_system_prompt(subject_name: str, ability: str, scope: Dict[str, Any],
                         context_state: Dict[str, Any],
-                        node: Optional[Dict[str, Any]] = None) -> str:
+                        node: Optional[Dict[str, Any]] = None,
+                        guidance_mode: str = tutor_session.GUIDANCE_DIRECT) -> str:
     role = context_state.get("role") or "student"
+    mode = tutor_session.normalize_guidance_mode(guidance_mode)
     role_text = "教师" if role in ("teacher", "admin") else "学生"
     lines = [
         f"你是「{subject_name or '本课程'}」的智慧学习助手，正在服务一位{role_text}。",
@@ -110,6 +132,13 @@ def build_system_prompt(subject_name: str, ability: str, scope: Dict[str, Any],
         lines.append(f"该知识点来源资料：{'、'.join(node.get('source_docs') or []) or '未标注'}")
     lines.append(_ABILITY_PROMPTS.get(ability, _ABILITY_PROMPTS[tutor_session.ABILITY_CHAT]))
     lines.append(_COMMON_RULES)
+    # 引导模式只作用于「对话/讲解/练习」；地图与学习整理是产出型任务，
+    # 加引导规则反而会让模型偏离“直接生成成果”的目标。
+    if (mode == tutor_session.GUIDANCE_SOCRATIC
+            and ability in (tutor_session.ABILITY_CHAT,
+                            tutor_session.ABILITY_EXPLAIN,
+                            tutor_session.ABILITY_PRACTICE)):
+        lines.append(_SOCRATIC_RULES)
     return "\n".join(lines)
 
 
@@ -155,6 +184,8 @@ def _summarize_tool_result(name: str, result: Dict[str, Any]) -> str:
     if name == "search_materials":
         return f"检索到 {result.get('evidence_count', 0)} 条片段" + (
             "" if result.get("context_used") else "（未命中）")
+    if name == "search_pages":
+        return f"按页检索到 {result.get('page_count', 0)} 页"
     if name == "generate_practice":
         return f"生成 {result.get('question_count', 0)} 道题（答案不下发）"
     if name == "generate_node_lesson":
@@ -202,6 +233,7 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
                 conversation_id: Optional[str] = None,
                 model: Optional[str] = None,
                 role: str = "student",
+                guidance_mode: Optional[str] = None,
                 cancel_check: Optional[Any] = None) -> Iterator[Dict[str, Any]]:
     """
     执行一轮统一伴学，逐条产出事件。
@@ -214,9 +246,17 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
 
     scope = material_scope.build_scope(user_id, subject_id, selected_doc_ids)
     context_state = tutor_session.load_context(user_id, subject_id)
-    context_state.update({"ability": ability, "role": role})
+    # 本轮显式传入优先；否则沿用会话设置。两者都非法时回落到 direct（旧行为）。
+    effective_mode = tutor_session.normalize_guidance_mode(
+        guidance_mode if guidance_mode is not None else context_state.get("guidance_mode"))
+    context_state.update({"ability": ability, "role": role,
+                          "guidance_mode": effective_mode})
     if node_id:
         context_state["current_node_id"] = node_id
+    # 引导模式需要跨轮记忆：前端没有显式传会话时，用按学科稳定的会话串起来。
+    # 只作用于 socratic，direct 的既有行为不受影响。
+    if not conversation_id and effective_mode == tutor_session.GUIDANCE_SOCRATIC:
+        conversation_id = context_state.get("conversation_id") or f"socratic:{subject_id}"
     if conversation_id:
         context_state["conversation_id"] = conversation_id
     context_state = tutor_session.save_context(user_id, subject_id, context_state)
@@ -258,6 +298,7 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
             "subject_id": subject_id,
             "subject_name": subject_name,
             "ability": ability,
+            "guidance_mode": effective_mode,
             "node_id": node_id,
             "conversation_id": conversation_id,
             "model": model,
@@ -267,6 +308,7 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
             "scope": material_scope.scope_to_public(scope),
             "node": {"node_id": node.get("node_id"), "label": node.get("label")} if node else None,
             "ability": ability,
+            "guidance_mode": effective_mode,
         })
         if scope.get("invalid"):
             yield emit("notice", {
@@ -283,7 +325,8 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
             scope=scope, model=model, conversation_id=conversation_id, node_id=node_id,
             turn_id=turn_id)
 
-        system_prompt = build_system_prompt(subject_name, ability, scope, context_state, node)
+        system_prompt = build_system_prompt(subject_name, ability, scope, context_state, node,
+                                            guidance_mode=effective_mode)
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         messages.extend(_recent_history(user_id, subject_id, conversation_id, turn_id))
         messages.append({"role": "user", "content": message})
@@ -418,6 +461,7 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
                            for t in trace],
             "message_type": message_info["message_type"],
             "payload": message_info["payload"],
+            "guidance_mode": effective_mode,
             "ask_user": ask_user_payload,
             "scope": material_scope.scope_to_public(scope),
             "elapsed": duration,

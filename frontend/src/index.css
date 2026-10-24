@@ -527,3 +527,135 @@ a:hover {
   .chat-bubble-content .markdown-body pre { overflow-x: auto; max-width: 100%; }
   .chat-bubble-content img { max-width: 100%; height: auto; }
 }
+
+/* ============================================================
+   2026-10 视觉刷新：更柔和的底色、更清晰的层级、更克制的强调色
+   ============================================================ */
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', sans-serif;
+  background-color: #f4f7f9;
+  background-image:
+    radial-gradient(900px 520px at 8% -8%, rgba(20, 184, 166, 0.10), transparent 60%),
+    radial-gradient(720px 420px at 100% 0%, rgba(245, 158, 11, 0.06), transparent 55%),
+    linear-gradient(180deg, #f7fbfa 0%, #f4f7f9 32%, #f4f7f9 100%);
+  background-attachment: fixed;
+}
+
+.ant-layout {
+  background: transparent !important;
+}
+
+/* 侧边栏：从纯白改为带一点纸张质感的竖向渐变 */
+.app-sider {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdfc 55%, #f7fbfa 100%) !important;
+  box-shadow: 1px 0 0 rgba(15, 23, 42, 0.04), 12px 0 40px -32px rgba(15, 23, 42, 0.28);
+}
+
+.app-sider .ant-menu-item-selected,
+.app-sider .ant-menu-item-selected:hover {
+  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%) !important;
+  color: #ffffff !important;
+  box-shadow: 0 8px 18px -10px rgba(15, 118, 110, 0.65);
+}
+
+.app-sider .ant-menu-item-selected .anticon {
+  color: #ffffff !important;
+}
+
+.app-topbar {
+  background: rgba(255, 255, 255, 0.86) !important;
+  backdrop-filter: blur(14px);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.05);
+}
+
+/* 卡片：更轻的边框 + 更远的柔光，hover 只上浮 1px */
+.ant-card {
+  border: 1px solid rgba(15, 23, 42, 0.06) !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04),
+              0 18px 40px -30px rgba(15, 23, 42, 0.28) !important;
+}
+
+.ant-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(15, 23, 42, 0.05),
+              0 24px 48px -30px rgba(15, 23, 42, 0.32) !important;
+}
+
+.ant-card-head {
+  min-height: 54px;
+  padding: 0 20px !important;
+}
+
+.ant-card-head-title {
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+/* 主按钮：Teal 渐变，明确“主操作” */
+.ant-btn-primary:not(.ant-btn-dangerous) {
+  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%) !important;
+  border-color: transparent !important;
+  box-shadow: 0 8px 18px -12px rgba(15, 118, 110, 0.7) !important;
+}
+
+.ant-btn-primary:not(.ant-btn-dangerous):hover {
+  background: linear-gradient(135deg, #0d9488 0%, #2dd4bf 100%) !important;
+  box-shadow: 0 10px 24px -12px rgba(15, 118, 110, 0.8) !important;
+}
+
+/* 分组标题、页面大标题更紧凑 */
+h1, h2, h3, .ant-typography h1, .ant-typography h2, .ant-typography h3 {
+  letter-spacing: -0.025em;
+}
+
+.ant-statistic-title {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.ant-statistic-content {
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+/* 空状态别太“空” */
+.ant-empty-description {
+  color: #94a3b8;
+}
+
+/* 表格：去重线，留呼吸感 */
+.ant-table-thead > tr > th {
+  background: #f8fbfa !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  font-size: 12.5px !important;
+}
+
+.ant-table-tbody > tr > td {
+  padding-top: 13px !important;
+  padding-bottom: 13px !important;
+}
+
+/* 资料库学科卡：顶部细渐变条，快速区分“这是一张可进入的学科卡” */
+.material-subject-card {
+  position: relative;
+}
+
+.material-subject-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #0f766e 0%, #14b8a6 55%, #99f6e4 100%);
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.material-subject-card.is-active::before {
+  height: 4px;
+  opacity: 1;
+}

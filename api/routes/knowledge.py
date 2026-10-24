@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from api.schemas.knowledge_schema import (
@@ -576,6 +576,63 @@ async def delete_document(subject_id: str, filename: str,
             raise KnowledgeBaseNotFoundError(subject_id)
         else:
             raise RAGServiceError(error_msg)
+
+
+@router.post("/knowledge/{subject_id}/pages/build", response_model=SuccessResponse)
+async def build_page_index(subject_id: str, force: bool = False,
+                           user_id: str = Depends(require_subject_write)):
+    """为学科下的 PDF 建立**页面级**索引（图片型课件的检索兜底）。"""
+    _ensure_subject_id(subject_id)
+    from services import page_index
+    data = await run_in_threadpool(page_index.build_page_index, subject_id, force)
+    return SuccessResponse(data=data, message="页面索引已更新")
+
+
+@router.get("/knowledge/{subject_id}/pages/status", response_model=SuccessResponse)
+async def page_index_status(subject_id: str,
+                            user_id: str = Depends(require_subject_read)):
+    _ensure_subject_id(subject_id)
+    from services import page_index
+    data = await run_in_threadpool(page_index.get_page_index_status, subject_id)
+    return SuccessResponse(data=data, message="ok")
+
+
+@router.get("/knowledge/{subject_id}/documents/{filename}/pages", response_model=SuccessResponse)
+async def document_page_list(subject_id: str, filename: str,
+                             user_id: str = Depends(require_subject_read)):
+    """资料库 PDF 预览：返回该文档已建立的页面列表（不带原文件）。"""
+    _ensure_subject_id(subject_id)
+    from services import page_index
+    doc_id = "f:" + filename
+    data = await run_in_threadpool(page_index.list_document_pages, subject_id, doc_id)
+    if not data["pages"]:
+        raise HTTPException(status_code=404,
+                            detail="该资料还没有页面索引，请先点击「建立页面索引」")
+    return SuccessResponse(data=data, message="ok")
+
+
+@router.get("/knowledge/{subject_id}/pages/search", response_model=SuccessResponse)
+async def page_index_search(subject_id: str, q: str = "", top_k: int = 5,
+                            user_id: str = Depends(require_subject_read)):
+    _ensure_subject_id(subject_id)
+    from services import page_index
+    data = await run_in_threadpool(page_index.search_pages, subject_id, q, top_k)
+    return SuccessResponse(data={"pages": data}, message="ok")
+
+
+@router.get("/knowledge/{subject_id}/pages/image")
+async def page_index_image(subject_id: str, doc_id: str, page: int,
+                           user_id: str = Depends(require_subject_read)):
+    """返回页面 WebP。路径必须落在 page_images 根目录内，防止越权读文件。"""
+    _ensure_subject_id(subject_id)
+    from services import page_index
+    path = await run_in_threadpool(page_index.get_page_image, subject_id, doc_id, page)
+    if not path:
+        raise HTTPException(status_code=404, detail="页面图不存在")
+    root = page_index.images_root().resolve()
+    if not Path(path).resolve().is_relative_to(root):
+        raise HTTPException(status_code=403, detail="非法页面路径")
+    return FileResponse(path, media_type="image/webp")
 
 
 @router.post("/knowledge/{subject_id}/rebuild", response_model=SuccessResponse)

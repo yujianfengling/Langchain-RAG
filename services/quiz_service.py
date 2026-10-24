@@ -38,6 +38,16 @@ _CHOICE_IDS = ("A", "B", "C", "D", "E", "F")
 _JUDGE_TRUE = "T"
 _JUDGE_FALSE = "F"
 
+# 错因分类（2026-10-24）：先 6 类，学生自报，不冒充 AI 诊断。
+ERROR_CAUSES = {
+    "concept_confusion": "概念混淆",
+    "misread": "审题偏差",
+    "formula_recall": "公式记错",
+    "calculation": "计算失误",
+    "step_omission": "步骤遗漏",
+    "expression": "表达不规范",
+}
+
 
 class QuizServiceError(Exception):
     """自测服务异常（携带 error_type）"""
@@ -605,6 +615,84 @@ def submit_attempt(
     return result
 
 
+def report_error_cause(attempt_id: str, user_id: str, code: str,
+                       note: Optional[str] = None) -> Dict[str, Any]:
+    """记录学生自报的错因（只允许自己的、答错的作答）。
+
+    这是**学生自评**，不冒充 AI 诊断；不改变判分/掌握度，只用于错题诊所
+    与班级错因聚合。重复提交会覆盖为最后一次选择（可改）。
+    """
+    code = (code or "").strip()
+    if code not in ERROR_CAUSES:
+        raise QuizServiceError("未知的错因类型", "invalid_request")
+    if not attempt_id:
+        raise QuizServiceError("缺少作答 ID", "invalid_request")
+    note = (note or "").strip()[:200] or None
+    conn = _get_db()
+    try:
+        row = conn.execute("SELECT * FROM quiz_attempts WHERE id=?", (attempt_id,)).fetchone()
+        if not row:
+            raise QuizServiceError("作答记录不存在", "not_found")
+        if row["user_id"] != user_id:
+            raise QuizServiceError("无权修改他人的作答", "forbidden")
+        if row["is_correct"] != 0:
+            raise QuizServiceError("只有答错的题目才能记录错因", "invalid_request")
+        conn.execute(
+            "UPDATE quiz_attempts SET error_code=?, error_note=?, error_reported_at=? WHERE id=?",
+            (code, note, _now(), attempt_id))
+        conn.commit()
+        return {"attempt_id": attempt_id, "error_code": code,
+                "error_label": ERROR_CAUSES[code], "error_note": note}
+    except QuizServiceError:
+        raise
+    except sqlite3.Error as e:
+        logger.error(f"记录错因失败: {e}", exc_info=True)
+        raise QuizServiceError("记录错因失败", "database_error")
+    finally:
+        conn.close()
+
+
+def generate_variant(user_id: str, question_id: str,
+                     subject_id: Optional[str] = None) -> Dict[str, Any]:
+    """基于原题生成一道同知识点的变式题（答案仍只留在后端）。
+
+    复用 note_service.generate_quiz 的检索与入库链路；只多传一个 variant_of，
+    让模型换情境/数字/问法，而不是把原题抄一遍。
+    """
+    q = get_question_admin(question_id)
+    if not q:
+        raise QuizServiceError("题目不存在", "not_found")
+    if subject_id and q["subject_id"] != subject_id:
+        raise QuizServiceError("题目不属于该学科", "invalid_request")
+    if not q["knowledge_point_name"]:
+        raise QuizServiceError("该题没有知识点，无法生成变式", "invalid_request")
+
+    from services import note_service
+    try:
+        result = note_service.generate_quiz(
+            subject_id=q["subject_id"],
+            topic=q["knowledge_point_name"],
+            count=1,
+            user_id=user_id,
+            variant_of=q["stem"],
+        )
+    except note_service.NoteServiceError as e:
+        raise QuizServiceError(f"变式题生成失败：{e.message}", "generation_failed")
+    except Exception as e:
+        logger.warning(f"变式题生成失败: {type(e).__name__}: {e}")
+        raise QuizServiceError("变式题生成失败，请稍后重试", "generation_failed")
+
+    quiz = result.get("quiz") or []
+    if not quiz:
+        raise QuizServiceError("这次没有生成出变式题，请稍后重试", "generation_failed")
+    return {
+        "question": quiz[0],
+        "source": result.get("source"),
+        "evidence_count": result.get("evidence_count", 0),
+        "variant_of": question_id,
+    }
+
+
 def _option_text(options: List[Dict[str, str]], option_id: Optional[str]) -> Optional[str]:
     if not option_id:
         return None
@@ -633,6 +721,10 @@ def _attempt_result(row, q) -> Dict[str, Any]:
         "explanation": q["explanation"] if q else None,
         "attempt_no": row["attempt_no"],
         "attempt_kind": row["attempt_kind"],
+        "error_code": row["error_code"] if "error_code" in row.keys() else None,
+        "error_label": (ERROR_CAUSES.get(row["error_code"])
+                        if "error_code" in row.keys() else None),
+        "error_note": row["error_note"] if "error_note" in row.keys() else None,
         "created_at": row["created_at"],
     }
 
@@ -898,6 +990,10 @@ def list_wrong_questions(user_id: str, subject_id: Optional[str] = None,
                 # 答案是否已下发：前端据此显示"查看解析"或直接显示答案
                 "revealed": revealed,
                 "answers_included": expose,
+                "error_code": r["error_code"] if "error_code" in r.keys() else None,
+                "error_label": (ERROR_CAUSES.get(r["error_code"])
+                                if "error_code" in r.keys() else None),
+                "error_note": r["error_note"] if "error_note" in r.keys() else None,
             }
             if expose:
                 item.update({
@@ -952,6 +1048,9 @@ def get_wrong_question_detail(user_id: str, question_id: str) -> Dict[str, Any]:
         "reference_answer": exposed.get("reference_answer"),
         "explanation": exposed.get("explanation"),
         "ai_feedback": target.get("ai_feedback"),
+        "error_code": target.get("error_code"),
+        "error_label": target.get("error_label"),
+        "error_note": target.get("error_note"),
         "revealed": True,
         "reveal_recorded": True,
         "note": "已登记查看答案：该题后续作答不计入独立掌握证据",
@@ -1004,6 +1103,9 @@ __all__ = [
     "reveal_answer",
     "has_revealed",
     "submit_attempt",
+    "report_error_cause",
+    "generate_variant",
+    "ERROR_CAUSES",
     "self_evaluate",
     "grade_short_answer_with_ai",
     "list_attempts",

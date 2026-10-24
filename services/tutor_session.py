@@ -44,6 +44,21 @@ ABILITY_MAP = "map"            # 思维导图与知识地图
 ABILITY_ORGANIZE = "organize"  # 学习整理：笔记、提纲、学习安排
 ABILITIES = (ABILITY_CHAT, ABILITY_EXPLAIN, ABILITY_PRACTICE, ABILITY_MAP, ABILITY_ORGANIZE)
 
+# 引导方式（2026-10-24）：direct 是既有行为，默认值必须保持不变；
+# socratic 只改变「怎么讲」，不改变能力、工具权限、判分与掌握度口径。
+GUIDANCE_DIRECT = "direct"
+GUIDANCE_SOCRATIC = "socratic"
+GUIDANCE_MODES = (GUIDANCE_DIRECT, GUIDANCE_SOCRATIC)
+
+
+def normalize_guidance_mode(value: Any) -> str:
+    """非法/缺省值一律回落到 direct，保证旧会话与旧客户端行为不变。"""
+    if isinstance(value, str):
+        value = value.strip()
+        if value in GUIDANCE_MODES:
+            return value
+    return GUIDANCE_DIRECT
+
 _SESSIONS_DDL = """
 CREATE TABLE IF NOT EXISTS tutor_sessions (
     user_id TEXT NOT NULL,
@@ -142,6 +157,7 @@ def default_context(user_id: str, subject_id: str) -> Dict[str, Any]:
         "course_id": None,
         "role": "student",
         "ability": ABILITY_CHAT,
+        "guidance_mode": GUIDANCE_DIRECT,
         "material_scope": {"mode": "all", "selected_doc_ids": []},
         "current_node_id": None,
         "current_map_id": None,
@@ -157,6 +173,7 @@ def default_context(user_id: str, subject_id: str) -> Dict[str, Any]:
 _PATCHABLE = {
     "course_id", "role", "ability", "current_node_id", "current_map_id",
     "conversation_id", "last_turn_id", "goal", "deadline", "daily_minutes",
+    "guidance_mode",
 }
 
 
@@ -178,6 +195,8 @@ def load_context(user_id: str, subject_id: str) -> Dict[str, Any]:
             ctx.update(stored)
     ctx["user_id"] = user_id
     ctx["subject_id"] = subject_id
+    # 老会话没有这个字段 / 历史脏数据：统一回落到 direct，绝不因新字段报错。
+    ctx["guidance_mode"] = normalize_guidance_mode(ctx.get("guidance_mode"))
     return ctx
 
 
@@ -204,6 +223,8 @@ def update_context(user_id: str, subject_id: str, /, **patch: Any) -> Dict[str, 
     ctx = load_context(user_id, subject_id)
     for key, value in (patch or {}).items():
         if key in _PATCHABLE:
+            if key == "guidance_mode":
+                value = normalize_guidance_mode(value)
             ctx[key] = value
         else:
             logger.warning(f"忽略不可改写的上下文字段: {key}")
@@ -407,7 +428,8 @@ def delete_turn(turn_id: str, user_id: str) -> bool:
 
 __all__ = [
     "ABILITY_CHAT", "ABILITY_EXPLAIN", "ABILITY_PRACTICE", "ABILITY_MAP", "ABILITY_ORGANIZE",
-    "ABILITIES", "STATE_RUNNING", "STATE_SUCCEEDED", "STATE_FAILED", "STATE_CANCELLED",
+    "ABILITIES", "GUIDANCE_DIRECT", "GUIDANCE_SOCRATIC", "GUIDANCE_MODES", "normalize_guidance_mode",
+    "STATE_RUNNING", "STATE_SUCCEEDED", "STATE_FAILED", "STATE_CANCELLED",
     "TERMINAL_STATES", "default_context", "load_context", "save_context", "update_context",
     "set_material_scope", "create_turn", "delete_turn", "append_event", "list_events", "finish_turn",
     "get_turn", "list_turns", "request_cancel", "is_cancelled", "DB_PATH",

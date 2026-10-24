@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "description": "2026-10-24 黄金集基线（BM25 检索，20 题）。低于基线 5 个百分点即门禁失败。",
+  "metrics": {
+    "sample_count": 20,
+    "recall_at_5": 1,
+    "hit_at_1": 0.95,
+    "keyword_hit_at_1": 0.95,
+    "mrr": 0.975,
+    "pass_rate": 0.95
+  },
+  "thresholds": {
+    "recall_at_5": 0.95,
+    "hit_at_1": 0.85,
+    "keyword_hit_at_1": 0.85,
+    "mrr": 0.85,
+    "pass_rate": 0.9
+  }
+}

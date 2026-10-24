@@ -311,3 +311,476 @@
   font-size: 11px; color: var(--color-text-muted); letter-spacing: 0.04em; flex-shrink: 0;
 }
 .tutor-node-actions { flex-shrink: 0; }
+
+/* ============================================================
+   2026-10 伴学工作台视觉刷新
+   ============================================================ */
+
+.tutor-main {
+  background:
+    radial-gradient(720px 420px at 50% -10%, rgba(20, 184, 166, 0.045), transparent 65%),
+    #ffffff;
+}
+
+.tutor-main-head {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(14px);
+  border-bottom-color: rgba(15, 23, 42, 0.06);
+}
+
+.tutor-messages {
+  padding: 22px 24px 10px;
+}
+
+/* 欢迎区：从“一行字”升级为一张轻量 Hero 卡 */
+.tutor-welcome {
+  position: relative;
+  max-width: 620px;
+  margin: 7vh auto 0;
+  padding: 34px 30px 30px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 24px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fdfc 100%);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04),
+              0 30px 70px -46px rgba(15, 118, 110, 0.45);
+  overflow: hidden;
+}
+
+.tutor-welcome::before {
+  content: '';
+  position: absolute;
+  width: 320px;
+  height: 320px;
+  top: -190px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: radial-gradient(circle, rgba(20, 184, 166, 0.18), transparent 68%);
+  pointer-events: none;
+}
+
+.tutor-welcome-icon {
+  position: relative;
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
+  margin: 0 auto 16px;
+  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 55%, #5eead4 100%);
+  box-shadow: 0 16px 30px -18px rgba(15, 118, 110, 0.8);
+  font-size: 26px;
+}
+
+.tutor-welcome-title {
+  position: relative;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+
+.tutor-welcome-sub {
+  position: relative;
+  max-width: 480px;
+  margin: 8px auto 0;
+  font-size: 13.5px;
+  line-height: 1.8;
+}
+
+.tutor-welcome .ant-btn {
+  border-radius: 100px;
+  background: #ffffff;
+  border-color: rgba(15, 118, 110, 0.18);
+  color: #0f766e;
+  box-shadow: 0 2px 8px -6px rgba(15, 23, 42, 0.2);
+}
+
+.tutor-welcome .ant-btn:hover {
+  background: #f0fdfa !important;
+  border-color: #99f6e4 !important;
+  color: #0d9488 !important;
+  transform: translateY(-1px);
+}
+
+/* 消息气泡：更清楚的“谁在说” */
+.tutor-msg {
+  margin-bottom: 16px;
+}
+
+.tutor-bubble {
+  padding: 12px 16px;
+  line-height: 1.75;
+}
+
+.tutor-bubble-user {
+  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
+  box-shadow: 0 10px 22px -16px rgba(15, 118, 110, 0.9);
+  border: 0;
+}
+
+.tutor-bubble-ai {
+  border-color: rgba(15, 23, 42, 0.07);
+  box-shadow: 0 12px 30px -26px rgba(15, 23, 42, 0.35);
+}
+
+/* 输入区：悬浮胶囊，而不是贴着底边的一条线 */
+.tutor-composer {
+  margin: 0 16px 14px;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04),
+              0 18px 40px -28px rgba(15, 23, 42, 0.32);
+  transition: border-color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out);
+}
+
+.tutor-composer:focus-within {
+  border-color: rgba(15, 118, 110, 0.35);
+  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.08),
+              0 18px 40px -28px rgba(15, 23, 42, 0.32);
+}
+
+.tutor-composer .ant-input {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  padding-left: 2px;
+}
+
+/* 练习卡：像一张可作答的纸 */
+.tutor-practice-item {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.07);
+  box-shadow: 0 8px 24px -24px rgba(15, 23, 42, 0.4);
+}
+
+/* 右栏：和主区之间加一条更柔的分隔 */
+.tutor-side {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdfc 100%);
+}
+
+@media (max-width: 900px) {
+  .tutor-welcome { margin: 4vh 12px 0; padding: 26px 18px 22px; border-radius: 20px; }
+  .tutor-messages { padding: 14px 12px 6px; }
+  .tutor-composer { margin: 0 10px 10px; }
+}
+
+/* 主区标题：让工作台有明确的页面锚点 */
+.tutor-main-title {
+  min-width: 0;
+  padding-right: 10px;
+  margin-right: 2px;
+  border-right: 1px solid rgba(15, 23, 42, 0.07);
+}
+
+.tutor-main-title-main {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.tutor-main-title-sub {
+  max-width: 190px;
+  margin-top: 1px;
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 620px) {
+  .tutor-main-title { display: none; }
+}
+
+/* 左栏：从“贴边的表单”改成两张有边界的工具卡 */
+.tutor-aside-left {
+  background: linear-gradient(180deg, #fbfdfc 0%, #f6faf9 100%);
+  border-right-color: rgba(15, 23, 42, 0.06);
+}
+
+.tutor-left {
+  padding: 12px;
+  gap: 10px;
+}
+
+.tutor-left-section {
+  padding: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px -26px rgba(15, 23, 42, 0.4);
+}
+
+.tutor-left-section.tutor-left-grow {
+  padding: 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.tutor-left-title {
+  color: #64748b;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.tutor-aside-right {
+  border-left-color: rgba(15, 23, 42, 0.06);
+}
+
+/* ============================================================
+   2026-10-24 白板悬浮窗 / 课件依据
+   ============================================================ */
+
+/* 去掉遮罩与阴影：白板是一张可拖动的“纸”，不是挡在页面上的弹窗 */
+.whiteboard-float-wrap {
+  pointer-events: none;
+  background: transparent !important;
+}
+
+.whiteboard-float-wrap .ant-modal {
+  pointer-events: auto;
+  padding-bottom: 0;
+}
+
+.whiteboard-float-wrap .ant-modal-content {
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  border-radius: 18px;
+  box-shadow: none !important;
+}
+
+.whiteboard-float-wrap .ant-modal-header {
+  margin: 0;
+  padding: 14px 20px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  cursor: grab;
+  user-select: none;
+}
+
+.whiteboard-float-wrap .ant-modal-header:active { cursor: grabbing; }
+
+.whiteboard-drag-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.whiteboard-drag-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: #94a3b8;
+}
+
+.whiteboard-layout {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+}
+
+.whiteboard-canvas {
+  flex: 1;
+  min-width: 0;
+  min-height: 460px;
+  max-height: 560px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+/* SVG 文本框：自动换行，长句不再溢出方格 */
+.wb-rect-text {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 9px;
+  text-align: center;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow: hidden;
+}
+
+.whiteboard-sources {
+  width: 292px;
+  flex-shrink: 0;
+  max-height: 560px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fbfdfc 0%, #f8fbfa 100%);
+}
+
+.whiteboard-sources-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.whiteboard-sources-hint {
+  margin: 6px 0 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #94a3b8;
+}
+
+.whiteboard-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.whiteboard-source {
+  padding: 9px 10px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.whiteboard-source.is-cited {
+  border-color: rgba(5, 150, 105, 0.28);
+  background: #f0fdf4;
+}
+
+.whiteboard-source-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.whiteboard-source-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #334155;
+}
+
+.whiteboard-source-meta {
+  margin-top: 4px;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.whiteboard-source-section {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.whiteboard-source-snippet {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #64748b;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (max-width: 760px) {
+  .whiteboard-layout { flex-direction: column; }
+  .whiteboard-canvas { min-height: 300px; max-height: 380px; }
+  .whiteboard-sources { width: auto; max-height: 240px; }
+  .whiteboard-drag-hint { display: none; }
+}
+
+/* 白板可缩放：8 个边界/角落把手 */
+.whiteboard-float-wrap .ant-modal-content {
+  position: relative;
+}
+
+.whiteboard-layout {
+  flex: 1;
+  min-height: 0;
+}
+
+.whiteboard-canvas {
+  height: 100%;
+  max-height: none;
+}
+
+.whiteboard-sources {
+  height: 100%;
+  max-height: none;
+}
+
+.wb-resize {
+  position: absolute;
+  z-index: 20;
+  touch-action: none;
+}
+
+.wb-resize-n { top: 0; left: 12px; right: 12px; height: 7px; cursor: ns-resize; }
+.wb-resize-s { bottom: 0; left: 12px; right: 12px; height: 7px; cursor: ns-resize; }
+.wb-resize-e { right: 0; top: 12px; bottom: 12px; width: 7px; cursor: ew-resize; }
+.wb-resize-w { left: 0; top: 12px; bottom: 12px; width: 7px; cursor: ew-resize; }
+.wb-resize-ne { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+.wb-resize-nw { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+.wb-resize-se { bottom: 0; right: 0; width: 16px; height: 16px; cursor: nwse-resize; }
+.wb-resize-sw { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+
+/* 课件页直接铺在白板右侧，黄框标引用位置 */
+.whiteboard-pdf-frame {
+  position: relative;
+  margin-top: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.whiteboard-pdf-frame img {
+  display: block;
+  width: 100%;
+  cursor: zoom-in;
+}
+
+.whiteboard-pdf-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.whiteboard-pdf-pages {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.whiteboard-snippet-title {
+  margin-top: 12px;
+  font-size: 11px;
+  font-weight: 650;
+  color: #94a3b8;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 760px) {
+  .whiteboard-canvas { height: 300px; }
+  .whiteboard-sources { height: auto; max-height: 260px; }
+}

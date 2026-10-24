@@ -630,7 +630,28 @@ def map_with_progress(user_id: str, subject_id: str) -> Optional[Dict[str, Any]]
     result["progress_summary"] = {
         status: sum(1 for n in nodes if n["status"] == status) for status in NODE_STATUSES
     }
-    result["next_node"] = recommend_next(nodes)
+    base_next = recommend_next(nodes)
+    # BKT 影子接入：若 BKT 指出的最低掌握点仍在路线中，且当前没有"到期复习"，
+    # 优先建议它。BKT 不可用/没有样本时完全保持原逻辑。
+    bkt_next = None
+    bkt_recommended = None
+    try:
+        from services import knowledge_tracing
+        bkt = knowledge_tracing.estimate_user(subject_id, user_id)
+        bkt_recommended = bkt.get("recommended")
+        if bkt_recommended:
+            target = next((n for n in nodes
+                           if normalize_label(n.get("label")) == normalize_label(bkt_recommended)), None)
+            if target and target.get("status") != STATUS_PASSED:
+                bkt_next = {"node_id": target["node_id"], "label": target["label"],
+                            "reason": "BKT 估计这个知识点掌握概率最低，建议优先练"}
+    except Exception as e:
+        logger.debug(f"BKT 推荐跳过: {e}")
+    if bkt_next and not (base_next and base_next.get("reason") == "这个知识点已经到期需要复习"):
+        result["next_node"] = bkt_next
+    else:
+        result["next_node"] = base_next
+    result["bkt_recommendation"] = bkt_next
     return result
 
 

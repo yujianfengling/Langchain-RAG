@@ -4,8 +4,8 @@ import {
   List, Modal, Popconfirm, Radio, Select, Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
-  CloseCircleOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, RocketOutlined,
-  ThunderboltOutlined,
+  CloseCircleOutlined, EyeOutlined, FileTextOutlined, PlusOutlined, ReloadOutlined,
+  RocketOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
 import {
@@ -17,6 +17,7 @@ import {
   EmptyBlock, ErrorAlert, LoadingBlock, PermissionAlert, assignmentStatusMeta, formatTime,
   questionStem, questionTypeColor, questionTypeLabel,
 } from './common';
+import PaperBuilderModal from './PaperBuilderModal';
 
 const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -42,6 +43,7 @@ const QUESTION_SOURCE_META: Record<string, { color: string; label: string; tip: 
 export interface AssignmentsPanelProps {
   courseId: string;
   courseTitle?: string;
+  subjectId?: string;
   onBack?: () => void;
   /** 定向出题无合格题目时的"去补充资料"入口（切到课程资料） */
   onOpenMaterials?: () => void;
@@ -59,7 +61,7 @@ interface AssignmentFormValues {
 
 /** 作业 / 练习：创建草稿 → AI 出题 → 预览 → 设截止 → 发布 → 查看完成情况 */
 const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({
-  courseId, courseTitle, onBack, onOpenMaterials,
+  courseId, courseTitle, subjectId, onBack, onOpenMaterials,
 }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +70,7 @@ const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({
   const [classes, setClasses] = useState<TeacherClass[]>([]);
   const [classFilter, setClassFilter] = useState<string | undefined>();
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [paperOpen, setPaperOpen] = useState(false);
 
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Assignment | null>(null);
@@ -297,6 +300,10 @@ assignmentId: values.assignment_id,
           </Button>
           <Button size="small" icon={<ThunderboltOutlined />} onClick={() => { setGenResult(null); setGenOpen(true); }}>
             AI 出题
+          </Button>
+          <Button size="small" icon={<FileTextOutlined />} disabled={!subjectId}
+                  onClick={() => setPaperOpen(true)}>
+            智能组卷
           </Button>
           <Button size="small" type="primary" icon={<PlusOutlined />} onClick={openCreate}>
             新建作业
@@ -720,6 +727,10 @@ assignmentId: values.assignment_id,
           </>
         )}
       </Modal>
+
+      {subjectId && (
+        <PaperBuilderModal open={paperOpen} onClose={() => setPaperOpen(false)} subjectId={subjectId} />
+      )}
     </div>
   );
 };

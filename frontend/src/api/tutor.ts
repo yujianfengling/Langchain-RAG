@@ -16,6 +16,8 @@ export interface TutorScopeItem {
   source?: string;
 }
 
+export type GuidanceMode = 'direct' | 'socratic';
+
 export interface TutorScope {
   mode: 'all' | 'selected' | 'empty';
   label: string;
@@ -38,6 +40,7 @@ export interface TutorSessionData {
   scope: TutorScope;
   materials: TutorMaterial[];
   abilities: { key: string; label: string }[];
+  guidance_modes?: { key: GuidanceMode; label: string }[];
 }
 
 export interface TutorSource {
@@ -49,6 +52,10 @@ export interface TutorSource {
   section?: string | null;
   score?: number | null;
   retrieval_type?: string | null;
+  page_image_url?: string | null;
+  bbox?: number[] | null;
+  image_width?: number | null;
+  image_height?: number | null;
 }
 
 export interface ToolTraceItem {
@@ -69,6 +76,7 @@ export interface TutorDoneEvent {
   tool_trace: ToolTraceItem[];
   message_type?: string;
   payload?: any;
+  guidance_mode?: GuidanceMode;
   ask_user?: { question: string; options: string[] } | null;
   scope?: TutorScope;
   elapsed?: number;
@@ -82,6 +90,28 @@ export interface TutorStreamHandlers {
   onError?: (message: string) => void;
 }
 
+export interface WhiteboardElement {
+  type: 'text' | 'line' | 'arrow' | 'rect' | 'circle' | 'curve' | string;
+  x?: number; y?: number; x1?: number; y1?: number; x2?: number; y2?: number;
+  w?: number; h?: number; r?: number; text?: string; size?: number;
+  color?: string; points?: number[][];
+}
+
+export interface WhiteboardScene {
+  title: string;
+  width: number;
+  height: number;
+  topic?: string;
+  elements: WhiteboardElement[];
+}
+
+export const generateWhiteboard = async (payload: {
+  subject_id: string; topic: string; template?: string | null; model?: string | null;
+}): Promise<WhiteboardScene> => {
+  const res: any = await apiClient.post('/tutor/whiteboard', payload);
+  return (res?.data ?? res) as WhiteboardScene;
+};
+
 export const getTutorSession = async (subjectId: string): Promise<TutorSessionData> => {
   const res: any = await apiClient.get('/tutor/session', { params: { subject_id: subjectId } });
   return res?.data ?? res;
@@ -90,6 +120,7 @@ export const getTutorSession = async (subjectId: string): Promise<TutorSessionDa
 export const updateTutorSession = async (payload: {
   subject_id: string;
   ability?: string;
+  guidance_mode?: GuidanceMode;
   doc_ids?: string[];
   node_id?: string | null;
   conversation_id?: string | null;
@@ -203,6 +234,7 @@ export const cancelTurn = async (turnId: string): Promise<boolean> => {
 export const streamTutorTurn = (
   payload: {
     message: string; subject_id: string; ability?: string;
+    guidance_mode?: GuidanceMode;
     doc_ids?: string[]; node_id?: string | null;
     conversation_id?: string | null; model?: string | null;
   },

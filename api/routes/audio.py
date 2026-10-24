@@ -8,11 +8,12 @@
 #
 # 已移除（连同前端朗读入口一起删除）：POST /audio/tts、POST /audio/speech、GET /audio/voices。
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from typing import Optional
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
-from api.deps import require_current_user
+from api.deps import require_current_user, require_subject_read
 from api.schemas.response_schema import SuccessResponse
 from services.audio_service import (
     AudioServiceError,
@@ -50,6 +51,10 @@ _AUDIO_STATUS = {
     "cuda_error": 503,
     "asr_disabled": 503,
     "model_download_failed": 503,
+    # 课堂录音笔记
+    "lecture_failed": 500,
+    "asr_empty": 422,
+    "database_error": 500,
 }
 
 
@@ -82,6 +87,46 @@ async def transcribe(file: UploadFile = File(...),
             content={"success": False, "data": None,
                      "message": "语音识别失败，请稍后重试", "error_type": "asr_failed"},
         )
+
+
+@router.post("/audio/lecture-notes")
+async def create_lecture_note(file: UploadFile = File(...),
+                              subject_id: str = Form(...),
+                              model: Optional[str] = Form(None),
+                              user_id: str = Depends(require_current_user)):
+    """课堂录音 → 转写 → 结构化笔记（ASR 不可用会如实报错）。"""
+    await require_subject_read(subject_id, user_id)
+    audio_data = await file.read()
+    from services import lecture_service
+    try:
+        data = await run_in_threadpool(
+            lecture_service.create_note, user_id, subject_id, audio_data,
+            file.filename, model)
+        return SuccessResponse(data=data, message="课堂笔记已生成")
+    except lecture_service.LectureError as e:
+        return _audio_error(e)
+
+
+@router.get("/audio/lecture-notes")
+async def list_lecture_notes(subject_id: Optional[str] = None,
+                             limit: int = 50,
+                             user_id: str = Depends(require_current_user)):
+    from services import lecture_service
+    data = await run_in_threadpool(lecture_service.list_notes, user_id, subject_id, limit)
+    return SuccessResponse(data={"notes": data}, message="获取课堂笔记成功")
+
+
+@router.get("/audio/lecture-notes/{note_id}")
+async def get_lecture_note(note_id: str,
+                           user_id: str = Depends(require_current_user)):
+    from services import lecture_service
+    data = await run_in_threadpool(lecture_service.get_note, user_id, note_id)
+    if not data:
+        return JSONResponse(status_code=404, content={
+            "success": False, "data": None, "message": "课堂笔记不存在",
+            "error_type": "not_found"})
+    await require_subject_read(data["subject_id"], user_id)
+    return SuccessResponse(data=data, message="获取课堂笔记成功")
 
 
 @router.post("/audio/warmup")

@@ -238,6 +238,7 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
             key={'assignments-' + courseId}
             courseId={courseId}
             courseTitle={currentCourse?.title}
+            subjectId={currentCourse?.subject_id}
             onBack={goCourseWorkspace}
             onOpenMaterials={() => { setPrepTab('materials'); setPrepList(false); selectSection('prep'); }}
           />

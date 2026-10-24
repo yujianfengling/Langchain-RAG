@@ -8,12 +8,13 @@ export const themeConfig: ThemeConfig = {
   token: {
     colorPrimary: '#0f766e', colorPrimaryBg: '#f0fdfa', colorLink: '#0f766e', colorLinkHover: '#0d9488',
     colorSuccess: '#059669', colorWarning: '#d97706', colorError: '#dc2626',
-    colorBgContainer: '#ffffff', colorBgLayout: '#f8fafc', colorBgElevated: '#ffffff',
+    colorBgContainer: '#ffffff', colorBgLayout: '#f4f7f9', colorBgElevated: '#ffffff',
     colorText: '#0f172a', colorTextSecondary: '#475569', colorTextTertiary: '#94a3b8',
     colorBorder: '#e2e8f0', colorBorderSecondary: '#f1f5f9',
-    borderRadius: 10, borderRadiusLG: 14,
-    fontFamily: "'Geist', 'Satoshi', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif",
+    borderRadius: 12, borderRadiusLG: 16,
+    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif",
     fontSize: 15, controlHeight: 38,
+    wireframe: false,
   },
   components: {
     Menu: {
@@ -21,7 +22,7 @@ export const themeConfig: ThemeConfig = {
       itemSelectedColor: '#0f766e', itemSelectedBg: '#ccfbf1', itemActiveBg: '#ccfbf1',
       horizontalItemSelectedColor: '#0f766e', itemHeight: 44,
     },
-    Card: { borderRadiusLG: 14 },
+    Card: { borderRadiusLG: 16, headerBg: 'transparent' },
     Button: { borderRadius: 8, controlHeight: 38 },
     Input: { borderRadius: 8, controlHeight: 40 },
     Select: { borderRadius: 8, controlHeight: 38 },

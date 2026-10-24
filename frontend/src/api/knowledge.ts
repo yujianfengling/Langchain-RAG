@@ -70,6 +70,13 @@ export const rebuildKnowledge = async (subjectId: string): Promise<ApiResponse<a
   return apiClient.post(`/knowledge/${subjectId}/rebuild`);
 };
 
+/** 建立页面级索引（图片型课件检索兜底；只处理 PDF） */
+export const buildPageIndex = async (subjectId: string, force = false): Promise<ApiResponse<any>> => {
+  return apiClient.post(`/knowledge/${subjectId}/pages/build`, null, {
+    params: { force }, timeout: LONG_TASK_TIMEOUT,
+  });
+};
+
 /**
  * 获取知识图谱
  */

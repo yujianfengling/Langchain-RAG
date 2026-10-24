@@ -9,7 +9,10 @@ import {
   UserOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import { AuthUser, isLoggedIn, me } from '../api/auth';
-import { MasteryPoint, WrongQuestion, getMastery, getQuizStats, getWrongQuestions } from '../api/student';
+import {
+  KnowledgeTracingPoint, MasteryPoint, WrongQuestion,
+  getKnowledgeTracing, getMastery, getQuizStats, getWrongQuestions,
+} from '../api/student';
 import { listArtifacts } from '../api/tutor';
 import { MemoryItem, getEffectiveMemory } from '../api/planAgent';
 import { useCourse } from '../context/CourseContext';
@@ -74,6 +77,7 @@ const ProfilePage: React.FC = () => {
   const [points, setPoints] = useState<MasteryPoint[]>([]);
   const [quizStats, setQuizStats] = useState<QuizStats | null>(null);
   const [wrongs, setWrongs] = useState<WrongQuestion[]>([]);
+  const [bktPoints, setBktPoints] = useState<KnowledgeTracingPoint[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
@@ -97,18 +101,19 @@ const ProfilePage: React.FC = () => {
   const loadData = useCallback(async () => {
     if (!isLoggedIn() || !currentSubjectId) {
       setMastery(null); setPoints([]); setQuizStats(null);
-      setWrongs([]); setArtifacts([]); setMemories([]);
+      setWrongs([]); setArtifacts([]); setMemories([]); setBktPoints([]);
       setDataError(null); setDataLoading(false);
       return;
     }
     setDataLoading(true);
     setDataError(null);
-    const [m, q, w, a, mem] = await Promise.allSettled([
+    const [m, q, w, a, mem, bkt] = await Promise.allSettled([
       getMastery(currentSubjectId),
       getQuizStats(currentSubjectId),
       getWrongQuestions(currentSubjectId),
       listArtifacts(currentSubjectId),
       getEffectiveMemory(currentSubjectId),
+      getKnowledgeTracing(currentSubjectId),
     ]);
     if (m.status === 'fulfilled') {
       setMastery((m.value?.data?.summary as MasterySummary) ?? null);
@@ -118,7 +123,8 @@ const ProfilePage: React.FC = () => {
     if (w.status === 'fulfilled') setWrongs(w.value?.data ?? []);
     if (a.status === 'fulfilled') setArtifacts(Array.isArray(a.value) ? a.value as ArtifactItem[] : []);
     if (mem.status === 'fulfilled') setMemories(mem.value?.data?.items ?? []);
-    if ([m, q, w, a, mem].every((r) => r.status === 'rejected')) {
+    if (bkt.status === 'fulfilled') setBktPoints(bkt.value?.data?.points ?? []);
+    if ([m, q, w, a, mem, bkt].every((r) => r.status === 'rejected')) {
       setDataError('学习数据加载失败，请稍后重试');
     }
     setDataLoading(false);
@@ -254,6 +260,34 @@ const ProfilePage: React.FC = () => {
                             strokeColor="var(--color-primary)"
                             size="small"
                           />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {bktPoints.length > 0 && (
+                    <div>
+                      <Space size={6} wrap style={{ marginBottom: 4 }}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>BKT 预测（影子）</Text>
+                        <Tag color="purple">不改变掌握度</Tag>
+                      </Space>
+                      {bktPoints.slice(0, 5).map((p) => (
+                        <div key={p.knowledge_point} style={{ marginTop: 6 }}>
+                          <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
+                            <Space size={4}>
+                              <Text style={{ fontSize: 13 }}>{p.knowledge_point}</Text>
+                              {bktPoints[0]?.knowledge_point === p.knowledge_point && (
+                                <Tag color="volcano">建议优先练</Tag>
+                              )}
+                            </Space>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              {Math.round(p.p_known * 100)}%
+                            </Text>
+                          </Space>
+                          <Progress percent={Math.round(p.p_known * 100)} showInfo={false}
+                                    strokeColor="#7c3aed" size="small" />
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            样本 {p.attempts} · 置信度 {Math.round(p.confidence * 100)}%
+                          </Text>
                         </div>
                       ))}
                     </div>

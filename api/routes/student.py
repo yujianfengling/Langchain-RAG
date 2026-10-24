@@ -9,7 +9,8 @@ from starlette.concurrency import run_in_threadpool
 
 from api.schemas.response_schema import SuccessResponse
 from api.deps import require_current_user
-from services import learning_service, mastery_service, quiz_service, review_service
+from services import (knowledge_tracing, learning_service, mastery_service,
+                      quiz_service, review_service)
 from services import learning_events
 from services.learning_service import LearningServiceError
 
@@ -102,6 +103,16 @@ async def student_mastery(subject_id: str,
     items = await run_in_threadpool(mastery_service.list_mastery, user_id, subject_id)
     return SuccessResponse(data={"summary": data, "points": items},
                            message="获取掌握情况成功")
+
+
+@router.get("/student/knowledge-tracing")
+async def student_knowledge_tracing(subject_id: str,
+                                    knowledge_point: Optional[str] = None,
+                                    user_id: str = Depends(require_current_user)):
+    """BKT 影子估计：按知识点返回已掌握概率、样本量与置信度（不改现有掌握度）。"""
+    data = await run_in_threadpool(
+        knowledge_tracing.estimate_user, subject_id, user_id, knowledge_point)
+    return SuccessResponse(data=data, message="获取 BKT 估计成功")
 
 
 @router.get("/student/home")

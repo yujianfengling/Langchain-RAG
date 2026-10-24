@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Alert, Button, Card, Collapse, Dropdown, Empty, List, Modal, Space, Spin,
+  Alert, Button, Card, Collapse, Dropdown, Empty, List, Modal, Select, Space, Spin,
   Tag, Typography, message,
 } from 'antd';
 import {
@@ -137,10 +137,12 @@ const TasksPage: React.FC = () => {
   const [adjustments, setAdjustments] = useState<PlanAdjustment[]>([]);
   const [failed, setFailed] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  /** 任务页自己的学科筛选：默认全部，不跟随 AI 伴学里的当前学科 */
+  const [subjectFilter, setSubjectFilter] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
-    const sid = ctx.currentSubjectId || undefined;
+    const sid = subjectFilter || undefined;
     const params = sid ? { subject_id: sid } : {};
     const failures: string[] = [];
     const adjPromise = apiClient.get('/plan/adjustments', { params }) as unknown as Promise<{ data?: PlanAdjustment[] }>;
@@ -173,7 +175,7 @@ const TasksPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [ctx.currentSubjectId]);
+  }, [subjectFilter]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
@@ -266,7 +268,10 @@ const TasksPage: React.FC = () => {
         subjectId: r.subject_id,
         courseTitle: subjectName(r.subject_id),
         title: '复习：' + (r.knowledge_point_name || '知识点'),
-        detail: r.merged_count && r.merged_count > 1 ? '已合并 ' + r.merged_count + ' 次安排' : '到期复习',
+        detail: [
+          r.reason || '到期复习',
+          r.merged_count && r.merged_count > 1 ? '已合并 ' + r.merged_count + ' 次安排' : '',
+        ].filter(Boolean).join(' · '),
         due,
         overdue: !!due && due < today,
         review: r,
@@ -285,7 +290,10 @@ const TasksPage: React.FC = () => {
         subjectId: null,
         courseTitle: '错题',
         title: w.stem || '错题',
-        detail: w.knowledge_point ? '知识点：' + w.knowledge_point : '重新做一遍',
+        detail: [
+          w.knowledge_point ? '知识点：' + w.knowledge_point : '重新做一遍',
+          w.error_label ? '错因：' + w.error_label : '',
+        ].filter(Boolean).join(' · '),
         due: null,
         overdue: false,
         wrong: w,
@@ -328,7 +336,7 @@ const TasksPage: React.FC = () => {
       : it.kind === 'review' ? it.review?.id
         : it.wrong?.question_id;
     if (!id) return;
-    const sid = it.subjectId || ctx.currentSubjectId || '';
+    const sid = it.subjectId || subjectFilter || ctx.currentSubjectId || '';
     const params = new URLSearchParams();
     if (sid) params.set('subject', sid);
     params.set('task', id);
@@ -492,7 +500,14 @@ const TasksPage: React.FC = () => {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         <CheckSquareOutlined style={{ color: 'var(--color-primary)', fontSize: 18 }} />
         <Title level={4} style={{ margin: 0 }}>任务与复习</Title>
-        {ctx.current && <Tag color="blue">{ctx.current.title}</Tag>}
+        <Select
+          allowClear
+          value={subjectFilter || undefined}
+          placeholder="全部学科"
+          style={{ minWidth: 190 }}
+          options={ctx.subjects.map((s) => ({ value: s.subject_id, label: s.name }))}
+          onChange={(value) => setSubjectFilter(String(value || ''))}
+        />
         <Button type="text" icon={<ReloadOutlined />} style={{ marginLeft: 'auto' }} onClick={() => load()}>
           刷新
         </Button>

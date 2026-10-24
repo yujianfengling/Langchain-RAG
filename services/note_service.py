@@ -391,6 +391,7 @@ def generate_quiz(
     user_id: Optional[str] = None,
     scope: Optional[Dict[str, Any]] = None,
     turn_id: Optional[str] = None,
+    variant_of: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     生成自测题（V2.5.1 Chat 自测模式）
@@ -433,10 +434,25 @@ def generate_quiz(
                         f"（subject={subject_id}, topic={topic}）")
             return _generate_fallback_quiz(subject_id, topic, model, count)
 
+        type_requirement = (
+            "覆盖 single_choice / judgement / short_answer 至少两种"
+            if count >= 2 else "题型不限，优先使用 single_choice"
+        )
+        variant_note = ""
+        if variant_of:
+            variant_note = (
+                "\n\n## 变式要求\n"
+                "这是对下面这道原题的变式练习。\n"
+                f"原题：{str(variant_of)[:500]}\n"
+                "请保持同一知识点，但更换情境、数字或问法；不要与题干近似，"
+                "不要直接重复原题。\n"
+            )
+
         prompt = f"""你是一名教育自测题生成助手。请基于【知识库证据】生成自测题。
 
 ## 知识点主题
 {topic}
+{variant_note}
 
 ## 知识库证据（仅依据以下内容，不得编造）
 {context[:10000]}
@@ -456,7 +472,7 @@ def generate_quiz(
 }}
 
 ## 规则
-1. 生成 {count} 道题，覆盖 single_choice / judgement / short_answer 至少两种。
+1. 生成 {count} 道题，{type_requirement}。
 2. 每道题必须能独立回答，explanation 基于上面的资料。
 3. 不得编造资料里没有的概念。
 

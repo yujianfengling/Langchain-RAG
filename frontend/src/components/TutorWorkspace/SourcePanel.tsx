@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
-import { Button, Empty, Popconfirm, Tag, Tooltip, Typography, message } from 'antd';
-import { DeleteOutlined, EditOutlined, FileTextOutlined, SaveOutlined } from '@ant-design/icons';
+import { Button, Empty, Modal, Popconfirm, Tag, Tooltip, Typography, message } from 'antd';
+import {
+  DeleteOutlined, EditOutlined, FileImageOutlined, FileTextOutlined, SaveOutlined,
+} from '@ant-design/icons';
+import apiClient from '../../api/axios';
 
 const { Text } = Typography;
 
@@ -22,14 +25,57 @@ const SourcePanel: React.FC<{
   onDeleteArtifact?: (artifact: any) => void;
   onUpdateArtifact?: (artifact: any, content: any) => void;
   focusSourceId?: number | null;
+  /** 2026-10-24：白板承接“课件依据”后，右栏不再重复展示引用原文 */
+  showSources?: boolean;
 }> = ({ sources, citedIds, artifacts, trace, stages, onOpenArtifact, onDeleteArtifact,
-        onUpdateArtifact, focusSourceId }) => {
-  const [tab, setTab] = useState<'sources' | 'artifacts' | 'trace'>('sources');
+        onUpdateArtifact, focusSourceId, showSources = true }) => {
+  const [tab, setTab] = useState<'sources' | 'artifacts' | 'trace'>(
+    showSources ? 'sources' : 'artifacts');
+  const [preview, setPreview] = useState<{
+    url: string; bbox?: number[]; width?: number; height?: number;
+  } | null>(null);
+  const closePreview = () => {
+    if (preview?.url) URL.revokeObjectURL(preview.url);
+    setPreview(null);
+  };
+  const openPageImage = async (source: any) => {
+    try {
+      // 页面图接口需要登录态；<img src> 带不上 X-User-Token，只能用 axios 取 blob。
+      const res = await apiClient.get(String(source.page_image_url).replace(/^\/api/, ''),
+        { responseType: 'blob' });
+      const blob = res instanceof Blob ? res : (res as any)?.data;
+      const objectUrl = URL.createObjectURL(blob as Blob);
+      setPreview({
+        url: objectUrl,
+        bbox: Array.isArray(source.bbox) ? source.bbox.map(Number) : undefined,
+        width: Number(source.image_width) || undefined,
+        height: Number(source.image_height) || undefined,
+      });
+    } catch {
+      message.error('页面图加载失败，请确认已建立页面索引');
+    }
+  };
+  const bboxStyle = (): React.CSSProperties | undefined => {
+    if (!preview?.bbox || !preview.width || !preview.height) return undefined;
+    const [x1, y1, x2, y2] = preview.bbox;
+    return {
+      position: 'absolute',
+      left: (x1 / preview.width) * 100 + '%',
+      top: (y1 / preview.height) * 100 + '%',
+      width: ((x2 - x1) / preview.width) * 100 + '%',
+      height: ((y2 - y1) / preview.height) * 100 + '%',
+      border: '3px solid #f59e0b',
+      background: 'rgba(245, 158, 11, 0.18)',
+      pointerEvents: 'none',
+    };
+  };
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
 
   const tabs: { key: typeof tab; label: string; count?: number }[] = [
-    { key: 'sources', label: '引用原文', count: sources.length },
+    ...(showSources
+      ? [{ key: 'sources' as const, label: '引用原文', count: sources.length }]
+      : []),
     { key: 'artifacts', label: '学习成果', count: artifacts.length },
     { key: 'trace', label: '执行详情', count: trace.length },
   ];
@@ -76,6 +122,12 @@ const SourcePanel: React.FC<{
                     </div>
                     {s.section && <div className="tutor-source-section">{s.section}</div>}
                     <div className="tutor-source-snippet">{s.snippet || '（无原文片段）'}</div>
+                    {s.page_image_url && (
+                      <Button size="small" type="link" icon={<FileImageOutlined />}
+                              onClick={() => openPageImage(s)}>
+                        查看页面图
+                      </Button>
+                    )}
                     {!cited && (
                       <div className="tutor-source-hint">仅检索到，未被本次回答引用</div>
                     )}
@@ -161,6 +213,18 @@ const SourcePanel: React.FC<{
           </div>
         )}
       </div>
+
+      <Modal title="页面原文" open={!!preview} onCancel={closePreview} footer={null} width={900}>
+        {preview && (
+          <div style={{ position: 'relative', width: '100%' }}>
+            <img src={preview.url} alt="页面原文" style={{ width: '100%', display: 'block' }} />
+            {bboxStyle() && <div style={bboxStyle()} />}
+          </div>
+        )}
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          高亮框对应检索命中的段落；页面图由后端按页渲染，坐标已按图片尺寸换算。
+        </Text>
+      </Modal>
     </div>
   );
 };

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "description": "2026-10-24 引用门禁基线（5 条样例，全部有真实引用且词面支撑）",
+  "metrics": {
+    "sample_count": 5,
+    "citation_validity": 1,
+    "citation_rate": 1,
+    "lexical_support": 0.9067,
+    "faithfulness": 1,
+    "pass_rate": 1
+  },
+  "thresholds": {
+    "citation_validity": 1,
+    "citation_rate": 0.8,
+    "faithfulness": 0.8
+  }
+}

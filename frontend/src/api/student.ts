@@ -62,6 +62,15 @@ export interface PublicQuestion {
   source?: string | null;
 }
 
+export const ERROR_CAUSE_LABELS: Record<string, string> = {
+  concept_confusion: '概念混淆',
+  misread: '审题偏差',
+  formula_recall: '公式记错',
+  calculation: '计算失误',
+  step_omission: '步骤遗漏',
+  expression: '表达不规范',
+};
+
 export interface AttemptResult {
   attempt_id: string;
   question_id: string;
@@ -79,6 +88,9 @@ export interface AttemptResult {
   explanation?: string | null;
   attempt_no: number;
   attempt_kind?: 'independent' | 'review' | 'after_reveal';
+  error_code?: string | null;
+  error_label?: string | null;
+  error_note?: string | null;
   created_at?: string;
   linkage?: any;
 }
@@ -103,6 +115,10 @@ export interface WrongQuestion {
   answers_included?: boolean;
   /** AI 判分简答题的评判理由（不泄露标准答案，可随列表下发） */
   ai_feedback?: string | null;
+  /** 学生自报的错因（仅答错的题有值） */
+  error_code?: string | null;
+  error_label?: string | null;
+  error_note?: string | null;
 }
 
 export interface ReviewTask {
@@ -219,6 +235,23 @@ export const getTaskAdjustments = async (taskId: string): Promise<ApiResponse<an
   return apiClient.get(`/student/tasks/${taskId}/adjustments`);
 };
 
+export interface KnowledgeTracingPoint {
+  knowledge_point: string;
+  p_known: number;
+  attempts: number;
+  correct_count: number;
+  confidence: number;
+  last_attempt_at?: string | null;
+}
+
+/** BKT 影子估计：只读，不改变现有掌握度 */
+export const getKnowledgeTracing = async (subjectId: string, knowledgePoint?: string)
+  : Promise<ApiResponse<{ points: KnowledgeTracingPoint[] }>> => {
+  return apiClient.get('/student/knowledge-tracing', {
+    params: { subject_id: subjectId, knowledge_point: knowledgePoint || undefined },
+  });
+};
+
 /** 掌握情况（无证据的知识点为"待评估"，mastery_level 为 null） */
 export const getMastery = async (subjectId: string)
   : Promise<ApiResponse<{ summary: any; points: MasteryPoint[] }>> => {
@@ -253,6 +286,18 @@ export const revealAnswer = async (questionId: string)
     explanation?: string | null;
   }>> => {
   return apiClient.post(`/quiz/reveal/${questionId}`);
+};
+
+/** 记录学生自报的错因（只允许自己的、答错的作答；不改变判分与掌握度） */
+export const reportErrorCause = async (attemptId: string, code: string, note?: string)
+  : Promise<ApiResponse<{ attempt_id: string; error_code: string; error_label: string; error_note?: string | null }>> => {
+  return apiClient.post(`/quiz/attempts/${attemptId}/error-cause`, { code, note });
+};
+
+/** 基于原题生成一道同知识点的变式题（答案不下发） */
+export const generateVariant = async (questionId: string, subjectId?: string)
+  : Promise<ApiResponse<{ question: PublicQuestion; source?: string; evidence_count?: number; variant_of?: string }>> => {
+  return apiClient.post('/quiz/variant', { question_id: questionId, subject_id: subjectId });
 };
 
 /** 简答题自评（明确标记为自评，不伪装客观判分） */

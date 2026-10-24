@@ -1,0 +1,20 @@
+name: eval-gate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  retrieval-and-faithfulness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install gate dependencies
+        run: pip install rank-bm25 jieba
+      - name: Retrieval golden gate
+        run: python tests/eval/golden_gate.py --baseline tests/eval/baseline.json
+      - name: Citation / faithfulness gate
+        run: python tests/eval/faithfulness_gate.py --baseline tests/eval/faithfulness_baseline.json

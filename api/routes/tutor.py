@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from api.deps import require_current_user, require_subject_read
 from api.schemas.tutor_schema import (
     ArtifactCreate, ArtifactUpdate, MapGenerateRequest, NodeStatusRequest,
-    PracticeAnswerRequest, TutorSessionUpdate, TutorStreamRequest,
+    PracticeAnswerRequest, TutorSessionUpdate, TutorStreamRequest, WhiteboardRequest,
 )
 from services import (artifacts_service, auth_service, knowledge_map, material_scope,
                       tutor_agent, tutor_session)
@@ -56,6 +56,7 @@ async def _tutor_stream_async(request: TutorStreamRequest, user_id: str, role: s
             gen = tutor_agent.stream_turn(
                 user_id, request.subject_id, request.message,
                 ability=request.ability or tutor_session.ABILITY_CHAT,
+                guidance_mode=request.guidance_mode,
                 selected_doc_ids=request.doc_ids,
                 node_id=request.node_id,
                 conversation_id=request.conversation_id,
@@ -111,6 +112,21 @@ async def tutor_stream(request: TutorStreamRequest,
     )
 
 
+@router.post("/tutor/whiteboard")
+async def generate_whiteboard(request: WhiteboardRequest,
+                              user_id: str = Depends(require_current_user)):
+    """把知识点生成一张结构化白板（场景 JSON，前端用 SVG 渲染）。"""
+    await require_subject_read(request.subject_id, user_id)
+    from services import whiteboard_service
+    try:
+        data = await run_in_threadpool(
+            whiteboard_service.generate_scene, request.topic, "", request.model,
+            request.template)
+    except whiteboard_service.WhiteboardError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return {"success": True, "data": data, "message": "白板已生成"}
+
+
 # =====================================================================
 # 统一上下文与会话
 # =====================================================================
@@ -140,6 +156,10 @@ async def get_session(subject_id: str = Query(...),
                 {"key": tutor_session.ABILITY_MAP, "label": "知识地图"},
                 {"key": tutor_session.ABILITY_ORGANIZE, "label": "学习整理"},
             ],
+            "guidance_modes": [
+                {"key": tutor_session.GUIDANCE_DIRECT, "label": "直接回答"},
+                {"key": tutor_session.GUIDANCE_SOCRATIC, "label": "引导我"},
+            ],
         },
     }
 
@@ -149,7 +169,8 @@ async def put_session(request: TutorSessionUpdate,
                       user_id: str = Depends(require_current_user)):
     await require_subject_read(request.subject_id, user_id)
     patch = {}
-    for field in ("ability", "node_id", "conversation_id", "goal", "deadline", "daily_minutes"):
+    for field in ("ability", "guidance_mode", "node_id", "conversation_id", "goal",
+                  "deadline", "daily_minutes"):
         value = getattr(request, field)
         if value is not None:
             patch[field] = value
