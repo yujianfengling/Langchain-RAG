@@ -122,7 +122,7 @@ def _new_id(prefix: str) -> str:
 def _tool_search_material(user_id: str, subject_id: str, query: str) -> Dict[str, Any]:
     """检索课程资料（RAG），返回片段与来源。只读。"""
     from services.ai_service import retrieve_and_build_context
-    ctx = retrieve_and_build_context(query, subject_id, top_k=5)
+    ctx = retrieve_and_build_context(query, subject_id, top_k=5, viewer_user_id=user_id)
     return {
         "context_used": ctx.get("context_used", False),
         "evidence_count": len(ctx.get("sources") or []),

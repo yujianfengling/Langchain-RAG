@@ -208,6 +208,8 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   }, [leftOpen, rightOpen, isNarrow, isNarrowForPanel, toggleRightPanel]);
 
   const abortRef = useRef<AbortController | null>(null);
+  // 路由切换或页面卸载时中止未完成的流，避免旧请求继续更新已离开的页面。
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
   const listRef = useRef<HTMLDivElement>(null);
   const lastNoticeRef = useRef<any[]>([]);
   const turnSourcesRef = useRef<TutorSource[]>([]);
@@ -507,6 +509,7 @@ const includeNodeSources = useCallback(() => {
             updateLast({
               content: ev.answer || '',
               streaming: false,
+              error: ev.answer?.trim() ? undefined : '模型返回了空回复，请重试',
               sources: ev.sources || turnSourcesRef.current,
               citedIds: ev.cited_source_ids || [],
               trace: ev.tool_trace || turnTraceRef.current,

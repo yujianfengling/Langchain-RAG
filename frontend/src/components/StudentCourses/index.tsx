@@ -162,7 +162,6 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({
     if (target) {
       focusedRef.current = focusAssignmentId;
       openAssignmentDetail(target);
-      onFocusConsumed?.();
     } else if (loaded && !loading) {
       // 目标不存在（已下线/不属于本班）：停止重试并如实告知，不假装打开成功
       focusedRef.current = focusAssignmentId;
@@ -388,16 +387,16 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({
       <Modal
         open={!!openAssignment}
         title={openAssignment?.title}
-        onCancel={() => setOpenAssignment(null)}
+        onCancel={() => { setOpenAssignment(null); onFocusConsumed?.(); }}
         width={760}
         footer={submitResult ? [
           <Button key="home" type="primary"
                   onClick={() => { setOpenAssignment(null); navigate('/student'); }}>
             返回学习首页
           </Button>,
-          <Button key="stay" onClick={() => setOpenAssignment(null)}>留在本页</Button>,
+          <Button key="stay" onClick={() => { setOpenAssignment(null); onFocusConsumed?.(); }}>留在本页</Button>,
         ] : [
-          <Button key="close" onClick={() => setOpenAssignment(null)}>关闭</Button>,
+          <Button key="close" onClick={() => { setOpenAssignment(null); onFocusConsumed?.(); }}>关闭</Button>,
           <Tooltip key="submit-tip"
                    title={allAnswered ? '' : '还有 ' + Math.max(0, totalCount - answeredCount) + ' 题未作答'}>
             <Button key="submit" type="primary" icon={<CheckCircleOutlined />}

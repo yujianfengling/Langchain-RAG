@@ -25,6 +25,7 @@ const TasksPage = lazy(() => import('./pages/TasksPage'));
 const ProfilePage = lazy(() => import('./pages/ProfilePage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const TeacherPage = lazy(() => import('./pages/TeacherPage'));
+const AssignmentsPage = lazy(() => import('./pages/AssignmentsPage'));
 
 const { Sider } = Layout;
 
@@ -258,7 +259,7 @@ const App: React.FC = () => {
                   <Route path="/knowledge" element={<Navigate to="/student/materials" replace />} />
                   <Route path="/student/courses" element={<Navigate to="/student/materials" replace />} />
                   <Route path="/student/todo" element={<Navigate to="/student/tasks" replace />} />
-                  <Route path="/student/assignments" element={<Navigate to="/student/tasks" replace />} />
+                  <Route path="/student/assignments" element={<Protected><AssignmentsPage /></Protected>} />
                   <Route path="/learning" element={<Navigate to="/student/tasks" replace />} />
                   <Route path="*" element={<Navigate to="/student" replace />} />
                 </Routes>

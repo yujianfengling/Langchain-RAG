@@ -242,9 +242,13 @@ def list_members(user_id: str, class_id: str) -> Dict[str, Any]:
 def remove_member(user_id: str, class_id: str, member_id: str,
                   reason: Optional[str] = None) -> Dict[str, Any]:
     klass = access.require_class_teacher(user_id, class_id)
-    member = td.set_member_status(member_id, "removed", actor_user_id=user_id, reason=reason)
+    member = td.get_member(member_id)
+    if not member:
+        raise TeachingError("成员记录不存在", "not_found")
     if member.get("class_id") != class_id:
+        # 必须在任何状态写入之前验证归属，避免跨班移除已经生效后才报错。
         raise TeachingError("成员不属于该班级", "invalid_request")
+    member = td.set_member_status(member_id, "removed", actor_user_id=user_id, reason=reason)
     td.audit(klass["course_id"], user_id, "member.remove", "member", member_id,
              {"user_id": member["user_id"], "reason": reason})
     return member

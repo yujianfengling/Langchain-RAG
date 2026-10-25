@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from api.deps import get_current_user
+from api.deps import get_current_user, require_subject_read
 from api.schemas.response_schema import SuccessResponse
 from api.exceptions import ValidationError
 from services.learning_service import (
@@ -46,6 +46,7 @@ async def generate_learning_plan(request: GeneratePlanRequest,
     - **subject_id**: 学科ID
     - **goal**: 学习目标，如"三天复习完数据结构中的树和图"
     """
+    await require_subject_read(request.subject_id, user_id)
     try:
         # V2.5.2：generate_plan 为同步阻塞（RAG + LLM），移出事件循环
         plan = await run_in_threadpool(

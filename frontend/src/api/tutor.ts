@@ -294,6 +294,8 @@ export const streamTutorTurn = (
           }
         }
       }
+      // 响应正常结束但没有 done/error 也属于中断，不能让发送按钮永久保持加载。
+      handlers.onError?.('连接提前结束，未收到完整回答，请重试');
     } catch (error: any) {
       if (error?.name === 'AbortError') return;
       handlers.onError?.('连接中断，请稍后重试');

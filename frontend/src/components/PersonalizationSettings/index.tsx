@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card, Form, Radio, Slider, Button, message, Space, Typography, Divider } from 'antd';
 import {
   SettingOutlined,
@@ -26,7 +26,7 @@ const PersonalizationSettings: React.FC<PersonalizationSettingsProps> = ({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const loadSettings = async () => {
+  const loadSettings = useCallback(async () => {
     setLoading(true);
     try {
       const res = await getUserProfile();
@@ -42,11 +42,11 @@ const PersonalizationSettings: React.FC<PersonalizationSettingsProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [form]);
 
   useEffect(() => {
-    loadSettings();
-  }, []);
+    void loadSettings();
+  }, [loadSettings]);
 
   const handleSave = async () => {
     setSaving(true);

@@ -337,6 +337,8 @@ a:hover { color: var(--color-primary-hover); }
   .ant-card { margin-bottom: 0; }
   .material-doc-name { max-width: 42vw !important; }
   .task-list .ant-list-item { align-items: flex-start; flex-direction: column; }
+  .task-list .ant-list-item-meta { width: 100%; min-width: 0; }
+  .task-list .ant-list-item-meta-content { min-width: 0; }
   .task-list .ant-list-item-action { width: 100%; margin: 0; }
   .task-list .ant-list-item-action > li { width: 100%; justify-content: flex-start; }
 }

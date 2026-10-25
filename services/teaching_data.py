@@ -678,6 +678,16 @@ def add_member(class_id: str, course_id: str, user_id: str,
         conn.close()
 
 
+def get_member(member_id: str) -> Optional[Dict[str, Any]]:
+    """按成员记录 ID 查询，供业务层在写入前校验班级归属。"""
+    conn = _get_db()
+    try:
+        row = conn.execute("SELECT * FROM class_members WHERE id=?", (member_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def set_member_status(member_id: str, status: str, actor_user_id: str,
                       reason: Optional[str] = None) -> Dict[str, Any]:
     if status not in ("left", "removed"):
