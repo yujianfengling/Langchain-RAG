@@ -795,24 +795,18 @@ const includeNodeSources = useCallback(() => {
               ]}
             />
           </Tooltip>
-          <div className="tutor-main-actions">
-            <Tooltip title="让 AI 把当前知识点画成一张板书">
-              <Button size="small" icon={<HighlightOutlined />}
-                      disabled={!subjectId} onClick={() => void openWhiteboard()}>
-                白板
-              </Button>
-            </Tooltip>
-            <Tooltip title="上传课堂录音，生成提纲、重点与待解决问题">
-              <Button size="small" icon={<AudioOutlined />}
-                      disabled={!subjectId} onClick={() => setLectureOpen(true)}>
-                录音笔记
-              </Button>
-            </Tooltip>
-            <Tooltip title="回看这个学科以前的问答与讲解">
-              <Button
-                size="small"
-                icon={<HistoryOutlined />}
-                onClick={async () => {
+          {isNarrow ? (
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: [
+                  { key: 'board', icon: <HighlightOutlined />, label: '白板' },
+                  { key: 'lecture', icon: <AudioOutlined />, label: '录音笔记' },
+                  { key: 'history', icon: <HistoryOutlined />, label: '历史记录' },
+                ],
+                onClick: async ({ key }) => {
+                  if (key === 'board') { void openWhiteboard(); return; }
+                  if (key === 'lecture') { setLectureOpen(true); return; }
                   setHistoryOpen(true);
                   setHistoryLoading(true);
                   try {
@@ -823,25 +817,46 @@ const includeNodeSources = useCallback(() => {
                   } finally {
                     setHistoryLoading(false);
                   }
-                }}
-              >
-                历史记录
-              </Button>
-            </Tooltip>
-            {!isNarrow && (
+                },
+              }}
+            >
+              <Button size="small" icon={<MoreOutlined />} aria-label="更多学习工具">工具</Button>
+            </Dropdown>
+          ) : (
+            <div className="tutor-main-actions">
+              <Tooltip title="让 AI 把当前知识点画成一张板书">
+                <Button size="small" icon={<HighlightOutlined />}
+                        disabled={!subjectId} onClick={() => void openWhiteboard()}>白板</Button>
+              </Tooltip>
+              <Tooltip title="上传课堂录音，生成提纲、重点与待解决问题">
+                <Button size="small" icon={<AudioOutlined />}
+                        disabled={!subjectId} onClick={() => setLectureOpen(true)}>录音笔记</Button>
+              </Tooltip>
+              <Tooltip title="回看这个学科以前的问答与讲解">
+                <Button
+                  size="small" icon={<HistoryOutlined />}
+                  onClick={async () => {
+                    setHistoryOpen(true);
+                    setHistoryLoading(true);
+                    try {
+                      const rows = await listTurns(subjectId, 50);
+                      setHistory(Array.isArray(rows) ? rows : []);
+                    } catch {
+                      antdMessage.error('历史记录加载失败');
+                    } finally {
+                      setHistoryLoading(false);
+                    }
+                  }}
+                >历史记录</Button>
+              </Tooltip>
               <Tooltip title={rightOpen ? '收起学习成果' : '展开学习成果与执行详情'}>
                 <Button
-                  size="small"
-                  type={rightOpen ? 'primary' : 'default'}
-                  icon={<FileTextOutlined />}
-                  onClick={() => toggleRightPanel(!rightOpen)}
-                  className="tutor-panel-toggle"
-                >
-                  成果与详情
-                </Button>
+                  size="small" type={rightOpen ? 'primary' : 'default'} icon={<FileTextOutlined />}
+                  onClick={() => toggleRightPanel(!rightOpen)} className="tutor-panel-toggle"
+                >成果与详情</Button>
               </Tooltip>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         <div className="tutor-messages" ref={listRef}>
@@ -858,7 +873,7 @@ const includeNodeSources = useCallback(() => {
               <div className="tutor-welcome-sub">
                 {guidanceMode === 'socratic'
                   ? '当前是引导模式：先说说你的思路，我会一层层提示，不直接给答案。'
-                  : '可以直接提问，或点下面的按钮。想切换「开始学习 / 做练习 / 检测」时，用底部的快捷命令。回答会给出来自课程资料的引用，可点开核对原文。'}
+                  : '基于当前学科资料提问、练习或整理笔记。回答附资料引用，随时核对原文。'}
               </div>
               <Space wrap size={8} style={{ marginTop: 14 }}>
                 {(QUICK_PROMPTS[ability] || []).map((q) => (
@@ -950,7 +965,7 @@ const includeNodeSources = useCallback(() => {
                 「记笔记」等次级能力收进"更多"，避免与顶部模式栏功能重叠、按钮成排。 */}
             <Space size={6} wrap className="tutor-node-actions">
               <Text type="secondary" className="tutor-quick-label">快捷命令：</Text>
-              <Button size="small" type="primary" ghost icon={<BulbOutlined />}
+              <Button size="small" type="primary" icon={<BulbOutlined />}
                       onClick={() => startNodeActivity('learn')}>开始学习</Button>
               <Button size="small" icon={<FormOutlined />}
                       onClick={() => startNodeActivity('practice')}>做练习</Button>

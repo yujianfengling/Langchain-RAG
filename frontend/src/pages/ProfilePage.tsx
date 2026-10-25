@@ -169,7 +169,17 @@ const ProfilePage: React.FC = () => {
   const weakPoints = points.filter((p) => p.mastery_level != null && p.mastery_level < 0.6).slice(0, 5);
 
   return (
-    <div style={{ padding: 16, maxWidth: 1080, margin: '0 auto' }}>
+    <div className="app-page">
+      <header className="page-header">
+        <div className="page-heading">
+          <div className="page-eyebrow">个人记录</div>
+          <Typography.Title level={1} className="page-title">我的主页</Typography.Title>
+          <Text className="page-subtitle">查看真实学习记录、成果与偏好，让下一步学习更有依据。</Text>
+        </div>
+        <Space className="page-actions">
+          <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>设置</Button>
+        </Space>
+      </header>
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         {/* 头像与账号 */}
         <Card>
@@ -190,18 +200,15 @@ const ProfilePage: React.FC = () => {
                 <Text type="secondary" ellipsis>{user?.username ? '账号：' + user.username : ''}</Text>
               </Space>
             </Col>
-            <Col flex="none">
-              <Space wrap>
-                <Select
-                  style={{ width: 200 }}
-                  placeholder={subjects.length ? '选择学科' : '还没有学科'}
-                  value={currentSubjectId || undefined}
-                  onChange={handleSubjectChange}
-                  options={subjects.map((s) => ({ value: s.subject_id, label: s.name }))}
-                  notFoundContent="先加入或创建课程"
-                />
-                <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>设置</Button>
-              </Space>
+            <Col xs={24} sm={24} md={8} lg={7}>
+              <Select
+                style={{ width: '100%' }}
+                placeholder={subjects.length ? '选择学科' : '还没有学科'}
+                value={currentSubjectId || undefined}
+                onChange={handleSubjectChange}
+                options={subjects.map((s) => ({ value: s.subject_id, label: s.name }))}
+                notFoundContent="先加入或创建课程"
+              />
             </Col>
           </Row>
         </Card>
@@ -407,15 +414,10 @@ const ProfilePage: React.FC = () => {
           </>
         )}
 
-        {/* 基本偏好 */}
-        <PersonalizationSettings />
-
-        <Card size="small">
-          <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
-            <Text type="secondary">模型、诊断与账号等更多设置</Text>
-            <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>打开完整设置</Button>
-          </Space>
-        </Card>
+        {/* 偏好默认收起，减少学习记录页的配置噪音；完整设置仍可从页头进入。 */}
+        <CollapsiblePanel title="学习偏好" icon={<SettingOutlined />} defaultOpen={false}>
+          <PersonalizationSettings />
+        </CollapsiblePanel>
 
         {/* 高级设置：按角色限制 */}
         <CollapsiblePanel title="高级设置（模型与诊断）" icon={<SettingOutlined />} defaultOpen={false}>

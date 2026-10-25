@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  Alert, Button, Card, Form, Input, Menu, Modal, Select, Space, Tag, Typography, message,
+  Alert, Button, Card, Form, Input, Menu, Modal, Select, Space, Typography, message,
 } from 'antd';
 import {
   BarChartOutlined, BookOutlined, PlusOutlined, ReloadOutlined, RobotOutlined,
@@ -20,7 +20,7 @@ import StudentsPanel from '../components/Teacher/StudentsPanel';
 import TutorAssistantPanel from '../components/Teacher/TutorAssistantPanel';
 import { useIsNarrow } from '../hooks/useIsNarrow';
 
-const { Title, Text, Paragraph } = Typography;
+const { Title, Text } = Typography;
 const { TextArea } = Input;
 
 /** 教师主导航四个入口（2026-10-07 重构，默认「教学助手」） */
@@ -278,16 +278,31 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
     );
   }
 
+  const sectionTitle = view === 'students' ? '学生明细' : {
+    assistant: '教学助手',
+    prep: '课程与备课',
+    assignments: '作业与批改',
+    analytics: '学情分析',
+  }[view];
+  const sectionSubtitle = view === 'students' ? '查看课程中的学生与学习表现。' : {
+    assistant: '围绕当前课程整理思路、准备教学内容。',
+    prep: '维护课程资料、教案与班级，让教学内容有序沉淀。',
+    assignments: '布置作业、跟进提交并完成批改。',
+    analytics: '基于真实学习数据发现共性问题和个体需求。',
+  }[view];
+
   return (
-    <div style={{ padding: 24, maxWidth: 1280, margin: '0 auto' }}>
-      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 12 }} wrap>
-        <Space size={12} wrap>
-          <Title level={4} style={{ margin: 0 }}>教师工作台</Title>
-          {currentCourse && !prepList && <Tag color="blue">当前课程：{currentCourse.title}</Tag>}
-        </Space>
-        <Space wrap>
+    <div className="app-page app-page-wide">
+      <header className="page-header">
+        <div className="page-heading">
+          <div className="page-eyebrow">教师工作台</div>
+          <Title level={1} className="page-title">{sectionTitle}</Title>
+          <Text className="page-subtitle">{sectionSubtitle}</Text>
+        </div>
+        <Space className="page-actions" wrap>
           <Select
-            style={{ width: 240 }}
+            aria-label="当前课程"
+            style={{ width: 220 }}
             placeholder={courses.length ? '选择课程' : '还没有课程'}
             value={courseId}
             onChange={(v) => { setCourseId(v); setPrepList(false); }}
@@ -295,10 +310,10 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
             options={courses.map((c) => ({ value: c.id, label: c.title }))}
             notFoundContent="还没有课程，请先新建"
           />
-          <Button icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建课程</Button>
-          <Button icon={<ReloadOutlined />} onClick={loadCourses} loading={coursesLoading}>刷新</Button>
+          <Button type="text" icon={<ReloadOutlined />} aria-label="刷新课程" onClick={loadCourses} loading={coursesLoading} />
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建课程</Button>
         </Space>
-      </Space>
+      </header>
 
       {coursesForbidden && (
         <div style={{ marginBottom: 12 }}>
@@ -330,10 +345,12 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
         </div>
       </div>
 
-      <Paragraph type="secondary" style={{ fontSize: 12, marginTop: 16, marginBottom: 0 }}>
-        四个入口：教学助手 / 课程与备课 / 作业与批改 / 学情分析。
-        所有权限判断以后端为准：这里隐藏或显示的按钮只影响展示，不构成安全边界。
-      </Paragraph>
+      <details style={{ marginTop: 20, color: 'var(--color-text-muted)', fontSize: 12 }}>
+        <summary style={{ cursor: 'pointer' }}>关于教师权限</summary>
+        <p style={{ margin: '8px 0 0' }}>
+          所有权限判断以后端为准；界面中按钮的隐藏或显示只影响展示，不构成安全边界。
+        </p>
+      </details>
 
       <Modal
         title="新建课程"
@@ -343,7 +360,7 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
         okText="创建"
         cancelText="取消"
         confirmLoading={creating}
-        destroyOnClose
+        destroyOnHidden
       >
         <Alert
           type="info"

@@ -5,7 +5,7 @@ import {
   Tag, Typography, message,
 } from 'antd';
 import {
-  CalendarOutlined, CheckOutlined, CheckSquareOutlined, ClockCircleOutlined,
+  CalendarOutlined, CheckOutlined, ClockCircleOutlined,
   ExclamationCircleOutlined, FormOutlined, PlayCircleOutlined, ReloadOutlined,
   SyncOutlined,
 } from '@ant-design/icons';
@@ -434,17 +434,17 @@ const TasksPage: React.FC = () => {
 
   const actionsOf = (it: UnifiedItem): React.ReactNode[] => {
     const nodes: React.ReactNode[] = [
-      <Button key="go" type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => go(it)}>
+      <Button key="go" type="primary" icon={<PlayCircleOutlined />} onClick={() => go(it)}>
         {actionLabel(it)}
       </Button>,
     ];
     if (canComplete(it)) {
-      nodes.push(<Button key="done" icon={<CheckOutlined />} onClick={() => onComplete(it)}>标记完成</Button>);
+      nodes.push(<Button key="done" type="text" icon={<CheckOutlined />} onClick={() => onComplete(it)}>标记完成</Button>);
     }
     if (it.kind === 'task') {
       nodes.push(
         <Dropdown key="defer" menu={{ items: deferItems, onClick: ({ key }) => onReschedule(it, key) }}>
-          <Button icon={<CalendarOutlined />}>改期</Button>
+          <Button type="text" icon={<CalendarOutlined />}>改期</Button>
         </Dropdown>,
       );
     }
@@ -460,6 +460,7 @@ const TasksPage: React.FC = () => {
     }
     return (
       <List
+        className="task-list"
         size="small"
         dataSource={list}
         rowKey={(it) => it.key}
@@ -488,30 +489,28 @@ const TasksPage: React.FC = () => {
     );
   };
 
-  const panelLabel = (title: string, count: number, tone: 'danger' | 'warning' | 'default'): React.ReactNode => (
-    <Space>
-      <Text strong>{title}</Text>
-      <Tag color={tone === 'danger' ? 'red' : tone === 'warning' ? 'orange' : 'default'}>{count}</Tag>
-    </Space>
-  );
+  const nowItems = [...overdueItems, ...todayItems];
 
   return (
-    <div style={{ maxWidth: 960, margin: '0 auto', padding: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        <CheckSquareOutlined style={{ color: 'var(--color-primary)', fontSize: 18 }} />
-        <Title level={4} style={{ margin: 0 }}>任务与复习</Title>
-        <Select
-          allowClear
-          value={subjectFilter || undefined}
-          placeholder="全部学科"
-          style={{ minWidth: 190 }}
-          options={ctx.subjects.map((s) => ({ value: s.subject_id, label: s.name }))}
-          onChange={(value) => setSubjectFilter(String(value || ''))}
-        />
-        <Button type="text" icon={<ReloadOutlined />} style={{ marginLeft: 'auto' }} onClick={() => load()}>
-          刷新
-        </Button>
-      </div>
+    <div className="app-page app-page-narrow">
+      <header className="page-header">
+        <div className="page-heading">
+          <div className="page-eyebrow">学习节奏</div>
+          <Title level={1} className="page-title">任务与复习</Title>
+          <Text className="page-subtitle">先处理现在要做的事，再查看之后的学习安排。</Text>
+        </div>
+        <Space className="page-actions" wrap>
+          <Select
+            allowClear
+            value={subjectFilter || undefined}
+            placeholder="全部学科"
+            style={{ minWidth: 180 }}
+            options={ctx.subjects.map((s) => ({ value: s.subject_id, label: s.name }))}
+            onChange={(value) => setSubjectFilter(String(value || ''))}
+          />
+          <Button type="text" icon={<ReloadOutlined />} aria-label="刷新任务" onClick={() => load()} />
+        </Space>
+      </header>
 
       {failed.length > 0 && (
         <Alert
@@ -572,26 +571,31 @@ const TasksPage: React.FC = () => {
               </Empty>
             </Card>
           ) : (
-            <Collapse
-              defaultActiveKey={['overdue', 'today']}
-              items={[
-                {
-                  key: 'overdue',
-                  label: panelLabel('逾期', overdueItems.length, 'danger'),
-                  children: renderGroup(overdueItems, '没有逾期事项，保持节奏。'),
-                },
-                {
-                  key: 'today',
-                  label: panelLabel('今天', todayItems.length, 'warning'),
-                  children: renderGroup(todayItems, '今天没有安排，可以去「开始学习」自由提问。'),
-                },
-                {
-                  key: 'future',
-                  label: panelLabel('未来', futureItems.length, 'default'),
-                  children: renderGroup(futureItems, '未来还没有排期。'),
-                },
-              ]}
-            />
+            <>
+              <section className="task-group" aria-labelledby="task-now-title">
+                <div className="task-group-head">
+                  <Title level={2} className="section-title" id="task-now-title">现在要做</Title>
+                  <span className="task-group-count">{nowItems.length} 项{overdueItems.length > 0 ? ` · ${overdueItems.length} 项已逾期` : ''}</span>
+                </div>
+                {renderGroup(nowItems, '现在没有待办，可以去「开始学习」自由提问。')}
+              </section>
+              <section className="task-group task-future" aria-label="之后安排">
+                <Collapse
+                  ghost
+                  defaultActiveKey={futureItems.length > 0 && nowItems.length === 0 ? ['future'] : []}
+                  items={[{
+                    key: 'future',
+                    label: (
+                      <span className="task-group-head" style={{ marginBottom: 0 }}>
+                        <Text strong>之后安排</Text>
+                        <span className="task-group-count">{futureItems.length} 项</span>
+                      </span>
+                    ),
+                    children: renderGroup(futureItems, '之后还没有排期。'),
+                  }]}
+                />
+              </section>
+            </>
           )}
         </>
       )}

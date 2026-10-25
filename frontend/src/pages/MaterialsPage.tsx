@@ -473,29 +473,31 @@ const MaterialsPage: React.FC = () => {
 
   if (ctx.status === 'loading') {
     return (
-      <div style={{ maxWidth: 1080, margin: '0 auto', padding: 16 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
-          <SkeletonCard height={180} />
-          <SkeletonCard height={180} />
-          <SkeletonCard height={180} />
+      <div className="app-page">
+        <div className="material-grid">
+          <SkeletonCard height={220} />
+          <SkeletonCard height={220} />
+          <SkeletonCard height={220} />
         </div>
       </div>
     );
   }
 
   return (
-    <div style={{ maxWidth: 1080, margin: '0 auto', padding: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        <DatabaseOutlined style={{ color: 'var(--color-primary)', fontSize: 18 }} />
-        <Title level={4} style={{ margin: 0 }}>资料库</Title>
-        <Text type="secondary" style={{ fontSize: 12 }}>管理伴学依据，勾选资料即可定向学习</Text>
-        <Space style={{ marginLeft: 'auto' }} wrap>
+    <div className="app-page">
+      <header className="page-header">
+        <div className="page-heading">
+          <div className="page-eyebrow">学习依据</div>
+          <Title level={1} className="page-title">资料库</Title>
+          <Text className="page-subtitle">创建学科、上传资料，再带着明确的学习范围开始提问。</Text>
+        </div>
+        <Space className="page-actions" wrap>
           <Button icon={<TeamOutlined />} onClick={() => setJoinOpen(true)}>加入课程</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
             创建学科
           </Button>
         </Space>
-      </div>
+      </header>
 
       {ctx.status === 'error' && (
         <Alert
@@ -506,6 +508,14 @@ const MaterialsPage: React.FC = () => {
         />
       )}
       {ctx.forbidden && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={ctx.forbidden} />}
+
+      <div className="material-process" aria-label="资料使用步骤">
+        <span className="material-process-step"><span className="material-process-number">1</span>创建或加入学科</span>
+        <span className="material-process-arrow">→</span>
+        <span className="material-process-step"><span className="material-process-number">2</span>上传并检查资料</span>
+        <span className="material-process-arrow">→</span>
+        <span className="material-process-step"><span className="material-process-number">3</span>勾选范围，开始学习</span>
+      </div>
 
       {cards.length === 0 ? (
         <Card>
@@ -520,39 +530,24 @@ const MaterialsPage: React.FC = () => {
         </Card>
       ) : (
         <List
+          className="material-grid"
           grid={{ gutter: 16, xs: 1, sm: 2, lg: 3 }}
           dataSource={cards}
           renderItem={(item) => {
             const active = item.subject_id === selectedId;
             return (
-              <List.Item style={{ display: 'flex' }}>
+              <List.Item>
                 <Card
-                  hoverable
                   className={'material-subject-card' + (active ? ' is-active' : '')}
-                  style={{
-                    flex: 1,
-                    borderColor: active ? 'var(--color-primary)' : undefined,
-                    boxShadow: active ? 'var(--shadow-md)' : undefined,
-                  }}
-                  bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}
                   onClick={() => setSelectedId(item.subject_id)}
                 >
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                    <div style={{
-                      width: 34, height: 34, borderRadius: 9, flexShrink: 0,
-                      background: 'var(--color-primary-50)', color: 'var(--color-primary)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                    <div className="material-card-icon">
                       {item.source === 'course' ? <TeamOutlined /> : <UserOutlined />}
                     </div>
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <div
-                        title={item.name}
-                        style={{ fontWeight: 600, fontSize: 15, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                      >
-                        {item.name}
-                      </div>
-                      <Space size={4} wrap style={{ marginTop: 2 }}>
+                      <div className="material-card-title" title={item.name}>{item.name}</div>
+                      <Space size={4} wrap style={{ marginTop: 5 }}>
                         <Tag color={item.source === 'course' ? 'blue' : 'default'} style={{ marginInlineEnd: 0 }}>
                           {item.source === 'course' ? '教师课程' : '个人学科'}
                         </Tag>
@@ -562,27 +557,19 @@ const MaterialsPage: React.FC = () => {
                     </div>
                   </div>
 
-                  <Paragraph
-                    type="secondary"
-                    ellipsis={{ rows: 2 }}
-                    style={{ margin: 0, minHeight: 40, fontSize: 12 }}
-                  >
+                  <Paragraph type="secondary" ellipsis={{ rows: 2 }} className="material-card-description">
                     {item.description
                       || (item.source === 'course' ? '课程资料由教师维护，可阅读并用于伴学' : '上传自己的资料，建立专属知识库')}
                   </Paragraph>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {item.docCount === null ? '资料数量读取中' : '资料 ' + item.docCount + ' 份'}
-                    </Text>
+                  <div className="material-card-meta">
+                    <span>{item.docCount === null ? '资料数量读取中' : '资料 ' + item.docCount + ' 份'}</span>
                     <KbStatusTag state={item.state} />
                   </div>
 
-                  <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.progressText}>
-                    {item.progressText}
-                  </Text>
+                  <div className="material-card-progress" title={item.progressText}>{item.progressText}</div>
 
-                  <div style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div className="material-card-actions">
                     <Button
                       type="primary"
                       icon={<ReadOutlined />}
@@ -609,7 +596,7 @@ const MaterialsPage: React.FC = () => {
 
       {selectedId && selectedCard && (
         <Card
-          style={{ marginTop: 16 }}
+          className="material-detail"
           title={(
             <Space wrap>
               <DatabaseOutlined style={{ color: 'var(--color-primary)' }} />
@@ -744,7 +731,7 @@ const MaterialsPage: React.FC = () => {
                         <Text
                           ellipsis
                           title={doc.name}
-                          style={{ maxWidth: 320, minWidth: 0 }}
+                          className="material-doc-name"
                         >
                           {doc.name}
                         </Text>
@@ -793,7 +780,7 @@ const MaterialsPage: React.FC = () => {
         confirmLoading={creating}
         okText="创建"
         cancelText="取消"
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={form} layout="vertical" requiredMark={false}>
           <Form.Item
@@ -846,7 +833,7 @@ const MaterialsPage: React.FC = () => {
         onCancel={closePdfPreview}
         footer={null}
         width={1000}
-        destroyOnClose
+        destroyOnHidden
         styles={{ body: { padding: 0 } }}
       >
         {pdfPreview && (

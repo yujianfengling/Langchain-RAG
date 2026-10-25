@@ -128,23 +128,21 @@ const App: React.FC = () => {
    * （需求：导航保持紧凑、提供折叠入口，但完整名称不能丢）。
    */
   const brandNode = (compact = false, collapsed = false) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0,
+    <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0,
                  justifyContent: collapsed ? 'center' : 'flex-start' }}>
-      <Tooltip title={collapsed ? 'RAG与LangChain融合的智慧教育系统' : ''} placement="right">
-        <div style={{
-          width: 38, height: 38, borderRadius: 11,
-          background: 'linear-gradient(135deg, #0f766e 0%, #14b8a6 60%, #5eead4 100%)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: '#fff', fontWeight: 800, fontSize: 17, flexShrink: 0,
-        }}>智</div>
+      <Tooltip title={collapsed ? '知学 · RAG与LangChain融合的智慧教育系统' : ''} placement="right">
+        <div className="app-brand-mark" style={{
+          width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: '#fff', fontWeight: 750, fontSize: 17, flexShrink: 0,
+        }}>知</div>
       </Tooltip>
       {!collapsed && (
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: compact ? 15 : 13, color: '#0f172a', lineHeight: 1.35, wordBreak: 'break-word' }}>
-            {compact ? 'RAG智慧教育' : 'RAG与LangChain融合的智慧教育系统'}
+          <div className="app-brand-name" style={{ color: '#182033', lineHeight: 1.3 }}>
+            知学
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, lineHeight: 1.4 }}>
-            {isTeacher ? '备课 · 作业 · 学情' : '资料问答 · 引导学习'}
+          <div className="app-brand-subtitle" style={{ fontSize: 11, marginTop: 3, lineHeight: 1.4 }}>
+            {compact ? 'RAG 智慧教育' : (isTeacher ? '教师教学工作台' : 'RAG 智慧学习')}
           </div>
         </div>
       )}
@@ -152,29 +150,32 @@ const App: React.FC = () => {
   );
 
   const menuNode = (collapsed = false) => (
-    <Menu
-      mode="inline"
-      inlineCollapsed={collapsed}
-      selectedKeys={[getSelectedKey()]}
-      onClick={({ key }) => {
-        if (String(key).startsWith('/teacher')) {
-          navigate({ pathname: '/teacher', search: String(key).split('?')[1] || '' });
-        } else {
-          navigate(String(key));
-        }
-        setDrawerOpen(false);
-      }}
-      style={{ border: 'none', background: 'transparent' }}
-      items={items.map((item: any) => ({
-        ...item,
-        style: { marginBottom: 2, borderRadius: 10, fontSize: 14, fontWeight: getSelectedKey() === item.key ? 600 : 450 },
-      }))}
-    />
+    <>
+      {!collapsed && <div className="app-nav-section">{isTeacher ? '教学工作' : '学习空间'}</div>}
+      <Menu
+        mode="inline"
+        inlineCollapsed={collapsed}
+        selectedKeys={[getSelectedKey()]}
+        onClick={({ key }) => {
+          if (String(key).startsWith('/teacher')) {
+            navigate({ pathname: '/teacher', search: String(key).split('?')[1] || '' });
+          } else {
+            navigate(String(key));
+          }
+          setDrawerOpen(false);
+        }}
+        style={{ border: 'none', background: 'transparent' }}
+        items={items.map((item: any) => ({
+          ...item,
+          style: { marginBottom: 2, borderRadius: 8, fontSize: 14, fontWeight: getSelectedKey() === item.key ? 600 : 450 },
+        }))}
+      />
+    </>
   );
 
   const footerNode = (
-    <div style={{ padding: '10px 20px', borderTop: '1px solid #f1f5f9', textAlign: 'center' }}>
-      <div style={{ fontSize: 11, color: '#94a3b8', letterSpacing: '0.02em' }}>RAG × LangChain · 智慧教育</div>
+    <div style={{ padding: '10px 20px', textAlign: 'left' }}>
+      <div style={{ fontSize: 11, color: '#737d8f' }}>资料有依据，学习有路径</div>
     </div>
   );
 
@@ -200,10 +201,11 @@ const App: React.FC = () => {
             {brandNode(false, navCollapsed)}
           </div>
           <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode(navCollapsed)}</div>
-          <div style={{ padding: navCollapsed ? '8px 6px' : '8px 10px', borderTop: '1px solid #f1f5f9' }}>
-            {navCollapsed ? null : <AccountMenu onOpenProfile={() => navigate('/me')} />}
+          <div className={navCollapsed ? 'app-account-collapsed' : ''}
+               style={{ padding: navCollapsed ? '8px 6px' : '10px', borderTop: '1px solid #edf0f3' }}>
+            <AccountMenu compact={navCollapsed} onOpenProfile={() => navigate('/me')} />
           </div>
-          <div style={{ padding: '6px 8px', borderTop: '1px solid #f1f5f9', textAlign: 'center' }}>
+          <div style={{ padding: '6px 8px', textAlign: navCollapsed ? 'center' : 'right' }}>
             <Tooltip title={navCollapsed ? '展开导航' : '收起导航'} placement="right">
               <Button type="text" size="small" aria-label={navCollapsed ? '展开导航' : '收起导航'}
                       icon={navCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
@@ -216,7 +218,7 @@ const App: React.FC = () => {
 
       <header className="app-topbar">
         <Button type="text" icon={<MenuOutlined />} aria-label="打开导航菜单" onClick={() => setDrawerOpen(true)} />
-        <div className="app-topbar-title" style={{ fontWeight: 700, color: '#0f172a' }}>RAG智慧教育</div>
+        <div className="app-topbar-title" style={{ fontWeight: 700, color: '#182033' }}>知学</div>
         <div style={{ marginLeft: 'auto' }}>
           <AccountMenu compact onOpenProfile={() => navigate('/me')} />
         </div>
