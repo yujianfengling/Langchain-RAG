@@ -207,6 +207,7 @@ async def list_questions(subject_id: str, knowledge_point: str, limit: int = 20,
     学生点知识地图里的知识点时，用它把"以前出过的题"重新摆出来。
     **不下发标准答案**，答案仍只在提交作答或显式查看时给出。
     """
+    await require_subject_read(subject_id, user_id)
     data = await run_in_threadpool(quiz_service.list_questions_for_point,
                                    subject_id, knowledge_point, user_id, limit)
     return SuccessResponse(data={"questions": data}, message="获取题目成功")

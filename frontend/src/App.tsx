@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { Alert, Layout, Menu, ConfigProvider, Drawer, Button, Spin, Tooltip } from 'antd';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   DatabaseOutlined, CheckSquareOutlined, RobotOutlined, ReloadOutlined,
   EditOutlined, FormOutlined, BarChartOutlined, MenuOutlined, CloseOutlined,
@@ -25,6 +25,7 @@ const TasksPage = lazy(() => import('./pages/TasksPage'));
 const ProfilePage = lazy(() => import('./pages/ProfilePage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const TeacherPage = lazy(() => import('./pages/TeacherPage'));
+const AssignmentsPage = lazy(() => import('./pages/AssignmentsPage'));
 
 const { Sider } = Layout;
 
@@ -84,6 +85,7 @@ const App: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const isNarrow = useIsNarrow();
+  const reduceMotion = useReducedMotion();
   const { user } = useAuth();
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   /**
@@ -128,53 +130,52 @@ const App: React.FC = () => {
    * （需求：导航保持紧凑、提供折叠入口，但完整名称不能丢）。
    */
   const brandNode = (compact = false, collapsed = false) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0,
+    <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0,
                  justifyContent: collapsed ? 'center' : 'flex-start' }}>
-      <Tooltip title={collapsed ? 'RAG与LangChain融合的智慧教育系统' : ''} placement="right">
-        <div style={{
-          width: 38, height: 38, borderRadius: 11,
-          background: 'linear-gradient(135deg, #0f766e 0%, #14b8a6 60%, #5eead4 100%)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: '#fff', fontWeight: 800, fontSize: 17, flexShrink: 0,
-        }}>智</div>
+      <Tooltip title={collapsed ? '知学 · RAG与LangChain融合的智慧教育系统' : ''} placement="right">
+        <div className="app-brand-mark" style={{
+          width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: '#fff', fontWeight: 750, fontSize: 17, flexShrink: 0,
+        }}>知</div>
       </Tooltip>
-      {!collapsed && (
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontWeight: 700, fontSize: compact ? 15 : 13, color: '#0f172a', lineHeight: 1.35, wordBreak: 'break-word' }}>
-            {compact ? 'RAG智慧教育' : 'RAG与LangChain融合的智慧教育系统'}
-          </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2, lineHeight: 1.4 }}>
-            {isTeacher ? '备课 · 作业 · 学情' : '资料问答 · 引导学习'}
-          </div>
+      <div className={'app-brand-copy' + (collapsed ? ' is-collapsed' : '')} aria-hidden={collapsed}>
+        <div className="app-brand-name" style={{ color: '#182033', lineHeight: 1.3 }}>
+          知学
         </div>
-      )}
+        <div className="app-brand-subtitle" style={{ fontSize: 11, marginTop: 3, lineHeight: 1.4, whiteSpace: 'nowrap' }}>
+          {compact ? 'RAG 智慧教育' : (isTeacher ? '教师教学工作台' : 'RAG 智慧学习')}
+        </div>
+      </div>
     </div>
   );
 
   const menuNode = (collapsed = false) => (
-    <Menu
-      mode="inline"
-      inlineCollapsed={collapsed}
-      selectedKeys={[getSelectedKey()]}
-      onClick={({ key }) => {
-        if (String(key).startsWith('/teacher')) {
-          navigate({ pathname: '/teacher', search: String(key).split('?')[1] || '' });
-        } else {
-          navigate(String(key));
-        }
-        setDrawerOpen(false);
-      }}
-      style={{ border: 'none', background: 'transparent' }}
-      items={items.map((item: any) => ({
-        ...item,
-        style: { marginBottom: 2, borderRadius: 10, fontSize: 14, fontWeight: getSelectedKey() === item.key ? 600 : 450 },
-      }))}
-    />
+    <>
+      {!collapsed && <div className="app-nav-section">{isTeacher ? '教学工作' : '学习空间'}</div>}
+      <Menu
+        mode="inline"
+        inlineCollapsed={collapsed}
+        selectedKeys={[getSelectedKey()]}
+        onClick={({ key }) => {
+          if (String(key).startsWith('/teacher')) {
+            navigate({ pathname: '/teacher', search: String(key).split('?')[1] || '' });
+          } else {
+            navigate(String(key));
+          }
+          setDrawerOpen(false);
+        }}
+        style={{ border: 'none', background: 'transparent' }}
+        items={items.map((item: any) => ({
+          ...item,
+          style: { marginBottom: 2, borderRadius: 8, fontSize: 14, fontWeight: getSelectedKey() === item.key ? 600 : 450 },
+        }))}
+      />
+    </>
   );
 
   const footerNode = (
-    <div style={{ padding: '10px 20px', borderTop: '1px solid #f1f5f9', textAlign: 'center' }}>
-      <div style={{ fontSize: 11, color: '#94a3b8', letterSpacing: '0.02em' }}>RAG × LangChain · 智慧教育</div>
+    <div style={{ padding: '10px 20px', textAlign: 'left' }}>
+      <div style={{ fontSize: 11, color: '#737d8f' }}>资料有依据，学习有路径</div>
     </div>
   );
 
@@ -182,10 +183,10 @@ const App: React.FC = () => {
     <Layout style={{ minHeight: '100vh', background: '#f8fafc' }}>
       <motion.div
         className="app-sider-wrap"
-        initial={{ x: -40, opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
-        transition={{ duration: 0.18 }}
-        style={{ display: 'flex', flexDirection: 'column', width: navWidth, flexShrink: 0 }}
+        initial={reduceMotion ? { width: navWidth } : { x: -12, opacity: 0, width: navWidth }}
+        animate={{ x: 0, opacity: 1, width: navWidth }}
+        transition={{ duration: reduceMotion ? 0 : 0.22, ease: [0.2, 0, 0, 1] }}
+        style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}
       >
         <Sider
           className="app-sider"
@@ -194,16 +195,18 @@ const App: React.FC = () => {
             background: '#ffffff', borderRight: '1px solid #e2e8f0',
             height: '100vh', position: 'fixed', left: 0, top: 0, bottom: 0, zIndex: 100,
             display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            transition: 'width 220ms cubic-bezier(0.2, 0, 0, 1)',
           }}
         >
           <div style={{ padding: navCollapsed ? '18px 8px 14px' : '18px 16px 14px', borderBottom: '1px solid #f1f5f9' }}>
             {brandNode(false, navCollapsed)}
           </div>
           <div style={{ flex: 1, padding: '8px 8px', overflowY: 'auto' }}>{menuNode(navCollapsed)}</div>
-          <div style={{ padding: navCollapsed ? '8px 6px' : '8px 10px', borderTop: '1px solid #f1f5f9' }}>
-            {navCollapsed ? null : <AccountMenu onOpenProfile={() => navigate('/me')} />}
+          <div className={navCollapsed ? 'app-account-collapsed' : ''}
+               style={{ padding: navCollapsed ? '8px 6px' : '10px', borderTop: '1px solid #edf0f3' }}>
+            <AccountMenu compact={navCollapsed} onOpenProfile={() => navigate('/me')} />
           </div>
-          <div style={{ padding: '6px 8px', borderTop: '1px solid #f1f5f9', textAlign: 'center' }}>
+          <div style={{ padding: '6px 8px', textAlign: navCollapsed ? 'center' : 'right' }}>
             <Tooltip title={navCollapsed ? '展开导航' : '收起导航'} placement="right">
               <Button type="text" size="small" aria-label={navCollapsed ? '展开导航' : '收起导航'}
                       icon={navCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
@@ -216,7 +219,7 @@ const App: React.FC = () => {
 
       <header className="app-topbar">
         <Button type="text" icon={<MenuOutlined />} aria-label="打开导航菜单" onClick={() => setDrawerOpen(true)} />
-        <div className="app-topbar-title" style={{ fontWeight: 700, color: '#0f172a' }}>RAG智慧教育</div>
+        <div className="app-topbar-title" style={{ fontWeight: 700, color: '#182033' }}>知学</div>
         <div style={{ marginLeft: 'auto' }}>
           <AccountMenu compact onOpenProfile={() => navigate('/me')} />
         </div>
@@ -241,7 +244,7 @@ const App: React.FC = () => {
         <SystemStatusBanner />
         <div style={{ flex: 1, minWidth: 0 }}>
           <AnimatePresence mode="sync">
-            <motion.div key={location.pathname} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}>
+            <motion.div key={location.pathname} initial={reduceMotion ? { opacity: 1 } : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: reduceMotion ? 0 : 0.12 }}>
               <Suspense fallback={<PageFallback />}>
                 <Routes location={location}>
                   <Route path="/" element={<Navigate to="/student" replace />} />
@@ -256,7 +259,7 @@ const App: React.FC = () => {
                   <Route path="/knowledge" element={<Navigate to="/student/materials" replace />} />
                   <Route path="/student/courses" element={<Navigate to="/student/materials" replace />} />
                   <Route path="/student/todo" element={<Navigate to="/student/tasks" replace />} />
-                  <Route path="/student/assignments" element={<Navigate to="/student/tasks" replace />} />
+                  <Route path="/student/assignments" element={<Protected><AssignmentsPage /></Protected>} />
                   <Route path="/learning" element={<Navigate to="/student/tasks" replace />} />
                   <Route path="*" element={<Navigate to="/student" replace />} />
                 </Routes>

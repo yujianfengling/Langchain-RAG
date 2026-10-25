@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from api.deps import require_current_user
+from api.deps import require_current_user, require_subject_read
 from api.schemas.response_schema import SuccessResponse
 from services import agent_runtime
 from services.agent_runtime import AgentRuntimeError
@@ -52,6 +52,7 @@ async def run_agent_api(request: RunRequest,
         return _error("请说明你的学习目标")
     if not request.subject_id:
         return _error("请选择学科")
+    await require_subject_read(request.subject_id, user_id)
     try:
         result = await run_in_threadpool(
             agent_runtime.run_agent, user_id, request.subject_id,
@@ -141,6 +142,7 @@ async def run_agent_stream(request: RunRequest,
         return _error("请说明你的学习目标")
     if not request.subject_id:
         return _error("请选择学科")
+    await require_subject_read(request.subject_id, user_id)
     return StreamingResponse(
         _run_stream(user_id, request.subject_id, request.goal.strip(),
                     request.intent or "study", request.model),

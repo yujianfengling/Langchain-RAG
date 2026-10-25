@@ -221,6 +221,14 @@ class BM25Retriever:
         
         if RANK_BM25_AVAILABLE:
             self._bm25 = BM25Okapi(self._tokenized_corpus)
+            # rank_bm25 的 Robertson IDF 在 df == N / 2 时恰好为 0，且只修正负值。
+            # 小型知识库很容易因此出现“关键词明确存在却全部 0 分”。沿用其 epsilon
+            # 兜底思路给零权重一个正值；其它词的权重与既有大库排序保持不变。
+            zero_idf_terms = [term for term, value in self._bm25.idf.items() if value == 0]
+            if zero_idf_terms:
+                floor = self._bm25.epsilon * max(self._bm25.average_idf, 1.0)
+                for term in zero_idf_terms:
+                    self._bm25.idf[term] = floor
         else:
             self._bm25 = _BuiltinBM25(self._tokenized_corpus)
 

@@ -45,7 +45,6 @@ const SpeechSettings: React.FC = () => {
 
   useEffect(() => {
     loadStatus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

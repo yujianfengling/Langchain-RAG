@@ -28,7 +28,7 @@ const md: MarkdownIt = createMarkdown({
         return '<pre class="hljs"><code>' +
                hljs.highlight(str, { language: lang, ignoreIllegals: true }).value +
                '</code></pre>';
-      } catch (__) {}
+      } catch (__) { /* 高亮失败时回退为转义纯文本 */ }
     }
     return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + '</code></pre>';
   }

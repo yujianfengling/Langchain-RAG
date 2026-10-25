@@ -55,7 +55,7 @@ const AccountMenu: React.FC<{ compact?: boolean; onOpenProfile?: () => void }> =
     <Dropdown menu={{ items, onClick }} trigger={['click']} placement="topRight">
       <Button type="text" block style={{ height: 'auto', padding: '6px 8px', textAlign: 'left' }}>
         <Space size={8} style={{ width: '100%' }}>
-          <Avatar size={28} icon={<UserOutlined />} style={{ backgroundColor: '#0f766e', flexShrink: 0 }} />
+          <Avatar size={28} icon={<UserOutlined />} style={{ backgroundColor: 'var(--color-primary)', flexShrink: 0 }} />
           <Text style={{ maxWidth: compact ? 96 : 104, fontSize: 13 }} ellipsis>
             {user.display_name || user.username}
           </Text>
