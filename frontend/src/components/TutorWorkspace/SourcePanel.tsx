@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Button, Empty, Modal, Popconfirm, Tag, Tooltip, Typography, message } from 'antd';
 import {
   DeleteOutlined, EditOutlined, FileImageOutlined, FileTextOutlined, SaveOutlined,
@@ -31,6 +31,20 @@ const SourcePanel: React.FC<{
         onUpdateArtifact, focusSourceId, showSources = true }) => {
   const [tab, setTab] = useState<'sources' | 'artifacts' | 'trace'>(
     showSources ? 'sources' : 'artifacts');
+  const [pulseSourceId, setPulseSourceId] = useState<number | null>(null);
+  useEffect(() => {
+    if (!showSources || focusSourceId == null) return;
+    setTab('sources');
+    setPulseSourceId(focusSourceId);
+    const frame = window.requestAnimationFrame(() => {
+      const body = document.querySelector('.tutor-panel-drawer .tutor-side-body, .tutor-drawer-right .tutor-side-body, .tutor-aside-right .tutor-side-body');
+      const target = body?.querySelector(`[data-source-id="${focusSourceId}"]`);
+      if (body && target) {
+        body.scrollTop = (target as HTMLElement).offsetTop - (body as HTMLElement).clientHeight / 2;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusSourceId, showSources]);
   const [preview, setPreview] = useState<{
     url: string; bbox?: number[]; width?: number; height?: number;
   } | null>(null);
@@ -107,8 +121,10 @@ const SourcePanel: React.FC<{
                 const cited = citedIds.includes(s.id);
                 return (
                   <div key={s.id + '-' + (s.file_name || '')}
+                       data-source-id={s.id}
+                       onAnimationEnd={() => { if (pulseSourceId === s.id) setPulseSourceId(null); }}
                        className={'tutor-source-item' + (cited ? ' is-cited' : '')
-                         + (focusSourceId === s.id ? ' is-focus' : '')}>
+                         + (pulseSourceId === s.id ? ' is-pulse' : '')}>
                     <div className="tutor-source-head">
                       <Tag color={cited ? 'green' : 'default'}>[{s.id}]</Tag>
                       <Tooltip title={s.file_name}>

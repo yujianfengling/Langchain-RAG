@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { Alert, Layout, Menu, ConfigProvider, Drawer, Button, Spin, Tooltip } from 'antd';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   DatabaseOutlined, CheckSquareOutlined, RobotOutlined, ReloadOutlined,
   EditOutlined, FormOutlined, BarChartOutlined, MenuOutlined, CloseOutlined,
@@ -84,6 +84,7 @@ const App: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const isNarrow = useIsNarrow();
+  const reduceMotion = useReducedMotion();
   const { user } = useAuth();
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   /**
@@ -136,16 +137,14 @@ const App: React.FC = () => {
           color: '#fff', fontWeight: 750, fontSize: 17, flexShrink: 0,
         }}>知</div>
       </Tooltip>
-      {!collapsed && (
-        <div style={{ minWidth: 0 }}>
-          <div className="app-brand-name" style={{ color: '#182033', lineHeight: 1.3 }}>
-            知学
-          </div>
-          <div className="app-brand-subtitle" style={{ fontSize: 11, marginTop: 3, lineHeight: 1.4 }}>
-            {compact ? 'RAG 智慧教育' : (isTeacher ? '教师教学工作台' : 'RAG 智慧学习')}
-          </div>
+      <div className={'app-brand-copy' + (collapsed ? ' is-collapsed' : '')} aria-hidden={collapsed}>
+        <div className="app-brand-name" style={{ color: '#182033', lineHeight: 1.3 }}>
+          知学
         </div>
-      )}
+        <div className="app-brand-subtitle" style={{ fontSize: 11, marginTop: 3, lineHeight: 1.4, whiteSpace: 'nowrap' }}>
+          {compact ? 'RAG 智慧教育' : (isTeacher ? '教师教学工作台' : 'RAG 智慧学习')}
+        </div>
+      </div>
     </div>
   );
 
@@ -183,10 +182,10 @@ const App: React.FC = () => {
     <Layout style={{ minHeight: '100vh', background: '#f8fafc' }}>
       <motion.div
         className="app-sider-wrap"
-        initial={{ x: -40, opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
-        transition={{ duration: 0.18 }}
-        style={{ display: 'flex', flexDirection: 'column', width: navWidth, flexShrink: 0 }}
+        initial={reduceMotion ? { width: navWidth } : { x: -12, opacity: 0, width: navWidth }}
+        animate={{ x: 0, opacity: 1, width: navWidth }}
+        transition={{ duration: reduceMotion ? 0 : 0.22, ease: [0.2, 0, 0, 1] }}
+        style={{ display: 'flex', flexDirection: 'column', flexShrink: 0 }}
       >
         <Sider
           className="app-sider"
@@ -195,6 +194,7 @@ const App: React.FC = () => {
             background: '#ffffff', borderRight: '1px solid #e2e8f0',
             height: '100vh', position: 'fixed', left: 0, top: 0, bottom: 0, zIndex: 100,
             display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            transition: 'width 220ms cubic-bezier(0.2, 0, 0, 1)',
           }}
         >
           <div style={{ padding: navCollapsed ? '18px 8px 14px' : '18px 16px 14px', borderBottom: '1px solid #f1f5f9' }}>
@@ -243,7 +243,7 @@ const App: React.FC = () => {
         <SystemStatusBanner />
         <div style={{ flex: 1, minWidth: 0 }}>
           <AnimatePresence mode="sync">
-            <motion.div key={location.pathname} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}>
+            <motion.div key={location.pathname} initial={reduceMotion ? { opacity: 1 } : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: reduceMotion ? 0 : 0.12 }}>
               <Suspense fallback={<PageFallback />}>
                 <Routes location={location}>
                   <Route path="/" element={<Navigate to="/student" replace />} />

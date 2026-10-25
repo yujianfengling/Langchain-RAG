@@ -1,6 +1,7 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Button, Empty, Tooltip, Typography } from 'antd';
-import { AimOutlined, ReloadOutlined, PartitionOutlined } from '@ant-design/icons';
+import { AimOutlined, DownOutlined, ReloadOutlined, PartitionOutlined } from '@ant-design/icons';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 
 const { Text } = Typography;
 
@@ -55,6 +56,8 @@ const MapTree: React.FC<{
   onGenerate: () => void;
   statusLabels?: Record<string, string>;
 }> = ({ nodes, currentNodeId, nextNode, generating, onSelect, onGenerate, statusLabels }) => {
+  const reduceMotion = useReducedMotion();
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const childrenOf = useMemo(() => {
     const map = new Map<string | null, MapNode[]>();
     for (const n of nodes) {
@@ -65,35 +68,79 @@ const MapTree: React.FC<{
     return map;
   }, [nodes]);
 
+  // 明确选中节点时只展开它的祖先，不主动滚动目录，也不改变用户已展开的其它章节。
+  useEffect(() => {
+    if (!currentNodeId) return;
+    const byId = new Map(nodes.map((node) => [node.node_id, node]));
+    const ancestors = new Set<string>();
+    let parent = byId.get(currentNodeId)?.parent_id;
+    while (parent) {
+      ancestors.add(parent);
+      parent = byId.get(parent)?.parent_id;
+    }
+    setCollapsed((prev) => {
+      if (![...ancestors].some((id) => prev.has(id))) return prev;
+      const next = new Set(prev);
+      ancestors.forEach((id) => next.delete(id));
+      return next;
+    });
+  }, [currentNodeId, nodes]);
+
   const renderLevel = (parentId: string | null, depth: number): React.ReactNode => {
     const items = childrenOf.get(parentId) || [];
     if (!items.length) return null;
-    return (
-      <ul className="tutor-map-level" style={{ paddingLeft: depth === 0 ? 0 : 14 }}>
-        {items.map((node) => {
-          const active = node.node_id === currentNodeId;
-          const isNext = nextNode?.node_id === node.node_id;
-          return (
-            <li key={node.node_id}>
+    return items.map((node) => {
+      const active = node.node_id === currentNodeId;
+      const isNext = nextNode?.node_id === node.node_id;
+      const hasChildren = Boolean(childrenOf.get(node.node_id)?.length);
+      const isCollapsed = collapsed.has(node.node_id);
+      return (
+        <li key={node.node_id}>
+          <div className="tutor-map-row">
+            {hasChildren ? (
               <button
                 type="button"
-                className={'tutor-map-node' + (active ? ' is-active' : '') + (isNext ? ' is-next' : '')}
-                data-node-id={node.node_id}
-                onClick={() => onSelect(node.node_id)}
-                title={(node.source_docs || []).join('、') || node.label}
-              >
-                <span className="tutor-map-dot" style={{ background: STATUS_DOT[node.status] || '#cbd5e1' }} />
-                <span className="tutor-map-label">{node.label}</span>
-                <span className="tutor-map-status">
-                  {statusText(node.status, statusLabels, node.status_label)}
-                </span>
-              </button>
-              {renderLevel(node.node_id, depth + 1)}
-            </li>
-          );
-        })}
-      </ul>
-    );
+                className={'tutor-map-toggle' + (isCollapsed ? ' is-collapsed' : '')}
+                aria-label={(isCollapsed ? '展开 ' : '收起 ') + node.label}
+                aria-expanded={!isCollapsed}
+                onClick={() => setCollapsed((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(node.node_id)) next.delete(node.node_id); else next.add(node.node_id);
+                  return next;
+                })}
+              ><DownOutlined /></button>
+            ) : <span className="tutor-map-toggle-spacer" />}
+            <button
+              type="button"
+              className={'tutor-map-node' + (active ? ' is-active' : '') + (isNext ? ' is-next' : '')}
+              data-node-id={node.node_id}
+              onClick={() => onSelect(node.node_id)}
+              title={(node.source_docs || []).join('、') || node.label}
+            >
+              <span className="tutor-map-dot" style={{ background: STATUS_DOT[node.status] || '#cbd5e1' }} />
+              <span className="tutor-map-label">{node.label}</span>
+              <span className="tutor-map-status">
+                {statusText(node.status, statusLabels, node.status_label)}
+              </span>
+            </button>
+          </div>
+          {hasChildren && (
+            <AnimatePresence initial={false}>
+              {!isCollapsed && (
+                <motion.ul
+                  className="tutor-map-level tutor-map-children"
+                  style={{ paddingLeft: depth === 0 ? 12 : 14 }}
+                  initial={reduceMotion ? { opacity: 1 } : { height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={reduceMotion ? { opacity: 0 } : { height: 0, opacity: 0 }}
+                  transition={{ duration: reduceMotion ? 0 : 0.18, ease: [0.2, 0, 0, 1] }}
+                >{renderLevel(node.node_id, depth + 1)}</motion.ul>
+              )}
+            </AnimatePresence>
+          )}
+        </li>
+      );
+    });
   };
 
   if (!nodes.length) {
@@ -121,7 +168,7 @@ const MapTree: React.FC<{
           </div>
         </Tooltip>
       )}
-      <div className="tutor-map-scroll">{renderLevel(null, 0)}</div>
+      <div className="tutor-map-scroll"><ul className="tutor-map-level">{renderLevel(null, 0)}</ul></div>
       <div className="tutor-map-footer">
         <Tooltip title="资料变化后可重新生成；能匹配上的节点会保留学习记录">
           <Button size="small" type="text" icon={<ReloadOutlined />} loading={generating}

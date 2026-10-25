@@ -199,7 +199,8 @@
 .tutor-side-tab {
   flex: 1; background: transparent; border: none; cursor: pointer;
   padding: 8px 6px; font-size: 13px; color: var(--color-text-secondary);
-  border-bottom: 2px solid transparent; transition: all 0.15s var(--ease-out);
+  border-bottom: 2px solid transparent;
+  transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard);
 }
 .tutor-side-tab:hover { color: var(--color-primary); }
 .tutor-side-tab.is-active { color: var(--color-primary); font-weight: 650; border-bottom-color: var(--color-primary); }
@@ -924,4 +925,116 @@
   .tutor-quick-label { display: none; }
   .tutor-composer { gap: 6px; padding-left: 10px; }
   .tutor-composer .ant-btn-primary { min-width: 58px; }
+}
+
+/* ============================================================
+   2026-10-25 精修：统一层次、首次输入与克制动效
+   ============================================================ */
+.tutor-workspace { background: var(--color-bg-content); }
+.tutor-aside-left { background: var(--color-bg-panel); }
+.tutor-panel-toggle.is-active {
+  border-color: var(--color-primary-200) !important;
+  background: var(--color-primary-50) !important;
+  color: var(--color-primary) !important;
+}
+.tutor-main-actions .ant-btn,
+.tutor-mobile-bar .ant-btn { min-height: 34px; }
+
+/* 空会话时，auto 外边距把欢迎语和同一个输入组件作为一个整体居中。 */
+.tutor-composer-wrap { width: 100%; flex-shrink: 0; }
+.tutor-main.is-empty .tutor-messages {
+  flex: 0 0 auto;
+  width: 100%;
+  margin-top: auto;
+  padding-bottom: 0;
+  overflow: visible;
+}
+.tutor-main.is-empty .tutor-composer-wrap { margin-bottom: auto; padding-top: 4px; }
+.tutor-main.is-empty .tutor-node-bar { display: none; }
+.tutor-welcome {
+  width: 100%;
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 20px 24px 12px;
+}
+.tutor-welcome-icon { width: 44px; height: 44px; margin-bottom: 14px; font-size: 20px; }
+.tutor-welcome-title { font-size: 25px; line-height: 1.35; }
+.tutor-welcome-context {
+  max-width: 100%;
+  margin-top: 9px;
+  overflow: hidden;
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tutor-welcome-sub { margin-top: 8px; font-size: 14px; line-height: 1.7; }
+.tutor-welcome-actions { justify-content: center; margin-top: 18px !important; }
+.tutor-msg { will-change: auto; }
+.tutor-composer { transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard); }
+
+/* 覆盖层由 framer-motion 驱动，避免与 CSS 关键帧叠加。 */
+.tutor-panel-overlay { z-index: 150; background: var(--color-bg-overlay); }
+.tutor-panel-drawer { animation: none; background: var(--color-bg-elevated); }
+.tutor-mobile-overlay { z-index: 1200; }
+.tutor-drawer { background: var(--color-bg-elevated); }
+.tutor-drawer-left .tutor-left { padding-top: 38px; }
+.tutor-drawer-close { min-width: 34px; }
+.tutor-side-body > * { animation: tutor-content-in var(--duration-fast) var(--ease-standard); }
+@keyframes tutor-content-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* 章节开关与节点选择是两个并列按钮，不产生嵌套交互元素。 */
+.tutor-map-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.tutor-map-row .tutor-map-node { min-width: 0; }
+.tutor-map-toggle,
+.tutor-map-toggle-spacer { width: 24px; height: 30px; flex: 0 0 24px; }
+.tutor-map-toggle {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  transition: color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard);
+}
+.tutor-map-toggle:hover { background: var(--color-bg-muted); color: var(--color-text); }
+.tutor-map-toggle .anticon { transition: transform var(--duration-fast) var(--ease-standard); }
+.tutor-map-toggle.is-collapsed .anticon { transform: rotate(-90deg); }
+.tutor-map-children { overflow: hidden; }
+.tutor-map-node {
+  transition: color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard);
+}
+.tutor-map-dot { transition: background var(--duration-fast) var(--ease-standard); }
+.tutor-map-node.is-active .tutor-map-dot { box-shadow: 0 0 0 3px var(--color-primary-100); }
+
+/* 引用定位是一次性反馈；高亮结束后恢复引用片段本身的浅色底。 */
+.tutor-source-item { scroll-margin: 80px; }
+.tutor-source-item.is-pulse { animation: tutor-source-pulse 1.35s var(--ease-standard); }
+@keyframes tutor-source-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0); }
+  28% { background: var(--color-primary-100); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.22); }
+}
+
+@media (max-width: 900px) {
+  .tutor-main.is-empty .tutor-messages { padding-bottom: 0; }
+  .tutor-welcome { margin: 0 auto; padding: 16px 18px 10px; }
+  .tutor-panel-drawer, .tutor-drawer { box-shadow: var(--shadow-md); }
+}
+@media (max-width: 560px) {
+  .tutor-main-head .tutor-main-title { display: none; }
+  .tutor-main-head { gap: 6px; }
+  .tutor-main-actions { gap: 2px; }
+  .tutor-main-actions .ant-btn { padding-inline: 7px; }
+  .tutor-welcome { padding-inline: 10px; }
+  .tutor-welcome-title { font-size: 22px; }
+  .tutor-welcome-actions { margin-top: 14px !important; }
+  .tutor-welcome-actions .ant-btn { min-height: 34px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tutor-source-item.is-pulse, .tutor-side-body > * { animation: none; }
+  .tutor-map-node.is-active .tutor-map-dot { box-shadow: none; }
 }
