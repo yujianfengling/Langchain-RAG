@@ -511,9 +511,21 @@ _CLOUD_MODEL = None
 
 
 def get_embedding_provider() -> str:
-    """当前 Embedding 供应商：cloud（默认，阿里云百炼）| local（本地 BGE）。"""
-    value = os.getenv("EMBEDDING_PROVIDER", "cloud").strip().lower()
-    return value if value in ("cloud", "local") else "cloud"
+    """当前 Embedding 供应商：local（默认，本地 BGE）| cloud（可选，阿里云百炼）。
+
+    2026-10-28 起默认改回本地 BGE：云端需要百炼 key，缺 key 时新建知识库会直接
+    失败，不适合作为"开箱即用"的默认值。云端实现完整保留（`rag/embedding_providers.py`），
+    显式设置 EMBEDDING_PROVIDER=cloud 才启用，**不做隐式回落**。
+
+    注意：默认值只影响**新建**索引用哪套编码器；已有索引一律按自身 meta 里的
+    `embedding_provider` 选择编码器（见 `get_embedding_for_index`），
+    不会因为改了默认值而混用两种向量。
+    """
+    value = os.getenv("EMBEDDING_PROVIDER", "local").strip().lower()
+    if value not in ("cloud", "local"):
+        logger.warning(f"EMBEDDING_PROVIDER={value!r} 无效（只支持 cloud/local），按 local 处理")
+        return "local"
+    return value
 
 
 def _get_cloud_model(force_reload: bool = False):
@@ -598,8 +610,9 @@ def get_embedding_model(force_reload: bool = False) -> Embeddings:
     global _embedding_model
     load_mode = get_load_mode()
 
-    # 云端优先（默认）：直接返回云端适配器，**不加载/下载任何本地模型**。
-    # 本地 BGE 只在 EMBEDDING_PROVIDER=local（或按旧索引回退）时加载。
+    # 云端是**可选**路径：只有显式 EMBEDDING_PROVIDER=cloud 才会走这里，
+    # 此时直接返回云端适配器，**不加载/下载任何本地模型**。
+    # 默认（local）走下面的本地 BGE 加载；云端缺 key 也不会把默认路径带崩。
     if get_embedding_provider() == "cloud":
         return _get_cloud_model(force_reload)
 

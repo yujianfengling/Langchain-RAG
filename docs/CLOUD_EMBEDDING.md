@@ -1,16 +1,25 @@
 # 云端 Embedding（阿里云百炼 text-embedding-v4）
 
-目标：首次入库不再依赖本地算力。**默认走云端**，本地 BGE 保留为显式可选项。
+> **状态（2026-10-28 更新）：这是可选项，不是默认。**
+> 默认已改回本地 `BAAI/bge-small-zh-v1.5`（512 维）：不需要任何云端 key，
+> `npm ci` 之外的部署步骤里**不再有"必须申请百炼 key 才能新建知识库"这一条**。
+> 本文余下内容仍然有效，但要**显式**开启云端才会走：
+
+    EMBEDDING_PROVIDER=cloud
+    DASHSCOPE_API_KEY=sk-xxxxxxxx
+
+目标：首次入库不再依赖本地算力（本地 CPU 冷态 13k 块约 316s，云端约快一个量级）。
+本地 BGE 保留为默认路径，云端为可选加速路径。**两套向量不可混用**（见第三节）。
 
 ## 一、你需要配置的字段（.env）
 
-必填一项：
+开启云端时必填一项：
 
     DASHSCOPE_API_KEY=sk-xxxxxxxx        # 阿里云百炼控制台 -> API-KEY 管理 申请
 
 可选（都有默认值，通常不用改）：
 
-    EMBEDDING_PROVIDER=cloud             # cloud(默认) | local(本地 BGE)
+    EMBEDDING_PROVIDER=cloud             # local(默认，本地 BGE) | cloud(百炼)
     EMBEDDING_CLOUD_MODEL=text-embedding-v4
     EMBEDDING_CLOUD_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
     EMBEDDING_CLOUD_DIMENSIONS=1024      # 可选 2048/1536/1024/768/512/256/128/64
@@ -48,13 +57,19 @@ RPM/TPM 档位与账号相关，官方限流页为 JS 渲染，未能读到具�
 
 ## 四、迁移步骤（保留旧库与回退）
 
-1. 配好 DASHSCOPE_API_KEY，把 EMBEDDING_PROVIDER 保持 cloud；
+1. 配好 DASHSCOPE_API_KEY，并**显式**把 `.env` 的 `EMBEDDING_PROVIDER` 改成 `cloud`
+   （默认是 `local`，不改就还是本地编码器）；
 2. 用**小样本学科**先建一次，核对引用与页码（见第五节）；
 3. 大库用现有 staging + 原子发布机制重建：构建期间线上旧索引继续服务，
    旧查询仍走本地编码器（`get_embedding_for_index` 按 meta 选择）；
 4. 校验通过后成对切换；上一版留在 `<name>.prev`，可回退；
 5. 迁移**不删除** 92 份资料，**不清除**解析缓存、分词缓存与旧向量缓存，
    **不重跑**视觉解析（解析结果复用，只重算向量）。
+
+**回退到本地**（2026-10-28 实际执行过的那条路径）：把 `EMBEDDING_PROVIDER` 改回
+`local` 并重启。已存在的旧索引不受影响（本来就按 meta 用本地编码器）；
+用云端建过的库会继续按 meta 用云端编码器，所以**回退时不要指望它自动换成本地**——
+要么保留 key，要么把那个库按本地重建。
 
 ## 五、待实测（本轮未做，不承诺收益）
 

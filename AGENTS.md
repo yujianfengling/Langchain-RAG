@@ -180,8 +180,13 @@ python -m pip install -r requirements.txt
 
 - 索引目录：`data/vector_store/<safe_dir_name>/`（中文 subject_id 会 base64 编码，
   因为 FAISS 的 C++ 层**要求整个路径为 ASCII**，仅文件名 ASCII 不够）。
-- 每个索引目录有 `meta.json`（模型/维度/分块参数）。改动 embedding 模型后必须**重建**，
+- 每个索引目录有 `meta.json`（模型/维度/分块参数）。**同一个索引目录**换 embedding 模型后必须**重建**，
   否则维度相同但语义空间不同 → 静默返回无关结果。
+- **切换"默认"编码器不等于换掉已有库**（2026-10-28）：`meta.embedding_provider` 记录了
+  建库时用的是 `local`(BGE 512) 还是 `dashscope`(v4 1024)，查询走
+  `get_embedding_for_index(meta)` 按 meta 选编码器。所以把 `EMBEDDING_PROVIDER`
+  的默认值从 cloud 改回 local，只影响**新建**的库，旧库继续用与它匹配的那套；
+  反过来说，**不要**靠改默认值去"修"一个 meta 与编码器不匹配的库——只会降级 BM25。
 - **重建不要"先删后建"**：曾有实现先 `rmtree` 再构建，构建失败就永久丢库。
   现在 `services/knowledge_service.py` 用「备份 → 构建 → 成功删备份 / 失败回滚」。
 - 删除知识库/文档后必须让**内存缓存失效**（`GlobalFAISS.invalidate` + `hybrid_retriever.clear_index`），
