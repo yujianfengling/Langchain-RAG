@@ -35,6 +35,29 @@ cd <项目目录>
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+**前端依赖必须按 lock 安装**（2026-10-28 实测踩坑）：如果你拿到的是别人拷来的
+`frontend/node_modules`，它可能停在旧版本——`package.json` 里新加的
+`katex` / `markdown-it-texmath` 没装，构建会直接报：
+
+```
+src/utils/markdown.ts(11,19): error TS2307: Cannot find module 'katex'
+[vite]: Rollup failed to resolve import "markdown-it-texmath"
+```
+
+正确做法是**不要手工往 `node_modules` 里解包补包**，而是：
+
+```powershell
+cd frontend
+npm ci        # 严格按 package-lock.json 装（实测 303 个包 / 约 2.5 分钟）
+npm run build # tsc + vite，实测约 30-40 秒
+```
+
+`npm ci` 会先删空 `node_modules` 再按 lock 重装，所以是可复现的；不要用
+`npm install` 代替（它会改写 lock，可能顺带升级依赖）。
+
+> 另一种情况：`vite build` 在 `prepareOutDir` 阶段报删除 `dist` 失败，
+> 通常是 `dist` 里有被占用的文件（例如还在跑的服务/编辑器），关掉后重试即可。
+
 ### 3. 配置模型 Key（必做）
 
 复制模板并填写：
@@ -45,23 +68,45 @@ notepad .env
 ```
 
 **最少要填** `DEEPSEEK_API_KEY`（文本问答与出题都靠它）。
-可选：`TAVILY_API_KEY`（知识库资料不足时联网补题）、`DASHSCOPE_API_KEY`（图片识别/通义视觉）。
+
+`DASHSCOPE_API_KEY`（阿里云百炼）**不是可有可无**：
+
+| 用途 | 不填的后果 |
+|---|---|
+| **云端 Embedding**（`EMBEDDING_PROVIDER=cloud` 是代码默认） | **新建/重建知识库直接失败**；查已有库不受影响 |
+| qwen-vision 识图 | 视觉改用 DeepSeek，一般不影响问答 |
+
+> 坑（2026-10-28 实测）：`DASHSCOPE_API_KEY` **不能填 DeepSeek 的 key**。
+> 两者都是 `sk-` 开头，填错时表现为建库失败，后端日志才是
+> `云端 Embedding 鉴权失败（HTTP 401）… Incorrect API key provided`，
+> 而前端只显示"建库失败：知识库构建失败，请稍后重试"。
+> 判断方法：直接打百炼的兼容接口，401 就是 key/地域不对。
+
+可选：`TAVILY_API_KEY`（知识库资料不足时联网补题）。
 
 > `.env` 已在 `.gitignore` 中，**不会被提交**，也不要把 Key 写进任何被跟踪的文件。
 
-### 4. 确认本地 embedding 模型在位（必做）
+### 4. Embedding 模型：新库走云端，旧库才需要本地 BGE
 
-知识库检索依赖本地模型 **BAAI/bge-small-zh-v1.5**（约 92MB，位于项目 `models/` 下）。
+自 2026-10-07 起（commit `9d294ab`），**新建知识库默认用云端 Embedding**
+（`EMBEDDING_PROVIDER=cloud`，百炼 `text-embedding-v4`，1024 维），
+不再依赖本机算力，也**不需要**本地模型文件。
 
-**它不在 git 里**（`.gitignore` 忽略了 `models/`）——所以用 git 拉代码部署时，
-必须把 `models/` 目录**一起复制**过去，否则知识库与检索不可用。
+但**已有的旧索引**（meta 里没有 `embedding_provider`，例如 512 维的
+`BAAI/bge-small-zh-v1.5` 库）在查询时仍会按 meta 回退到本地编码器，
+此时需要这个模型在位，来源有两个（按优先级）：
 
-- 模型在位时程序会**自动发现**它（2026-10-02 起支持，无需手工配置路径）。
-- 要把模型放到别处，可在 `.env` 里显式指定
-  `EMBEDDING_LOCAL_DIR=<模型快照目录>`（快照目录是
-  `models/bge-small-zh-v1.5/snapshots/` 下的那个哈希目录）。
+1. `models/bge-small-zh-v1.5/snapshots/<hash>/`（**不在 git 里**，`.gitignore` 忽略了 `models/`）；
+2. HuggingFace 缓存（`HF_HOME` / `~/.cache/huggingface`）。
+
+实测（2026-10-28）：本机仓库里**没有** `models/`，模型来自 HF 缓存，
+`/health/ready` 返回 `embedding.status=ready, source=local_cache`，旧库查询正常。
+
+- 要用别处的模型，可在 `.env` 指定 `EMBEDDING_LOCAL_DIR=<快照目录>`。
 - 代码以 `local_files_only=True` 加载：模型缺失时**不会静默联网下载**，
-  而是明确报"不可用"——这是有意的，免得部署时卡在一个漫长的下载上还不知道。
+  而是明确报"不可用"——这是有意的，免得部署时卡在漫长的下载上还不知道。
+- 云端模式下**不要**把 `EMBEDDING_PROVIDER` 改成 `local` 来"绕过"缺 key：
+  新旧向量语义空间不同，混用会静默返回无关结果（`meta.json` 会对不上）。
 
 ## 三、启动（日常就用这个）
 
