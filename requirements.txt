@@ -31,6 +31,8 @@ ruff>=0.6.0
 # v2.x：真实格式解析（2026-10-07）
 # 课件：.pptx 真实解析
 python-pptx==1.0.2
+# 智能组卷导出 Word（2026-10-24）
+python-docx==1.2.0
 # 表格：.xlsx / .xls
 openpyxl==3.1.5
 xlrd==2.0.2

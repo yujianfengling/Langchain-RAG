@@ -153,7 +153,6 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
   useEffect(() => {
     loadGraph();
     return () => stopPolling();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadGraph, stopPolling]);
 
   // 渲染图谱（延迟初始化，避免打开详情页动画期间主线程被图表占用）

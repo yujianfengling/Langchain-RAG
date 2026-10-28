@@ -92,10 +92,11 @@ def validate_filename(filename: str) -> Tuple[bool, str]:
     if Path(filename).is_absolute():
         return False, "不允许使用绝对路径作为文件名"
 
-    # 危险字符检查：禁止 \ / : * ? " < > |
+    # 危险字符检查：禁止 \ / : * ? " < > |。必须检查原始输入，
+    # 否则 "../../lesson.txt" 会先被 Path.name 去掉目录而被静默接受。
     dangerous_chars = re.compile(r'[/\\:*?"<>|]')
-    if dangerous_chars.search(clean_name):
-        return False, "文件名包含非法字符"
+    if dangerous_chars.search(filename):
+        return False, "文件名包含非法字符或目录分隔符"
 
     # 扩展名检查
     file_ext = Path(clean_name).suffix.lower()

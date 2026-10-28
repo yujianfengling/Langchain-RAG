@@ -313,6 +313,9 @@ def filter_visible_documents(viewer_user_id: Optional[str], subject_id: Optional
         if is_course_teacher(viewer_user_id, bound["course_id"]) or is_admin(viewer_user_id):
             # 授课教师本人 / 管理员：自己的资料（含草稿）必须照常可用
             return documents
+        # 路由守卫之外再兜底：班外/退班用户不能因某个新入口漏校验而读到学生资料。
+        if not can_read_subject(viewer_user_id, subject_id):
+            return []
         by_id, by_name = _material_maps(bound["course_id"])
         if not by_id:
             return documents

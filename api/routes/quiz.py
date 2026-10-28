@@ -1,14 +1,14 @@
 # api/routes/quiz.py
 # 自测作答与错题接口（阶段一）
 
-from typing import Optional
-from fastapi import APIRouter, Depends
+from typing import List, Optional
+from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from api.schemas.response_schema import SuccessResponse
-from api.deps import require_current_user
+from api.deps import require_current_user, require_subject_read
 from services import quiz_service, review_service
 from services.quiz_service import QuizServiceError
 
@@ -33,6 +33,28 @@ class SubmitAnswerRequest(BaseModel):
 class SelfEvaluateRequest(BaseModel):
     attempt_id: str
     is_correct: bool
+
+
+class ErrorCauseRequest(BaseModel):
+    code: str
+    note: Optional[str] = None
+
+
+class VariantRequest(BaseModel):
+    question_id: str
+    subject_id: Optional[str] = None
+
+
+class PaperRequest(BaseModel):
+    subject_id: str
+    knowledge_points: Optional[List[str]] = None
+    count: int = 10
+    types: Optional[List[str]] = None
+    duration_min: Optional[int] = None
+
+
+class PaperExportRequest(PaperRequest):
+    title: str = "智能组卷"
 
 
 def _quiz_error(e: QuizServiceError):
@@ -96,6 +118,75 @@ async def self_evaluate(request: SelfEvaluateRequest,
         return _quiz_error(e)
 
 
+@router.post("/quiz/attempts/{attempt_id}/error-cause")
+async def report_error_cause(attempt_id: str, request: ErrorCauseRequest,
+                             user_id: str = Depends(require_current_user)):
+    """记录学生自报的错因（只允许自己的、答错的作答；不改变判分与掌握度）。"""
+    try:
+        data = await run_in_threadpool(
+            quiz_service.report_error_cause, attempt_id, user_id, request.code, request.note)
+        return SuccessResponse(data=data, message="错因已记录")
+    except QuizServiceError as e:
+        return _quiz_error(e)
+
+
+@router.post("/quiz/variant")
+async def generate_variant(request: VariantRequest,
+                           user_id: str = Depends(require_current_user)):
+    """基于原题生成一道同知识点的变式题（答案不下发）。"""
+    if not request.question_id:
+        return JSONResponse(status_code=400, content={
+            "success": False, "data": None, "message": "缺少 question_id",
+            "error_type": "invalid_request"})
+    # 变式题会带着原题的知识点生成：必须先确认当前用户能读这个学科，
+    # 不能只凭 question_id 跨学科取内容。
+    question = await run_in_threadpool(quiz_service.get_question_admin, request.question_id)
+    if not question:
+        return _quiz_error(QuizServiceError("题目不存在", "not_found"))
+    await require_subject_read(question["subject_id"], user_id)
+    try:
+        data = await run_in_threadpool(
+            quiz_service.generate_variant, user_id, request.question_id, request.subject_id)
+        return SuccessResponse(data=data, message="变式题已生成")
+    except QuizServiceError as e:
+        return _quiz_error(e)
+
+
+@router.post("/quiz/paper/preview")
+async def preview_paper(request: PaperRequest,
+                        user_id: str = Depends(require_current_user)):
+    """按知识点/题型/时长组一套卷（预览，不含答案；不落库）。"""
+    await require_subject_read(request.subject_id, user_id)
+    from services import paper_builder
+    data = await run_in_threadpool(
+        paper_builder.build_preview,
+        request.subject_id, request.knowledge_points, request.count,
+        request.types, request.duration_min)
+    return SuccessResponse(data=data, message="组卷预览成功")
+
+
+@router.post("/quiz/paper/export")
+async def export_paper(request: PaperExportRequest,
+                       user_id: str = Depends(require_current_user)):
+    """导出 Word 试卷 + 参考答案（仅教师可见答案；预览接口仍然不下发答案）。"""
+    await require_subject_read(request.subject_id, user_id)
+    from services import paper_builder
+    try:
+        data = await run_in_threadpool(
+            paper_builder.export_docx,
+            request.subject_id, request.knowledge_points, request.count,
+            request.types, request.duration_min, request.title)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={
+            "success": False, "data": None, "message": str(e),
+            "error_type": "invalid_request"})
+    return Response(
+        content=data["content"],
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="paper.docx"'},
+    )
+
+
 @router.get("/quiz/attempts")
 async def list_attempts(subject_id: Optional[str] = None,
                         question_id: Optional[str] = None,
@@ -105,6 +196,21 @@ async def list_attempts(subject_id: Optional[str] = None,
     data = await run_in_threadpool(
         quiz_service.list_attempts, user_id, subject_id, question_id, limit)
     return SuccessResponse(data=data, message="获取作答历史成功")
+
+
+@router.get("/quiz/questions")
+async def list_questions(subject_id: str, knowledge_point: str, limit: int = 20,
+                         user_id: str = Depends(require_current_user)):
+    """
+    列出某知识点下的题目（含该用户最近一次作答，若有）。
+
+    学生点知识地图里的知识点时，用它把"以前出过的题"重新摆出来。
+    **不下发标准答案**，答案仍只在提交作答或显式查看时给出。
+    """
+    await require_subject_read(subject_id, user_id)
+    data = await run_in_threadpool(quiz_service.list_questions_for_point,
+                                   subject_id, knowledge_point, user_id, limit)
+    return SuccessResponse(data={"questions": data}, message="获取题目成功")
 
 
 @router.get("/quiz/wrong")

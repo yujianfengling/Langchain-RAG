@@ -1,8 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Empty, Input, List, Radio, Space, Tag, Tooltip, Typography, message } from 'antd';
-import { EyeOutlined, SendOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
+import {
+  BulbOutlined, EyeOutlined, SendOutlined, CheckCircleOutlined, CloseCircleOutlined,
+} from '@ant-design/icons';
 import {
   PublicQuestion, AttemptResult, submitAnswer, revealAnswer, selfEvaluate,
+  reportErrorCause, generateVariant, ERROR_CAUSE_LABELS,
 } from '../../api/student';
 import { isLoggedIn } from '../../api/auth';
 
@@ -28,6 +31,8 @@ export interface QuizListProps {
                 progress: { answered: number; total: number }) => void;
   /** 紧凑模式（聊天卡片内使用） */
   compact?: boolean;
+  /** 变式题内嵌时关闭“再来一道”，避免无限嵌套 */
+  allowVariant?: boolean;
 }
 
 type QState = {
@@ -36,6 +41,7 @@ type QState = {
   submitting?: boolean;
   result?: AttemptResult;
   answer?: { correct_option_id?: string | null; reference_answer?: string | null; explanation?: string | null };
+  errorCause?: string;
   error?: string;
 };
 
@@ -83,9 +89,11 @@ const makeToken = (questionId: string, cache: Record<string, string>) => {
 };
 
 export const QuizList: React.FC<QuizListProps> = ({
-  quizzes, subjectId, sourceTaskId, conversationId, onAnswered, compact,
+  quizzes, subjectId, sourceTaskId, conversationId, onAnswered, compact, allowVariant = true,
 }) => {
   const [states, setStates] = useState<Record<string, QState>>({});
+  const [variantLoading, setVariantLoading] = useState<Record<string, boolean>>({});
+  const [variants, setVariants] = useState<Record<string, PublicQuestion>>({});
   // 幂等令牌缓存（见 makeToken 注释）：按题目保存，成功后删除
   const tokenCache = useRef<Record<string, string>>({});
   const [loggedIn, setLoggedIn] = useState<boolean>(isLoggedIn());
@@ -124,7 +132,7 @@ export const QuizList: React.FC<QuizListProps> = ({
       });
       const data = (res as any)?.data as AttemptResult | undefined;
       if (data) {
-        patch(q.id, { result: data, submitting: false });
+        patch(q.id, { result: data, submitting: false, errorCause: data.error_code || undefined });
       delete tokenCache.current[q.id];   // 成功后轮换：重做算新的一次作答
         // 作答进度：本次已作答 / 本组总题数（用于"完成的是目标知识点，不是整组"的提示）
         const answeredNow = quizzes.filter(
@@ -161,6 +169,35 @@ export const QuizList: React.FC<QuizListProps> = ({
       message.info('已显示答案：该题后续作答不再计入独立掌握证据');
     } catch (e: any) {
       patch(q.id, { error: e?.response?.data?.message || '查看答案失败' });
+    }
+  };
+
+  const handleVariant = async (q: PublicQuestion) => {
+    setVariantLoading((prev) => ({ ...prev, [q.id]: true }));
+    try {
+      const res = await generateVariant(q.id, subjectId);
+      const data = (res as any)?.data;
+      if (data?.question) {
+        setVariants((prev) => ({ ...prev, [q.id]: data.question }));
+      } else {
+        message.warning('这次没有生成出变式题，请稍后重试');
+      }
+    } catch (e: any) {
+      message.error(e?.response?.data?.message || '变式题生成失败，请稍后重试');
+    } finally {
+      setVariantLoading((prev) => ({ ...prev, [q.id]: false }));
+    }
+  };
+
+  const handleErrorCause = async (q: PublicQuestion, code: string) => {
+    const attemptId = states[q.id]?.result?.attempt_id;
+    if (!attemptId) return;
+    try {
+      await reportErrorCause(attemptId, code);
+      patch(q.id, { errorCause: code, error: undefined });
+      message.success('已记录错因，复习时会优先练这一类');
+    } catch (e: any) {
+      patch(q.id, { error: e?.response?.data?.message || '错因记录失败' });
     }
   };
 
@@ -334,6 +371,58 @@ export const QuizList: React.FC<QuizListProps> = ({
                     </Space>
                   }
                 />
+              )}
+
+              {/* 错因自报（2026-10-24）：只记录学生判断，不冒充 AI 诊断，也不改判分 */}
+              {st.result?.is_correct === false && (
+                <div style={{ marginTop: 8 }}>
+                  <Text type="secondary">你觉得错在哪？（可改）</Text>
+                  <Space wrap size={4} style={{ marginTop: 4 }}>
+                    {Object.entries(ERROR_CAUSE_LABELS).map(([code, label]) => (
+                      <Button
+                        key={code}
+                        size="small"
+                        type={st.errorCause === code ? 'primary' : 'default'}
+                        onClick={() => handleErrorCause(q, code)}
+                      >
+                        {label}
+                      </Button>
+                    ))}
+                  </Space>
+                  {st.errorCause && (
+                    <div style={{ marginTop: 6 }}>
+                      <Tag color="volcano">
+                        已记录：{ERROR_CAUSE_LABELS[st.errorCause] || st.errorCause}
+                      </Tag>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 变式练习：同一知识点换情境，避免“记住原题答案”冒充掌握 */}
+              {st.result?.is_correct === false && allowVariant && (
+                <div style={{ marginTop: 6 }}>
+                  <Button
+                    size="small"
+                    icon={<BulbOutlined />}
+                    loading={!!variantLoading[q.id]}
+                    onClick={() => handleVariant(q)}
+                  >
+                    来一道变式
+                  </Button>
+                </div>
+              )}
+              {variants[q.id] && (
+                <div style={{ marginTop: 10, padding: 10, background: '#fafafa', borderRadius: 8 }}>
+                  <Text type="secondary">变式练习：同一知识点，换一个情境</Text>
+                  <QuizList
+                    quizzes={[variants[q.id]]}
+                    subjectId={subjectId}
+                    compact
+                    allowVariant={false}
+                    onAnswered={onAnswered}
+                  />
+                </div>
               )}
 
               {/* 查看答案（后端已记录，后续作答将被标记为 after_reveal） */}

@@ -1,5 +1,5 @@
 import type { AxiosProgressEvent } from 'axios';
-import apiClient from './axios';
+import apiClient, { LONG_TASK_TIMEOUT } from './axios';
 
 /**
  * 资料导入 API（2026-10-07 冻结契约，见 docs/IMPORT_API_CONTRACT.md）
@@ -346,6 +346,8 @@ export const startImport = async (
     formData,
     {
       headers: { 'Content-Type': 'multipart/form-data' },
+      // 大包上传可能好几分钟（367MB 实测 244s），默认 180s 会在这里就断
+      timeout: LONG_TASK_TIMEOUT,
       onUploadProgress: (evt: AxiosProgressEvent) => {
         if (!onUploadProgress) return;
         // 只用真实的 loaded/total；total 未知时不报进度（不编造百分比）

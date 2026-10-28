@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "description": "二叉树/二叉搜索树黄金集：问题 → 期望资料 + 答案关键词。用于检索门禁（Recall@5 / Hit@1 / KeywordHit@1）。",
+  "cases": [
+    {
+      "id": "bt-01",
+      "question": "二叉树第 i 层最多有多少个结点？",
+      "expected_source": "01_二叉树的定义与性质.txt",
+      "keyword": "2^(i-1)"
+    },
+    {
+      "id": "bt-02",
+      "question": "深度为 k 的二叉树最多有多少个结点？",
+      "expected_source": "01_二叉树的定义与性质.txt",
+      "keyword": "2^k - 1"
+    },
+    {
+      "id": "bt-03",
+      "question": "叶子结点数和度为 2 的结点数有什么关系？",
+      "expected_source": "01_二叉树的定义与性质.txt",
+      "keyword": "n0 = n2 + 1"
+    },
+    {
+      "id": "bt-04",
+      "question": "完全二叉树的深度公式是什么？",
+      "expected_source": "01_二叉树的定义与性质.txt",
+      "keyword": "floor(log2 n) + 1"
+    },
+    {
+      "id": "bt-05",
+      "question": "满二叉树的定义是什么？",
+      "expected_source": "01_二叉树的定义与性质.txt",
+      "keyword": "每一层"
+    },
+    {
+      "id": "bt-06",
+      "question": "斜树会退化成什么结构？",
+      "expected_source": "01_二叉树的定义与性质.txt",
+      "keyword": "线性结构"
+    },
+    {
+      "id": "bt-07",
+      "question": "二叉树可以为空吗？",
+      "expected_source": "01_二叉树的定义与性质.txt",
+      "keyword": "可以为空树"
+    },
+    {
+      "id": "bt-08",
+      "question": "二叉树的结点度可以取哪些值？",
+      "expected_source": "01_二叉树的定义与性质.txt",
+      "keyword": "0、1 或 2"
+    },
+    {
+      "id": "bt-09",
+      "question": "前序遍历的访问顺序是什么？",
+      "expected_source": "02_二叉树的遍历.txt",
+      "keyword": "根结点 → 左子树 → 右子树"
+    },
+    {
+      "id": "bt-10",
+      "question": "中序遍历的访问顺序是什么？",
+      "expected_source": "02_二叉树的遍历.txt",
+      "keyword": "左子树 → 根结点 → 右子树"
+    },
+    {
+      "id": "bt-11",
+      "question": "后序遍历的访问顺序是什么？",
+      "expected_source": "02_二叉树的遍历.txt",
+      "keyword": "左子树 → 右子树 → 根结点"
+    },
+    {
+      "id": "bt-12",
+      "question": "层序遍历通常借助什么数据结构实现？",
+      "expected_source": "02_二叉树的遍历.txt",
+      "keyword": "队列"
+    },
+    {
+      "id": "bt-13",
+      "question": "已知中序和前序序列，能否唯一确定一棵二叉树？",
+      "expected_source": "02_二叉树的遍历.txt",
+      "keyword": "唯一确定"
+    },
+    {
+      "id": "bt-14",
+      "question": "只有前序和后序序列，能唯一确定二叉树吗？",
+      "expected_source": "02_二叉树的遍历.txt",
+      "keyword": "不能唯一确定"
+    },
+    {
+      "id": "bt-15",
+      "question": "二叉搜索树左子树上所有结点的值有什么要求？",
+      "expected_source": "03_二叉搜索树.txt",
+      "keyword": "均小于"
+    },
+    {
+      "id": "bt-16",
+      "question": "二叉搜索树查找的最坏时间复杂度是多少？",
+      "expected_source": "03_二叉搜索树.txt",
+      "keyword": "O(n)"
+    },
+    {
+      "id": "bt-17",
+      "question": "二叉搜索树删除有两个孩子的结点时用什么替换？",
+      "expected_source": "03_二叉搜索树.txt",
+      "keyword": "中序后继"
+    },
+    {
+      "id": "bt-18",
+      "question": "对二叉搜索树做中序遍历会得到什么序列？",
+      "expected_source": "03_二叉搜索树.txt",
+      "keyword": "递增有序"
+    },
+    {
+      "id": "bt-19",
+      "question": "二叉搜索树插入时怎么找到插入位置？",
+      "expected_source": "03_二叉搜索树.txt",
+      "keyword": "按查找路径"
+    },
+    {
+      "id": "bt-20",
+      "question": "二叉搜索树查找的平均时间复杂度是多少？",
+      "expected_source": "03_二叉搜索树.txt",
+      "keyword": "O(log n)"
+    }
+  ]
+}

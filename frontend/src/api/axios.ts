@@ -17,11 +17,22 @@ interface AuthMeta {
 // 创建axios实例
 const apiClient: AxiosInstance = axios.create({
   baseURL: '/api', // Vite代理会处理这个
-  timeout: 180000, // 180s：大资料包解析/建库 + embedding 冷加载可能较慢
+  timeout: 180000, // 180s：**普通请求**的默认上限
   headers: {
     'Content-Type': 'application/json',
   },
 });
+
+/**
+ * 长任务接口的超时（毫秒）——上传/解包/解析/建库这类调用单独用它。
+ *
+ * 默认 180s 只够普通请求。资料导入要经历
+ * 「上传 → 解包 → 解析 → 逐张图片视觉识别 → 向量化 → 建索引」，
+ * 后端单批预算 IMPORT_MAX_SECONDS 默认 900s；实测一个 367MB / 16 份 PPTX
+ * 的压缩包需要 244s。用默认值会在**上传阶段**就超时，
+ * 用户看到"构建超时"，其实后端还在正常跑（2026-10-03 修）。
+ */
+export const LONG_TASK_TIMEOUT = 1_800_000; // 30 分钟
 
 /**
  * 构造带身份的请求头（供 fetch / SSE / 语音等**绕过 axios 拦截器**的调用复用）

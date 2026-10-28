@@ -101,6 +101,8 @@ def _reset_retrieval_diagnostics() -> None:
             "bm25_available": False,
             "vector_result_count": 0,
             "bm25_result_count": 0,
+            "candidate_count": 0,
+            "rerank_available": False,
             "fallback_reason": None,
         })
 
@@ -323,10 +325,13 @@ def retrieve(
     """
     result_lists = []
     _reset_retrieval_diagnostics()
+    from . import reranker
+    rerank_on = reranker.enabled()
+    candidate_k = max(top_k * 4, 20) if rerank_on else top_k
 
     # 1. 向量检索（返回 (results, reason)；reason为None表示成功）
     if use_vector:
-        vector_results, vector_reason = _vector_search(query, subject_id, top_k, threshold)
+        vector_results, vector_reason = _vector_search(query, subject_id, candidate_k, threshold)
         if vector_reason is not None:
             # 向量检索不可用：明确记录降级原因，不参与融合
             with _retrieval_lock:
@@ -345,7 +350,7 @@ def retrieve(
         if subject_id not in _bm25_retrievers:
             _load_bm25_index(subject_id)
         if subject_id in _bm25_retrievers:
-            bm25_results = _bm25_search(query, subject_id, top_k)
+            bm25_results = _bm25_search(query, subject_id, candidate_k)
             result_lists.append(bm25_results)
             with _retrieval_lock:
                 _retrieval_info["bm25_available"] = True
@@ -361,11 +366,20 @@ def retrieve(
         return []
 
     if len(result_lists) == 1:
-        # 单路检索，直接返回
-        fused = result_lists[0][:top_k]
+        # 单路检索：保留候选，交给重排后截断
+        fused = result_lists[0]
     else:
-        # 多路检索，RRF融合
-        fused = reciprocal_rank_fusion(result_lists, k=rrf_k)[:top_k]
+        # 多路检索，RRF融合（不先截断，否则重排没有候选空间）
+        fused = reciprocal_rank_fusion(result_lists, k=rrf_k)
+
+    with _retrieval_lock:
+        _retrieval_info["candidate_count"] = len(fused)
+    if rerank_on:
+        fused, rerank_used = reranker.rerank(query, fused, top_k)
+        with _retrieval_lock:
+            _retrieval_info["rerank_available"] = bool(rerank_used)
+    else:
+        fused = fused[:top_k]
 
     _finalize_retrieval_mode()
 
@@ -386,6 +400,7 @@ def retrieve(
             'score': item.get('score', 0),
             'retrieval_type': item.get('retrieval_type', 'unknown'),
             'original_scores': item.get('original_scores', {}),
+            'rerank_score': item.get('rerank_score'),
             'metadata': metadata
         })
 

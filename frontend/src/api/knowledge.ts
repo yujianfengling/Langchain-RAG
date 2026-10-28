@@ -1,4 +1,4 @@
-import apiClient from './axios';
+import apiClient, { LONG_TASK_TIMEOUT } from './axios';
 import { ApiResponse, KnowledgeBase, KnowledgeBuildRequest } from '../types';
 
 /**
@@ -21,7 +21,8 @@ export const getKnowledgeStats = async (subjectId: string): Promise<KnowledgeBas
  * 构建知识库
  */
 export const buildKnowledge = async (request: KnowledgeBuildRequest): Promise<ApiResponse<any>> => {
-  return apiClient.post('/knowledge/build', request);
+  // 建库要分块 + 向量化 + 建索引，大库远超默认 180s
+  return apiClient.post('/knowledge/build', request, { timeout: LONG_TASK_TIMEOUT });
 };
 
 /**
@@ -43,6 +44,7 @@ export const uploadFile = async (subjectId: string, file: File): Promise<ApiResp
     headers: {
       'Content-Type': 'multipart/form-data',
     },
+    timeout: LONG_TASK_TIMEOUT,
   });
 };
 
@@ -66,6 +68,13 @@ export const deleteDocument = async (subjectId: string, filename: string): Promi
  */
 export const rebuildKnowledge = async (subjectId: string): Promise<ApiResponse<any>> => {
   return apiClient.post(`/knowledge/${subjectId}/rebuild`);
+};
+
+/** 建立页面级索引（图片型课件检索兜底；只处理 PDF） */
+export const buildPageIndex = async (subjectId: string, force = false): Promise<ApiResponse<any>> => {
+  return apiClient.post(`/knowledge/${subjectId}/pages/build`, null, {
+    params: { force }, timeout: LONG_TASK_TIMEOUT,
+  });
 };
 
 /**

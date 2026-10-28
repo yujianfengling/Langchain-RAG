@@ -16,7 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from api.deps import require_current_user, require_subject_read
 from api.schemas.tutor_schema import (
     ArtifactCreate, ArtifactUpdate, MapGenerateRequest, NodeStatusRequest,
-    PracticeAnswerRequest, TutorSessionUpdate, TutorStreamRequest,
+    PracticeAnswerRequest, TutorSessionUpdate, TutorStreamRequest, WhiteboardRequest,
 )
 from services import (artifacts_service, auth_service, knowledge_map, material_scope,
                       tutor_agent, tutor_session)
@@ -56,6 +56,7 @@ async def _tutor_stream_async(request: TutorStreamRequest, user_id: str, role: s
             gen = tutor_agent.stream_turn(
                 user_id, request.subject_id, request.message,
                 ability=request.ability or tutor_session.ABILITY_CHAT,
+                guidance_mode=request.guidance_mode,
                 selected_doc_ids=request.doc_ids,
                 node_id=request.node_id,
                 conversation_id=request.conversation_id,
@@ -111,6 +112,21 @@ async def tutor_stream(request: TutorStreamRequest,
     )
 
 
+@router.post("/tutor/whiteboard")
+async def generate_whiteboard(request: WhiteboardRequest,
+                              user_id: str = Depends(require_current_user)):
+    """把知识点生成一张结构化白板（场景 JSON，前端用 SVG 渲染）。"""
+    await require_subject_read(request.subject_id, user_id)
+    from services import whiteboard_service
+    try:
+        data = await run_in_threadpool(
+            whiteboard_service.generate_scene, request.topic, "", request.model,
+            request.template)
+    except whiteboard_service.WhiteboardError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return {"success": True, "data": data, "message": "白板已生成"}
+
+
 # =====================================================================
 # 统一上下文与会话
 # =====================================================================
@@ -140,6 +156,10 @@ async def get_session(subject_id: str = Query(...),
                 {"key": tutor_session.ABILITY_MAP, "label": "知识地图"},
                 {"key": tutor_session.ABILITY_ORGANIZE, "label": "学习整理"},
             ],
+            "guidance_modes": [
+                {"key": tutor_session.GUIDANCE_DIRECT, "label": "直接回答"},
+                {"key": tutor_session.GUIDANCE_SOCRATIC, "label": "引导我"},
+            ],
         },
     }
 
@@ -149,7 +169,8 @@ async def put_session(request: TutorSessionUpdate,
                       user_id: str = Depends(require_current_user)):
     await require_subject_read(request.subject_id, user_id)
     patch = {}
-    for field in ("ability", "node_id", "conversation_id", "goal", "deadline", "daily_minutes"):
+    for field in ("ability", "guidance_mode", "node_id", "conversation_id", "goal",
+                  "deadline", "daily_minutes"):
         value = getattr(request, field)
         if value is not None:
             patch[field] = value
@@ -166,10 +187,35 @@ async def put_session(request: TutorSessionUpdate,
 
 @router.get("/tutor/turns")
 async def list_turns(subject_id: Optional[str] = None, limit: int = 30,
+                     node_id: Optional[str] = None,
                      user_id: str = Depends(require_current_user)):
     if subject_id:
         await require_subject_read(subject_id, user_id)
-    return {"success": True, "data": {"turns": tutor_session.list_turns(user_id, subject_id, limit)}}
+    # node_id 给定时只返回该知识点的轮次：学生点某个知识点，右侧要显示它以前讲过什么
+    turns = tutor_session.list_turns(user_id, subject_id, limit, node_id=node_id)
+    # 题目挂在产生它的那一轮下面——历史里写着"已出 3 道题"，题就该在那条消息下，
+    # 而不是另起一块（那样删了历史题还在，说不通）。
+    from services import quiz_service
+    qmap = await run_in_threadpool(quiz_service.questions_by_turns,
+                                   [t.get("id") for t in turns], user_id)
+    for t in turns:
+        t["questions"] = qmap.get(t.get("id"), [])
+    return {"success": True, "data": {"turns": turns}}
+
+
+@router.delete("/tutor/turns/{turn_id}")
+async def delete_turn(turn_id: str,
+                      user_id: str = Depends(require_current_user)):
+    """
+    删除一条历史轮次。
+
+    **只删对话历史**；题库里的题目与作答记录不受影响——错题本、复习安排与掌握度
+    都由作答记录推导，不能因为清理历史就被抹掉。
+    """
+    ok = await run_in_threadpool(tutor_session.delete_turn, turn_id, user_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="记录不存在或无权删除")
+    return {"success": True, "data": {"deleted": turn_id}}
 
 
 @router.get("/tutor/turns/{turn_id}")
@@ -249,9 +295,27 @@ async def get_map_node(node_id: str, subject_id: str = Query(...),
 async def set_node_status(request: NodeStatusRequest,
                           user_id: str = Depends(require_current_user)):
     await require_subject_read(request.subject_id, user_id)
-    # 权威规则：passed 只能由检测结果推出，不接受直接设置
+    # 权威规则：passed 只能由检测结果推出，不接受直接设置。
+    #
+    # 例外（2026-10-03）：**学生自己上传资料的个人学科**属于自学场景，
+    # 由学生自己判断"我已通过"是合理的；而老师提供的课程资料，
+    # 自己声明通过就不算数了——成绩与掌握度必须可信。
     if request.status == knowledge_map.STATUS_PASSED:
-        raise HTTPException(status_code=400, detail="“检测通过”只能由检测结果产生，不能手动设置")
+        from services import teaching_access
+        scope = teaching_access.subject_scope(request.subject_id)
+        kind = scope.get("scope")
+        # 本人创建的个人学科
+        self_owned = (kind == "personal" and scope.get("owner_user_id") == user_id)
+        # 没有被任何课程认领的学科（legacy）：从学生视角就是"自己整理的知识库"，
+        # 没有老师参与，自己确认学会了是合理的。
+        # 注意：这里曾只看 personal，导致「材料力学（个人资料）」这类
+        # 无归属记录的学科被误判成老师提供的资料而拒绝（2026-10-03 修正）。
+        unsupervised = (kind == "legacy")
+        if not (self_owned or unsupervised):
+            raise HTTPException(
+                status_code=400,
+                detail="这门课的资料由老师提供，是否通过要以检测结果为准，不能自己标记。"
+                       "（只有你自己整理、没有绑定课程的内容，才可以手动标记为通过）")
     try:
         result = knowledge_map.set_node_status(user_id, request.subject_id,
                                                request.node_id, request.status)

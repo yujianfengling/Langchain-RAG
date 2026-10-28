@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card, Row, Col, Statistic, Progress, Typography, Spin, Tag, Space, Empty } from 'antd';
 import {
   BookOutlined,
@@ -25,7 +25,7 @@ const UserProfileDashboard: React.FC<UserProfileDashboardProps> = ({
   const [summary, setSummary] = useState<ProgressSummary | null>(null);
   const [stats, setStats] = useState<LearningStats | null>(null);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!subjectId) return;
     setLoading(true);
     try {
@@ -40,11 +40,11 @@ const UserProfileDashboard: React.FC<UserProfileDashboardProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [subjectId]);
 
   useEffect(() => {
-    loadData();
-  }, [subjectId]);
+    void loadData();
+  }, [loadData]);
 
   if (!subjectId) {
     return (

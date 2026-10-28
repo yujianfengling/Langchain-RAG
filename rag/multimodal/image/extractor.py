@@ -18,6 +18,42 @@ except ImportError:
     TESSERACT_AVAILABLE = False
 
 
+def _configure_tesseract() -> None:
+    """让 pytesseract 找到 tesseract 可执行文件与中文语言包。
+
+    2026-10-03：Windows 上 tesseract 装在 Program Files 且**不会自动进 PATH**，
+    而 pytesseract 只认 PATH（或显式 tesseract_cmd）。结果是 OCR 通道**静默不可用**
+    ——日志里刷一屏"OCR提取失败: tesseract is not installed or it's not in your PATH"，
+    所有图片都只能走约 40s 一次的视觉模型。
+
+    这里按常见位置探测一次，并允许用 TESSERACT_CMD / TESSDATA_PREFIX 显式覆盖。
+    语言包优先用项目内的 models/tessdata（放 chi_sim，且该目录已被 gitignore）。
+    """
+    if not TESSERACT_AVAILABLE:
+        return
+    cmd = os.getenv("TESSERACT_CMD")
+    if not cmd:
+        for cand in (
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+        ):
+            if cand and os.path.isfile(cand):
+                cmd = cand
+                break
+    if cmd:
+        pytesseract.pytesseract.tesseract_cmd = cmd
+    if not os.getenv("TESSDATA_PREFIX"):
+        local = Path(__file__).resolve().parents[3] / "models" / "tessdata"
+        if (local / "chi_sim.traineddata").is_file():
+            os.environ["TESSDATA_PREFIX"] = str(local)
+
+
+if TESSERACT_AVAILABLE:
+    from pathlib import Path
+    _configure_tesseract()
+
+
 class ImageExtractor:
     """
     图片提取器

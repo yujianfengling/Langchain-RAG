@@ -2,18 +2,19 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert, Button, Card, Checkbox, Collapse, Empty, Form, Input, List, Modal, Popconfirm,
-  Space, Spin, Tag, Typography, message,
+  Space, Spin, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   BuildOutlined, DatabaseOutlined, DeleteOutlined,
-  FileTextOutlined, PlusOutlined, ReadOutlined, ReloadOutlined, SyncOutlined,
+  FileImageOutlined, FileTextOutlined, PlusOutlined, ReadOutlined, ReloadOutlined, SyncOutlined,
   TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import { useCourse } from '../context/CourseContext';
 import { createSubject } from '../api/subjects';
 import {
-  deleteDocument, getDocuments, getKnowledgeStats, rebuildKnowledge,
+  buildPageIndex, deleteDocument, getDocuments, getKnowledgeStats, rebuildKnowledge,
 } from '../api/knowledge';
+import apiClient from '../api/axios';
 import { getTutorSession } from '../api/tutor';
 import { getHome } from '../api/student';
 import { joinCourseByCode } from '../api/studentCourses';
@@ -130,9 +131,102 @@ const MaterialsPage: React.FC = () => {
   const [docs, setDocs] = useState<KnowledgeDoc[]>([]);
   const [detailStats, setDetailStats] = useState<StatsResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [pdfPreview, setPdfPreview] = useState<{
+    name: string; mode: 'pages' | 'blob'; url?: string;
+    pages?: Array<{ page: number; url: string }>; loading: boolean;
+  } | null>(null);
+
+  /**
+   * 带登录态查看资料。
+   * 之前的 "查看" 是 <a href="/api/...">，浏览器直接跳转不会带 X-User-Token，
+   * 所以后端只能返回 {"detail":"请先登录"}。
+   * PDF 优先走页面索引（逐页 WebP），在应用内连续滚动，不依赖浏览器 PDF 插件。
+   */
+  const revokePdfPreview = (preview: typeof pdfPreview) => {
+    if (!preview) return;
+    if (preview.url) URL.revokeObjectURL(preview.url);
+    preview.pages?.forEach((page) => URL.revokeObjectURL(page.url));
+  };
+
+  const closePdfPreview = () => {
+    revokePdfPreview(pdfPreview);
+    setPdfPreview(null);
+  };
+
+  const fetchPageUrl = async (docId: string, page: number) => {
+    const res = await apiClient.get(
+      `/knowledge/${encodeURIComponent(selectedId)}/pages/image`,
+      { params: { doc_id: docId, page }, responseType: 'blob' },
+    );
+    const blob = res instanceof Blob ? res : (res as any)?.data;
+    return URL.createObjectURL(new Blob([blob], { type: 'image/webp' }));
+  };
+
+  const viewDocument = async (docName: string) => {
+    if (!selectedId) return;
+    const isPdf = docName.toLowerCase().endsWith('.pdf');
+    if (!isPdf) {
+      try {
+        const res = await apiClient.get(
+          `/knowledge/${encodeURIComponent(selectedId)}/documents/${encodeURIComponent(docName)}/file`,
+          { responseType: 'blob' },
+        );
+        const blob = res instanceof Blob ? res : (res as any)?.data;
+        const url = URL.createObjectURL(new Blob([blob], {
+          type: (blob as Blob)?.type || 'application/octet-stream',
+        }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = docName;
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+      } catch (e: any) {
+        message.error(e?.response?.data?.detail || '文件下载失败，请确认登录状态');
+      }
+      return;
+    }
+
+    try {
+      const meta = await apiClient.get(
+        `/knowledge/${encodeURIComponent(selectedId)}/documents/${encodeURIComponent(docName)}/pages`,
+      );
+      const data = meta?.data ?? meta;
+      const pages = data?.pages || [];
+      if (pages.length > 0) {
+        const docId = data.doc_id || `f:${docName}`;
+        const urls = await Promise.all(pages.map((p: any) => fetchPageUrl(docId, p.page)));
+        revokePdfPreview(pdfPreview);
+        setPdfPreview({
+          name: docName, mode: 'pages', loading: false,
+          pages: pages.map((p: any, index: number) => ({ page: p.page, url: urls[index] })),
+        });
+        return;
+      }
+    } catch (e: any) {
+      if (e?.response?.status !== 404) {
+        message.error(e?.response?.data?.detail || 'PDF 页面读取失败');
+        return;
+      }
+    }
+
+    // 没有页面索引时回退到原文件
+    try {
+      const res = await apiClient.get(
+        `/knowledge/${encodeURIComponent(selectedId)}/documents/${encodeURIComponent(docName)}/file`,
+        { responseType: 'blob' },
+      );
+      const blob = res instanceof Blob ? res : (res as any)?.data;
+      const url = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+      revokePdfPreview(pdfPreview);
+      setPdfPreview({ name: docName, mode: 'blob', url, loading: false });
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '文件打开失败，请确认登录状态');
+    }
+  };
   const [detailError, setDetailError] = useState<string | null>(null);
   const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
   const [rebuilding, setRebuilding] = useState(false);
+  const [pageIndexing, setPageIndexing] = useState(false);
   const [creating, setCreating] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
@@ -339,6 +433,20 @@ const MaterialsPage: React.FC = () => {
     }
   };
 
+  const handleBuildPages = async () => {
+    if (!selectedId) return;
+    setPageIndexing(true);
+    try {
+      const res = await buildPageIndex(selectedId);
+      const data = (res as any)?.data;
+      message.success('页面索引已更新：' + (data?.pages ?? 0) + ' 页');
+    } catch (e) {
+      message.error(describeError(e, '页面索引建立失败，请重试'));
+    } finally {
+      setPageIndexing(false);
+    }
+  };
+
   /** 用所选资料进入伴学：doc_id 必须来自后端统一资料范围（课程为 m:xx，个人为 f:文件名） */
   const startScoped = async () => {
     if (!selectedId) return;
@@ -365,29 +473,31 @@ const MaterialsPage: React.FC = () => {
 
   if (ctx.status === 'loading') {
     return (
-      <div style={{ maxWidth: 1080, margin: '0 auto', padding: 16 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
-          <SkeletonCard height={180} />
-          <SkeletonCard height={180} />
-          <SkeletonCard height={180} />
+      <div className="app-page">
+        <div className="material-grid">
+          <SkeletonCard height={220} />
+          <SkeletonCard height={220} />
+          <SkeletonCard height={220} />
         </div>
       </div>
     );
   }
 
   return (
-    <div style={{ maxWidth: 1080, margin: '0 auto', padding: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        <DatabaseOutlined style={{ color: 'var(--color-primary)', fontSize: 18 }} />
-        <Title level={4} style={{ margin: 0 }}>资料库</Title>
-        <Text type="secondary" style={{ fontSize: 12 }}>管理伴学依据，勾选资料即可定向学习</Text>
-        <Space style={{ marginLeft: 'auto' }} wrap>
+    <div className="app-page">
+      <header className="page-header">
+        <div className="page-heading">
+          <div className="page-eyebrow">学习依据</div>
+          <Title level={1} className="page-title">资料库</Title>
+          <Text className="page-subtitle">创建学科、上传资料，再带着明确的学习范围开始提问。</Text>
+        </div>
+        <Space className="page-actions" wrap>
           <Button icon={<TeamOutlined />} onClick={() => setJoinOpen(true)}>加入课程</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
             创建学科
           </Button>
         </Space>
-      </div>
+      </header>
 
       {ctx.status === 'error' && (
         <Alert
@@ -398,6 +508,14 @@ const MaterialsPage: React.FC = () => {
         />
       )}
       {ctx.forbidden && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={ctx.forbidden} />}
+
+      <div className="material-process" aria-label="资料使用步骤">
+        <span className="material-process-step"><span className="material-process-number">1</span>创建或加入学科</span>
+        <span className="material-process-arrow">→</span>
+        <span className="material-process-step"><span className="material-process-number">2</span>上传并检查资料</span>
+        <span className="material-process-arrow">→</span>
+        <span className="material-process-step"><span className="material-process-number">3</span>勾选范围，开始学习</span>
+      </div>
 
       {cards.length === 0 ? (
         <Card>
@@ -412,38 +530,24 @@ const MaterialsPage: React.FC = () => {
         </Card>
       ) : (
         <List
+          className="material-grid"
           grid={{ gutter: 16, xs: 1, sm: 2, lg: 3 }}
           dataSource={cards}
           renderItem={(item) => {
             const active = item.subject_id === selectedId;
             return (
-              <List.Item style={{ display: 'flex' }}>
+              <List.Item>
                 <Card
-                  hoverable
-                  style={{
-                    flex: 1,
-                    borderColor: active ? 'var(--color-primary)' : undefined,
-                    boxShadow: active ? 'var(--shadow-md)' : undefined,
-                  }}
-                  bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}
+                  className={'material-subject-card' + (active ? ' is-active' : '')}
                   onClick={() => setSelectedId(item.subject_id)}
                 >
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                    <div style={{
-                      width: 34, height: 34, borderRadius: 9, flexShrink: 0,
-                      background: 'var(--color-primary-50)', color: 'var(--color-primary)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                    <div className="material-card-icon">
                       {item.source === 'course' ? <TeamOutlined /> : <UserOutlined />}
                     </div>
                     <div style={{ minWidth: 0, flex: 1 }}>
-                      <div
-                        title={item.name}
-                        style={{ fontWeight: 600, fontSize: 15, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                      >
-                        {item.name}
-                      </div>
-                      <Space size={4} wrap style={{ marginTop: 2 }}>
+                      <div className="material-card-title" title={item.name}>{item.name}</div>
+                      <Space size={4} wrap style={{ marginTop: 5 }}>
                         <Tag color={item.source === 'course' ? 'blue' : 'default'} style={{ marginInlineEnd: 0 }}>
                           {item.source === 'course' ? '教师课程' : '个人学科'}
                         </Tag>
@@ -453,27 +557,19 @@ const MaterialsPage: React.FC = () => {
                     </div>
                   </div>
 
-                  <Paragraph
-                    type="secondary"
-                    ellipsis={{ rows: 2 }}
-                    style={{ margin: 0, minHeight: 40, fontSize: 12 }}
-                  >
+                  <Paragraph type="secondary" ellipsis={{ rows: 2 }} className="material-card-description">
                     {item.description
                       || (item.source === 'course' ? '课程资料由教师维护，可阅读并用于伴学' : '上传自己的资料，建立专属知识库')}
                   </Paragraph>
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {item.docCount === null ? '资料数量读取中' : '资料 ' + item.docCount + ' 份'}
-                    </Text>
+                  <div className="material-card-meta">
+                    <span>{item.docCount === null ? '资料数量读取中' : '资料 ' + item.docCount + ' 份'}</span>
                     <KbStatusTag state={item.state} />
                   </div>
 
-                  <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.progressText}>
-                    {item.progressText}
-                  </Text>
+                  <div className="material-card-progress" title={item.progressText}>{item.progressText}</div>
 
-                  <div style={{ marginTop: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div className="material-card-actions">
                     <Button
                       type="primary"
                       icon={<ReadOutlined />}
@@ -500,7 +596,7 @@ const MaterialsPage: React.FC = () => {
 
       {selectedId && selectedCard && (
         <Card
-          style={{ marginTop: 16 }}
+          className="material-detail"
           title={(
             <Space wrap>
               <DatabaseOutlined style={{ color: 'var(--color-primary)' }} />
@@ -553,6 +649,12 @@ const MaterialsPage: React.FC = () => {
               <Button icon={<BuildOutlined />} loading={rebuilding} disabled={docs.length === 0} onClick={handleRebuild}>
                 重建知识库
               </Button>
+              <Tooltip title="为 PDF 逐页生成图片与 OCR 文本，图片型课件也能按页检索">
+                <Button icon={<FileImageOutlined />} loading={pageIndexing}
+                        disabled={docs.length === 0} onClick={handleBuildPages}>
+                  建立页面索引
+                </Button>
+              </Tooltip>
             </Space>
           )}
 
@@ -602,12 +704,11 @@ const MaterialsPage: React.FC = () => {
                 size="small"
                 dataSource={docs}
                 renderItem={(doc) => {
-                  const href = '/api/knowledge/' + encodeURIComponent(selectedId)
-                    + '/documents/' + encodeURIComponent(doc.name) + '/file';
                   return (
                     <List.Item
                       actions={[
-                        <a key="view" href={href} target="_blank" rel="noreferrer">查看</a>,
+                        <Button key="view" type="link" size="small"
+                                onClick={() => void viewDocument(doc.name)}>查看</Button>,
                         writable ? (
                           <Popconfirm
                             key="del"
@@ -630,7 +731,7 @@ const MaterialsPage: React.FC = () => {
                         <Text
                           ellipsis
                           title={doc.name}
-                          style={{ maxWidth: 320, minWidth: 0 }}
+                          className="material-doc-name"
                         >
                           {doc.name}
                         </Text>
@@ -679,7 +780,7 @@ const MaterialsPage: React.FC = () => {
         confirmLoading={creating}
         okText="创建"
         cancelText="取消"
-        destroyOnClose
+        destroyOnHidden
       >
         <Form form={form} layout="vertical" requiredMark={false}>
           <Form.Item
@@ -724,6 +825,52 @@ const MaterialsPage: React.FC = () => {
           onPressEnter={handleJoin}
           autoFocus
         />
+      </Modal>
+
+      <Modal
+        title={pdfPreview?.name || 'PDF 预览'}
+        open={!!pdfPreview}
+        onCancel={closePdfPreview}
+        footer={null}
+        width={1000}
+        destroyOnHidden
+        styles={{ body: { padding: 0 } }}
+      >
+        {pdfPreview && (
+          pdfPreview.mode === 'pages' ? (
+            <div style={{
+              maxHeight: '78vh', overflowY: 'auto', padding: 10,
+              borderRadius: 8, background: '#e9eef2',
+            }}>
+              {pdfPreview.loading ? (
+                <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="正在载入 PDF…" /></div>
+              ) : (
+                (pdfPreview.pages || []).map((page, index) => (
+                  <div key={page.page} style={{ marginBottom: index === (pdfPreview.pages || []).length - 1 ? 0 : 12 }}>
+                    <Text type="secondary" style={{ display: 'block', fontSize: 11, marginBottom: 4 }}>
+                      第 {page.page} 页
+                    </Text>
+                    <img
+                      src={page.url}
+                      alt={`${pdfPreview.name} 第 ${page.page} 页`}
+                      loading="lazy"
+                      style={{
+                        width: '100%', display: 'block', background: '#fff',
+                        borderRadius: 6, boxShadow: '0 2px 10px rgba(15,23,42,.08)',
+                      }}
+                    />
+                  </div>
+                ))
+              )}
+            </div>
+          ) : (
+            <iframe
+              title={pdfPreview.name}
+              src={pdfPreview.url}
+              style={{ width: '100%', height: '75vh', border: 0, borderRadius: 8 }}
+            />
+          )
+        )}
       </Modal>
     </div>
   );

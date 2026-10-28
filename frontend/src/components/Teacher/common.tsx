@@ -2,11 +2,12 @@ import React, { useMemo } from 'react';
 import { Alert, Button, Empty, Space, Spin, Tag, Typography } from 'antd';
 import { ArrowLeftOutlined, ExclamationCircleOutlined, LockOutlined } from '@ant-design/icons';
 import MarkdownIt from 'markdown-it';
+import { createMarkdown } from '../../utils/markdown';
 
 const { Text, Paragraph } = Typography;
 
 // Markdown 渲染器（html:false，避免直接注入后端返回的原始 HTML）
-const md: MarkdownIt = new MarkdownIt({ html: false, linkify: true, breaks: true });
+const md: MarkdownIt = createMarkdown();
 
 /** 权限不足（403）：显示后端返回的中文原因，而不是空白页 */
 export const PermissionAlert: React.FC<{ message?: string; onBack?: () => void }> = ({

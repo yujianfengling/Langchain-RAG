@@ -33,6 +33,8 @@ class ToolContext:
     model: Optional[str] = None
     conversation_id: Optional[str] = None
     node_id: Optional[str] = None
+    # 本轮的 id：出题时要写进题目，删掉这条历史时它的题要跟着消失
+    turn_id: Optional[str] = None
     sources: List[Dict[str, Any]] = field(default_factory=list)   # 本轮检索到的真实片段
     artifacts: List[Dict[str, Any]] = field(default_factory=list)  # 本轮生成的成果
     events: List[Dict[str, Any]] = field(default_factory=list)     # 需要前端展示的中间结果
@@ -100,6 +102,32 @@ def _t_search_materials(ctx: ToolContext, query: str, top_k: int = 5) -> Dict[st
         "supplemented": result.get("supplemented", 0),
         "note": ("已在所选资料范围内检索" if (ctx.scope or {}).get("mode") == "selected"
                  else "已在本学科全部资料范围内检索"),
+    }
+
+
+def _t_search_pages(ctx: ToolContext, query: str, top_k: int = 5) -> Dict[str, Any]:
+    """按页检索：图片型课件/扫描件的兜底；没有索引时如实说明。"""
+    from services import page_index
+    top_k = max(1, min(int(top_k or 5), 10))
+    pages = page_index.search_pages(ctx.subject_id, query, top_k)
+    if not pages:
+        status = page_index.get_page_index_status(ctx.subject_id)
+        note = ("该学科还没有页面索引，可先在资料库点「建立页面索引」"
+                if not status.get("pages") else "页面索引里没有命中这一页")
+        return {"ok": True, "page_count": 0, "sources": [], "indexed_pages":
+                status.get("pages", 0), "note": note}
+    sources = ctx.record_sources([
+        {"file_name": p["file_name"], "page": p["page"], "type": "page",
+         "snippet": p["snippet"], "page_image_url": p["page_image_url"],
+         "doc_id": p["doc_id"], "bbox": p.get("bbox"),
+         "image_width": p.get("image_width"), "image_height": p.get("image_height")}
+        for p in pages
+    ])
+    return {
+        "ok": True,
+        "page_count": len(pages),
+        "sources": sources,
+        "note": "以下结果按页返回；页面图可点开核对原图与版式。",
     }
 
 
@@ -225,7 +253,8 @@ def _t_generate_practice(ctx: ToolContext, topic: Optional[str] = None,
         return {"ok": False, "error": "缺少练习主题"}
     quiz = note_service.generate_quiz(subject_id=ctx.subject_id, topic=topic,
                                       model=ctx.model, count=count,
-                                      user_id=ctx.user_id, scope=ctx.scope)
+                                      user_id=ctx.user_id, scope=ctx.scope,
+                                      turn_id=ctx.turn_id)
     items = quiz.get("quiz") or []
     coverage = scope_covers_node(ctx.scope, node) if node else {"checked": False, "covered": True}
     if node_id and coverage.get("covered"):
@@ -394,6 +423,15 @@ TOOLS: Dict[str, ToolSpec] = {
         abilities=(tutor_session.ABILITY_CHAT, tutor_session.ABILITY_EXPLAIN,
                    tutor_session.ABILITY_PRACTICE, tutor_session.ABILITY_MAP,
                    tutor_session.ABILITY_ORGANIZE)),
+    "search_pages": ToolSpec(
+        "search_pages", "正在按页查找资料",
+        "在页面级索引中检索图片、图表、表格、版式或“第几页”的内容；"
+        "返回页码、片段与页面图。没有索引时会如实说明。",
+        _schema({"query": {"type": "string", "description": "要查找的页面内容"},
+                 "top_k": {"type": "integer", "description": "返回页数，1-10"}}, ["query"]),
+        _t_search_pages,
+        abilities=(tutor_session.ABILITY_CHAT, tutor_session.ABILITY_EXPLAIN,
+                   tutor_session.ABILITY_PRACTICE)),
     "get_learning_state": ToolSpec(
         "get_learning_state", "正在查看学习记录",
         "读取该学生本学科的真实学习状态：掌握度分布、薄弱点、错题、待复习、时间预算与学习偏好。",

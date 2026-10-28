@@ -134,6 +134,11 @@ def _init_db() -> None:
             source TEXT,
             content_hash TEXT NOT NULL,
             created_at TEXT NOT NULL,
+            -- 题目属于哪一轮对话（2026-10-03）：删掉那条历史时，它出的题要一起消失
+            turn_id TEXT,
+            -- 软删除标记：题目"跟着历史消失"，但作答记录保留，
+            -- 否则错题本、复习安排与掌握度会被一次界面删除带坏
+            deleted_at TEXT,
             UNIQUE(subject_id, content_hash)
         );
         CREATE TABLE IF NOT EXISTS quiz_attempts (
@@ -213,6 +218,7 @@ def _init_db() -> None:
                WHERE status = 'PENDING'""")
         # 老库补列：CREATE TABLE IF NOT EXISTS 不会改动已存在的表
         ensure_columns(conn, "quiz_attempts")
+        ensure_columns(conn, "quiz_questions")
         conn.commit()
     finally:
         conn.close()
@@ -490,6 +496,11 @@ _MASTERY_COLUMNS = {
 #   + 教师改判（2026-10-04）：原判定 / 教师判定 / 理由 / 改判人 / 改判时间
 _ATTEMPT_COLUMNS = {
     "ai_feedback": "TEXT",
+    # 错因（2026-10-24）：学生自报"错在哪一类"，用于错题诊所与班级错因聚合。
+    # 只记录错误作答，不参与判分/掌握度（掌握度仍由对错与证据决定）。
+    "error_code": "TEXT",
+    "error_note": "TEXT",
+    "error_reported_at": "TEXT",
     "orig_is_correct": "INTEGER",
     "orig_grade_status": "TEXT",
     "teacher_is_correct": "INTEGER",
@@ -498,8 +509,15 @@ _ATTEMPT_COLUMNS = {
     "teacher_graded_at": "TEXT",
 }
 
+# quiz_questions：题目与产生它的那轮对话绑定，并支持软删除
+_QUESTION_COLUMNS = {
+    "turn_id": "TEXT",
+    "deleted_at": "TEXT",
+}
+
 _COLUMN_SETS = {
     "learning_tasks": _TASK_COLUMNS,
+    "quiz_questions": _QUESTION_COLUMNS,
     "quiz_attempts": _ATTEMPT_COLUMNS,
     "learning_plans": _PLAN_COLUMNS,
     "conversations": _CONVERSATION_COLUMNS,

@@ -11,13 +11,14 @@ import { MessageBubble } from '../AnimateMotion';
 import StructuredMessage from '../StructuredMessage';
 import FeedbackButtons from '../FeedbackButtons';
 import MarkdownIt from 'markdown-it';
+import { createMarkdown } from '../../utils/markdown';
 import hljs from 'highlight.js';
 import { applyAdjustment, listAdjustments, PlanAdjustment } from '../../api/planAgent';
 
 const { Text } = Typography;
 
 // 初始化Markdown渲染器（模块级单例，跨消息复用；避免每次 render 重建）
-const md: MarkdownIt = new MarkdownIt({
+const md: MarkdownIt = createMarkdown({
   html: true,
   linkify: true,
   typographer: true,
@@ -27,7 +28,7 @@ const md: MarkdownIt = new MarkdownIt({
         return '<pre class="hljs"><code>' +
                hljs.highlight(str, { language: lang, ignoreIllegals: true }).value +
                '</code></pre>';
-      } catch (__) {}
+      } catch (__) { /* 高亮失败时回退为转义纯文本 */ }
     }
     return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + '</code></pre>';
   }

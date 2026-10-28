@@ -37,16 +37,32 @@ REVIEW_RULES = {
     "max_pending_per_point": 1,
     # ---- 阶段一补验：复习通过后的延后复测（间隔复现） ----
     # 复习答对可关闭当前待办，但"一次答对不等于长期掌握"：
-    # 未巩固的知识点会安排一次延后复测（更长的间隔）
+    # 未巩固的知识点会安排一次延后复测（更长的间隔）。
+    # 2026-10-24：从固定 3 天改为分阶段 3 → 7 → 16 天；
+    # 保留旧键作为回退，避免外部配置/旧调用直接报错。
     "recheck_interval_days": 3,
+    "recheck_intervals_days": (3, 7, 16),
     # 延后复测最多安排次数（避免无限循环）
-    "recheck_max_times": 2,
+    "recheck_max_times": 3,
     # 已巩固（间隔复现通过）的知识点不再自动安排复测
     "skip_recheck_when_consolidated": True,
     # 哪些作答性质可以关闭待办复习（独立作答 / 复习重做；
     # 看过答案后作答 after_reveal 不算）
     "closing_kinds": ("independent", "review"),
 }
+
+
+def next_recheck_interval(recheck_times: int = 0) -> int:
+    """第 N 次延后复测的间隔天数：3 → 7 → 16，之后保持最后一档。
+
+    纯函数，便于解释与单测；不改变既有"到期前不关闭"的语义。
+    """
+    intervals = tuple(REVIEW_RULES.get("recheck_intervals_days")
+                      or (REVIEW_RULES["recheck_interval_days"],))
+    if not intervals:
+        return int(REVIEW_RULES["recheck_interval_days"])
+    index = max(0, min(int(recheck_times or 0), len(intervals) - 1))
+    return int(intervals[index])
 
 
 class ReviewServiceError(Exception):
@@ -326,7 +342,17 @@ def schedule_recheck(
                 "reason": f"延后复测已达上限（{REVIEW_RULES['recheck_max_times']} 次），"
                           f"后续由学生自行决定是否复习"}
 
-    days = REVIEW_RULES["recheck_interval_days"]
+    # 真 FSRS：按卡片的 stability/difficulty 计算下一次间隔；
+    # FSRS 不可用（数据库异常等）时回退到分阶段 3→7→16，保证复习不中断。
+    fsrs_state: Dict[str, Any] = {}
+    try:
+        from services import fsrs_scheduler
+        fsrs_state = fsrs_scheduler.next_interval(
+            user_id, subject_id, knowledge_point_id, rating=fsrs_scheduler.RATING_GOOD)
+        days = max(1, int(fsrs_state.get("interval_days") or 1))
+    except Exception as e:
+        logger.warning(f"FSRS 调度失败，回退分阶段间隔: {e}")
+        days = next_recheck_interval(recheck_times)
     due = (date.today() + timedelta(days=days)).isoformat()
     text = reason or (f"延后复测：上次复习已通过但尚未间隔复现，"
                       f"{days} 天后再测一次以确认长期记忆")
@@ -345,7 +371,9 @@ def schedule_recheck(
         return {"scheduled": False, "already_processed": True,
                 "reason": "该作答已处理过，不重复安排复测"}
     return {"scheduled": True, "task_id": result.get("task_id"), "due_date": due,
-            "reason": text, "interval_days": days}
+            "reason": text, "interval_days": days,
+            "fsrs": {k: fsrs_state.get(k) for k in
+                     ("stability", "difficulty", "reps", "lapses", "state")}}
 
 
 def list_review_tasks(
@@ -389,6 +417,7 @@ def get_pending_review_for_point(
 
 __all__ = [
     "REVIEW_RULES",
+    "next_recheck_interval",
     "ReviewServiceError",
     "ensure_review_task",
     "complete_review_tasks",

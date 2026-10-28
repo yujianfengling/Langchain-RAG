@@ -165,7 +165,10 @@ def test_reimport_same_content_is_idempotent(import_env):
 
 def test_cancel_queued_job(import_env, monkeypatch):
     svc, tmp = import_env["svc"], import_env["tmp"]
-    monkeypatch.setattr(svc, "_run_job", lambda job_id: None)  # 不真正执行
+    # 执行器会传 only_keys/reuse_job_id（分片/接管契约），lambda 必须接受 kwargs；
+    # 同时 patch 模块级函数，确保后台线程不会真的跑起来。
+    monkeypatch.setattr("services.import_service._run_job",
+                        lambda job_id, **kwargs: None)  # 不真正执行
     result = svc.create_import_job("学科A", [("a.txt", b"hello world")], "u1")
     assert svc.cancel_job(result["job_id"]) is True
     job = svc.get_job(result["job_id"])

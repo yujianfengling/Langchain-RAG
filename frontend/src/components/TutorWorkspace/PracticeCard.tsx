@@ -12,6 +12,8 @@ export interface PracticeQuestion {
   options?: any[];
   knowledge_point?: string;
   node_id?: string | null;
+  /** 后端带回的"我上次的作答"（历史回看时用；本次会话内的提交走内部 state） */
+  attempt?: any;
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -61,10 +63,21 @@ const PracticeCard: React.FC<{
   return (
     <div className="tutor-practice">
       {questions.map((q, index) => {
-        const result = results[q.id];
+        // 后端带回来的"上次作答"要能当成本次结果展示——否则已答过的题看起来
+        // 像没做过，学生会重复作答，历史记录与知识点状态也就对不上了。
+        const prior = q.attempt ? { attempt: q.attempt, prior: true } : undefined;
+        const result = results[q.id] || prior;
         const attempt = result?.attempt;
         const options = (q.options || []).map((o: any) =>
           typeof o === 'string' ? { id: o, text: o } : { id: o.id, text: o.text });
+        const priorAnswer = (result as any)?.prior
+          ? (attempt?.user_answer || attempt?.user_answer_text || '')
+          : '';
+        const selected = answers[q.id] || priorAnswer;
+        const optionText = (id?: string | null) => {
+          const found = options.find((o: any) => o.id === id);
+          return found ? found.text : (id || '');
+        };
         return (
           <div className="tutor-practice-item" key={q.id}>
             <div className="tutor-practice-head">
@@ -75,13 +88,24 @@ const PracticeCard: React.FC<{
             <div className="tutor-practice-stem">{q.question}</div>
             {options.length > 0 ? (
               <Radio.Group
-                value={answers[q.id]}
+                value={selected || undefined}
                 disabled={Boolean(result)}
                 onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
               >
                 <Space direction="vertical" size={4}>
                   {options.map((o: any) => (
-                    <Radio key={o.id} value={o.id}>{o.text}</Radio>
+                    <Radio key={o.id} value={o.id}>
+                      <span>
+                        {o.text}
+                        {selected === o.id && (
+                          <Tag color="blue" style={{ marginLeft: 6 }}>你的选择</Tag>
+                        )}
+                        {(result as any)?.prior && attempt?.correct_option_id === o.id
+                          && selected !== o.id && (
+                          <Tag color="green" style={{ marginLeft: 6 }}>正确答案</Tag>
+                        )}
+                      </span>
+                    </Radio>
                   ))}
                 </Space>
               </Radio.Group>
@@ -90,7 +114,7 @@ const PracticeCard: React.FC<{
                 rows={2}
                 disabled={Boolean(result)}
                 placeholder="写下你的答案"
-                value={answers[q.id] || ''}
+                value={answers[q.id] || priorAnswer}
                 onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
               />
             )}
@@ -106,16 +130,23 @@ const PracticeCard: React.FC<{
                 type={attempt.is_correct ? 'success' : 'warning'}
                 showIcon
                 icon={attempt.is_correct ? <CheckCircleOutlined /> : <CloseCircleOutlined />}
-                message={attempt.is_correct ? '本次答对' : '本次答错'}
+                message={(attempt.is_correct ? '答对' : '答错')
+                  + ((result as any)?.prior ? '（这是你上次的作答）' : '本次')}
                 description={(
                   <div style={{ fontSize: 12 }}>
+                    {(result as any)?.prior && selected && (
+                      <div>你的作答：{optionText(attempt.user_answer) || attempt.user_answer_text || selected}</div>
+                    )}
                     {attempt.explanation && <div>{attempt.explanation}</div>}
                     {attempt.standard_answer && <div>参考答案：{attempt.standard_answer}</div>}
+                    {(result as any)?.prior && attempt.correct_option_id && (
+                      <div>正确答案：{optionText(attempt.correct_option_id) || attempt.correct_option_id}</div>
+                    )}
                     {result?.node && (
                       <div style={{ marginTop: 4 }}>
-                        知识点状态：{result.node.status_label}
+                        这个知识点：{result.node.status_label}
                         {result.node.mastery_level != null &&
-                          '（当前掌握度 ' + Math.round(result.node.mastery_level * 100) + '%）'}
+                          '（掌握度约 ' + Math.round(result.node.mastery_level * 100) + '%）'}
                       </div>
                     )}
                   </div>

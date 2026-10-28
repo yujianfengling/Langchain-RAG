@@ -9,7 +9,10 @@ import {
   UserOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import { AuthUser, isLoggedIn, me } from '../api/auth';
-import { MasteryPoint, WrongQuestion, getMastery, getQuizStats, getWrongQuestions } from '../api/student';
+import {
+  KnowledgeTracingPoint, MasteryPoint, WrongQuestion,
+  getKnowledgeTracing, getMastery, getQuizStats, getWrongQuestions,
+} from '../api/student';
 import { listArtifacts } from '../api/tutor';
 import { MemoryItem, getEffectiveMemory } from '../api/planAgent';
 import { useCourse } from '../context/CourseContext';
@@ -74,6 +77,7 @@ const ProfilePage: React.FC = () => {
   const [points, setPoints] = useState<MasteryPoint[]>([]);
   const [quizStats, setQuizStats] = useState<QuizStats | null>(null);
   const [wrongs, setWrongs] = useState<WrongQuestion[]>([]);
+  const [bktPoints, setBktPoints] = useState<KnowledgeTracingPoint[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
@@ -97,18 +101,19 @@ const ProfilePage: React.FC = () => {
   const loadData = useCallback(async () => {
     if (!isLoggedIn() || !currentSubjectId) {
       setMastery(null); setPoints([]); setQuizStats(null);
-      setWrongs([]); setArtifacts([]); setMemories([]);
+      setWrongs([]); setArtifacts([]); setMemories([]); setBktPoints([]);
       setDataError(null); setDataLoading(false);
       return;
     }
     setDataLoading(true);
     setDataError(null);
-    const [m, q, w, a, mem] = await Promise.allSettled([
+    const [m, q, w, a, mem, bkt] = await Promise.allSettled([
       getMastery(currentSubjectId),
       getQuizStats(currentSubjectId),
       getWrongQuestions(currentSubjectId),
       listArtifacts(currentSubjectId),
       getEffectiveMemory(currentSubjectId),
+      getKnowledgeTracing(currentSubjectId),
     ]);
     if (m.status === 'fulfilled') {
       setMastery((m.value?.data?.summary as MasterySummary) ?? null);
@@ -118,7 +123,8 @@ const ProfilePage: React.FC = () => {
     if (w.status === 'fulfilled') setWrongs(w.value?.data ?? []);
     if (a.status === 'fulfilled') setArtifacts(Array.isArray(a.value) ? a.value as ArtifactItem[] : []);
     if (mem.status === 'fulfilled') setMemories(mem.value?.data?.items ?? []);
-    if ([m, q, w, a, mem].every((r) => r.status === 'rejected')) {
+    if (bkt.status === 'fulfilled') setBktPoints(bkt.value?.data?.points ?? []);
+    if ([m, q, w, a, mem, bkt].every((r) => r.status === 'rejected')) {
       setDataError('学习数据加载失败，请稍后重试');
     }
     setDataLoading(false);
@@ -163,7 +169,17 @@ const ProfilePage: React.FC = () => {
   const weakPoints = points.filter((p) => p.mastery_level != null && p.mastery_level < 0.6).slice(0, 5);
 
   return (
-    <div style={{ padding: 16, maxWidth: 1080, margin: '0 auto' }}>
+    <div className="app-page">
+      <header className="page-header">
+        <div className="page-heading">
+          <div className="page-eyebrow">个人记录</div>
+          <Typography.Title level={1} className="page-title">我的主页</Typography.Title>
+          <Text className="page-subtitle">查看真实学习记录、成果与偏好，让下一步学习更有依据。</Text>
+        </div>
+        <Space className="page-actions">
+          <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>设置</Button>
+        </Space>
+      </header>
       <Space direction="vertical" size={16} style={{ width: '100%' }}>
         {/* 头像与账号 */}
         <Card>
@@ -184,18 +200,15 @@ const ProfilePage: React.FC = () => {
                 <Text type="secondary" ellipsis>{user?.username ? '账号：' + user.username : ''}</Text>
               </Space>
             </Col>
-            <Col flex="none">
-              <Space wrap>
-                <Select
-                  style={{ width: 200 }}
-                  placeholder={subjects.length ? '选择学科' : '还没有学科'}
-                  value={currentSubjectId || undefined}
-                  onChange={handleSubjectChange}
-                  options={subjects.map((s) => ({ value: s.subject_id, label: s.name }))}
-                  notFoundContent="先加入或创建课程"
-                />
-                <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>设置</Button>
-              </Space>
+            <Col xs={24} sm={24} md={8} lg={7}>
+              <Select
+                style={{ width: '100%' }}
+                placeholder={subjects.length ? '选择学科' : '还没有学科'}
+                value={currentSubjectId || undefined}
+                onChange={handleSubjectChange}
+                options={subjects.map((s) => ({ value: s.subject_id, label: s.name }))}
+                notFoundContent="先加入或创建课程"
+              />
             </Col>
           </Row>
         </Card>
@@ -254,6 +267,34 @@ const ProfilePage: React.FC = () => {
                             strokeColor="var(--color-primary)"
                             size="small"
                           />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {bktPoints.length > 0 && (
+                    <div>
+                      <Space size={6} wrap style={{ marginBottom: 4 }}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>BKT 预测（影子）</Text>
+                        <Tag color="purple">不改变掌握度</Tag>
+                      </Space>
+                      {bktPoints.slice(0, 5).map((p) => (
+                        <div key={p.knowledge_point} style={{ marginTop: 6 }}>
+                          <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
+                            <Space size={4}>
+                              <Text style={{ fontSize: 13 }}>{p.knowledge_point}</Text>
+                              {bktPoints[0]?.knowledge_point === p.knowledge_point && (
+                                <Tag color="volcano">建议优先练</Tag>
+                              )}
+                            </Space>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              {Math.round(p.p_known * 100)}%
+                            </Text>
+                          </Space>
+                          <Progress percent={Math.round(p.p_known * 100)} showInfo={false}
+                                    strokeColor="#7c3aed" size="small" />
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            样本 {p.attempts} · 置信度 {Math.round(p.confidence * 100)}%
+                          </Text>
                         </div>
                       ))}
                     </div>
@@ -373,15 +414,10 @@ const ProfilePage: React.FC = () => {
           </>
         )}
 
-        {/* 基本偏好 */}
-        <PersonalizationSettings />
-
-        <Card size="small">
-          <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
-            <Text type="secondary">模型、诊断与账号等更多设置</Text>
-            <Button icon={<SettingOutlined />} onClick={() => navigate('/settings')}>打开完整设置</Button>
-          </Space>
-        </Card>
+        {/* 偏好默认收起，减少学习记录页的配置噪音；完整设置仍可从页头进入。 */}
+        <CollapsiblePanel title="学习偏好" icon={<SettingOutlined />} defaultOpen={false}>
+          <PersonalizationSettings />
+        </CollapsiblePanel>
 
         {/* 高级设置：按角色限制 */}
         <CollapsiblePanel title="高级设置（模型与诊断）" icon={<SettingOutlined />} defaultOpen={false}>

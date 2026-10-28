@@ -55,6 +55,7 @@ except ImportError:
 try:
     from .document import load_document, load_documents
     from .text_splitter import split_documents
+    from .contextual_retrieval import enrich_documents
     from .embedding import get_embedding_model
     from .vector_store import (
         create_vector_store,
@@ -191,6 +192,14 @@ def build_knowledge_base(
             f"实际阈值={filter_stats.get('min_length')}, "
             f"配置阈值={filter_stats.get('configured_min_length')})")
         
+        # 1.8 Contextual Retrieval：给每个 chunk 加位置/主题前缀，再送 embedding 与 BM25。
+        # 默认确定性前缀（资料/章节/页），CONTEXTUAL_LLM=1 时才按章节调用模型。
+        split_docs, contextual_stats = enrich_documents(split_docs, subject_id)
+        logger.info(
+            f"Contextual Retrieval: {contextual_stats.get('prefix_count', 0)} 个 chunk 已加前缀"
+            + (f"，LLM 分组 {contextual_stats.get('llm_groups', 0)}"
+               if contextual_stats.get("llm_groups") else ""))
+
         # 2. 创建向量数据库（按学科目录隔离，使用绝对路径）
         #    原子发布：persist_dir 由调用方指定为 staging 目录；缺省行为不变。
         target_dir = persist_dir or os.path.join(
@@ -244,7 +253,9 @@ def build_knowledge_base(
         try:
             _emb = dict(getattr(vector_store, "embed_stats", None) or {})
             _emb.update({"split_ms": _split_ms, "filter_ms": _filter_ms,
-                         "vector_ms": _vector_ms, "bm25_ms": _bm25_ms})
+                         "vector_ms": _vector_ms, "bm25_ms": _bm25_ms,
+                         "contextual_prefix_count": contextual_stats.get("prefix_count", 0),
+                         "contextual_llm_groups": contextual_stats.get("llm_groups", 0)})
             vector_store.embed_stats = _emb
             logger.info(
                 f"建库阶段: 切分 {_split_ms}ms / 过滤 {_filter_ms}ms / "

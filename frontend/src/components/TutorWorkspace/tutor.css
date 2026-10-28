@@ -111,11 +111,24 @@
 .tutor-main-head .ant-segmented { flex-shrink: 0; }
 .tutor-main-scope { margin-left: auto; }
 
+.tutor-node-questions {
+  padding: 10px 16px 4px;
+  border-top: 1px dashed var(--color-primary-100);
+}
+.tutor-node-questions-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-bottom: 6px;
+}
+.tutor-node-questions > div:first-child { display: block; margin-bottom: 6px; }
+
 .tutor-node-bar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 8px 16px; background: var(--color-primary-50);
-  border-bottom: 1px solid var(--color-primary-100);
+  /* 2026-10-03：这条栏从消息区上方移到了输入框上方，分隔线跟着改到上沿 */
+  border-top: 1px solid var(--color-primary-100);
 }
+/* 「快捷命令：」标签 */
+.tutor-quick-label { flex-shrink: 0; font-size: 12px; }
 .tutor-node-info { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; overflow: hidden; }
 .tutor-node-name {
   font-weight: 650; color: var(--color-text);
@@ -186,7 +199,8 @@
 .tutor-side-tab {
   flex: 1; background: transparent; border: none; cursor: pointer;
   padding: 8px 6px; font-size: 13px; color: var(--color-text-secondary);
-  border-bottom: 2px solid transparent; transition: all 0.15s var(--ease-out);
+  border-bottom: 2px solid transparent;
+  transition: color var(--duration-fast) var(--ease-standard), border-color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard);
 }
 .tutor-side-tab:hover { color: var(--color-primary); }
 .tutor-side-tab.is-active { color: var(--color-primary); font-weight: 650; border-bottom-color: var(--color-primary); }
@@ -298,3 +312,729 @@
   font-size: 11px; color: var(--color-text-muted); letter-spacing: 0.04em; flex-shrink: 0;
 }
 .tutor-node-actions { flex-shrink: 0; }
+
+/* ============================================================
+   2026-10 伴学工作台视觉刷新
+   ============================================================ */
+
+.tutor-main {
+  background:
+    radial-gradient(720px 420px at 50% -10%, rgba(20, 184, 166, 0.045), transparent 65%),
+    #ffffff;
+}
+
+.tutor-main-head {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(14px);
+  border-bottom-color: rgba(15, 23, 42, 0.06);
+}
+
+.tutor-messages {
+  padding: 22px 24px 10px;
+}
+
+/* 欢迎区：从“一行字”升级为一张轻量 Hero 卡 */
+.tutor-welcome {
+  position: relative;
+  max-width: 620px;
+  margin: 7vh auto 0;
+  padding: 34px 30px 30px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 24px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fdfc 100%);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04),
+              0 30px 70px -46px rgba(15, 118, 110, 0.45);
+  overflow: hidden;
+}
+
+.tutor-welcome::before {
+  content: '';
+  position: absolute;
+  width: 320px;
+  height: 320px;
+  top: -190px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: radial-gradient(circle, rgba(20, 184, 166, 0.18), transparent 68%);
+  pointer-events: none;
+}
+
+.tutor-welcome-icon {
+  position: relative;
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
+  margin: 0 auto 16px;
+  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 55%, #5eead4 100%);
+  box-shadow: 0 16px 30px -18px rgba(15, 118, 110, 0.8);
+  font-size: 26px;
+}
+
+.tutor-welcome-title {
+  position: relative;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+}
+
+.tutor-welcome-sub {
+  position: relative;
+  max-width: 480px;
+  margin: 8px auto 0;
+  font-size: 13.5px;
+  line-height: 1.8;
+}
+
+.tutor-welcome .ant-btn {
+  border-radius: 100px;
+  background: #ffffff;
+  border-color: rgba(15, 118, 110, 0.18);
+  color: #0f766e;
+  box-shadow: 0 2px 8px -6px rgba(15, 23, 42, 0.2);
+}
+
+.tutor-welcome .ant-btn:hover {
+  background: #f0fdfa !important;
+  border-color: #99f6e4 !important;
+  color: #0d9488 !important;
+  transform: translateY(-1px);
+}
+
+/* 消息气泡：更清楚的“谁在说” */
+.tutor-msg {
+  margin-bottom: 16px;
+}
+
+.tutor-bubble {
+  padding: 12px 16px;
+  line-height: 1.75;
+}
+
+.tutor-bubble-user {
+  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
+  box-shadow: 0 10px 22px -16px rgba(15, 118, 110, 0.9);
+  border: 0;
+}
+
+.tutor-bubble-ai {
+  border-color: rgba(15, 23, 42, 0.07);
+  box-shadow: 0 12px 30px -26px rgba(15, 23, 42, 0.35);
+}
+
+/* 输入区：悬浮胶囊，而不是贴着底边的一条线 */
+.tutor-composer {
+  margin: 0 16px 14px;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04),
+              0 18px 40px -28px rgba(15, 23, 42, 0.32);
+  transition: border-color 0.2s var(--ease-out), box-shadow 0.2s var(--ease-out);
+}
+
+.tutor-composer:focus-within {
+  border-color: rgba(15, 118, 110, 0.35);
+  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.08),
+              0 18px 40px -28px rgba(15, 23, 42, 0.32);
+}
+
+.tutor-composer .ant-input {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  padding-left: 2px;
+}
+
+/* 练习卡：像一张可作答的纸 */
+.tutor-practice-item {
+  background: #ffffff;
+  border-color: rgba(15, 23, 42, 0.07);
+  box-shadow: 0 8px 24px -24px rgba(15, 23, 42, 0.4);
+}
+
+/* 右栏：和主区之间加一条更柔的分隔 */
+.tutor-side {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdfc 100%);
+}
+
+@media (max-width: 900px) {
+  .tutor-welcome { margin: 4vh 12px 0; padding: 26px 18px 22px; border-radius: 20px; }
+  .tutor-messages { padding: 14px 12px 6px; }
+  .tutor-composer { margin: 0 10px 10px; }
+}
+
+/* 主区标题：让工作台有明确的页面锚点 */
+.tutor-main-title {
+  min-width: 0;
+  padding-right: 10px;
+  margin-right: 2px;
+  border-right: 1px solid rgba(15, 23, 42, 0.07);
+}
+
+.tutor-main-title-main {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+  line-height: 1.3;
+}
+
+.tutor-main-title-sub {
+  max-width: 190px;
+  margin-top: 1px;
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 620px) {
+  .tutor-main-title { display: none; }
+}
+
+/* 左栏：从“贴边的表单”改成两张有边界的工具卡 */
+.tutor-aside-left {
+  background: linear-gradient(180deg, #fbfdfc 0%, #f6faf9 100%);
+  border-right-color: rgba(15, 23, 42, 0.06);
+}
+
+.tutor-left {
+  padding: 12px;
+  gap: 10px;
+}
+
+.tutor-left-section {
+  padding: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px -26px rgba(15, 23, 42, 0.4);
+}
+
+.tutor-left-section.tutor-left-grow {
+  padding: 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.tutor-left-title {
+  color: #64748b;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.tutor-aside-right {
+  border-left-color: rgba(15, 23, 42, 0.06);
+}
+
+/* ============================================================
+   2026-10-24 白板悬浮窗 / 课件依据
+   ============================================================ */
+
+/* 去掉遮罩与阴影：白板是一张可拖动的“纸”，不是挡在页面上的弹窗 */
+.whiteboard-float-wrap {
+  pointer-events: none;
+  background: transparent !important;
+}
+
+.whiteboard-float-wrap .ant-modal {
+  pointer-events: auto;
+  padding-bottom: 0;
+}
+
+.whiteboard-float-wrap .ant-modal-content {
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  border-radius: 18px;
+  box-shadow: none !important;
+}
+
+.whiteboard-float-wrap .ant-modal-header {
+  margin: 0;
+  padding: 14px 20px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  cursor: grab;
+  user-select: none;
+}
+
+.whiteboard-float-wrap .ant-modal-header:active { cursor: grabbing; }
+
+.whiteboard-drag-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.whiteboard-drag-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: #94a3b8;
+}
+
+.whiteboard-layout {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+}
+
+.whiteboard-canvas {
+  flex: 1;
+  min-width: 0;
+  min-height: 460px;
+  max-height: 560px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+/* SVG 文本框：自动换行，长句不再溢出方格 */
+.wb-rect-text {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 9px;
+  text-align: center;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow: hidden;
+}
+
+.whiteboard-sources {
+  width: 292px;
+  flex-shrink: 0;
+  max-height: 560px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fbfdfc 0%, #f8fbfa 100%);
+}
+
+.whiteboard-sources-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.whiteboard-sources-hint {
+  margin: 6px 0 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #94a3b8;
+}
+
+.whiteboard-source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.whiteboard-source {
+  padding: 9px 10px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.whiteboard-source.is-cited {
+  border-color: rgba(5, 150, 105, 0.28);
+  background: #f0fdf4;
+}
+
+.whiteboard-source-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.whiteboard-source-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #334155;
+}
+
+.whiteboard-source-meta {
+  margin-top: 4px;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.whiteboard-source-section {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.whiteboard-source-snippet {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #64748b;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (max-width: 760px) {
+  .whiteboard-layout { flex-direction: column; }
+  .whiteboard-canvas { min-height: 300px; max-height: 380px; }
+  .whiteboard-sources { width: auto; max-height: 240px; }
+  .whiteboard-drag-hint { display: none; }
+}
+
+/* 白板可缩放：8 个边界/角落把手 */
+.whiteboard-float-wrap .ant-modal-content {
+  position: relative;
+}
+
+.whiteboard-layout {
+  flex: 1;
+  min-height: 0;
+}
+
+.whiteboard-canvas {
+  height: 100%;
+  max-height: none;
+}
+
+.whiteboard-sources {
+  height: 100%;
+  max-height: none;
+}
+
+.wb-resize {
+  position: absolute;
+  z-index: 20;
+  touch-action: none;
+}
+
+.wb-resize-n { top: 0; left: 12px; right: 12px; height: 7px; cursor: ns-resize; }
+.wb-resize-s { bottom: 0; left: 12px; right: 12px; height: 7px; cursor: ns-resize; }
+.wb-resize-e { right: 0; top: 12px; bottom: 12px; width: 7px; cursor: ew-resize; }
+.wb-resize-w { left: 0; top: 12px; bottom: 12px; width: 7px; cursor: ew-resize; }
+.wb-resize-ne { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+.wb-resize-nw { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+.wb-resize-se { bottom: 0; right: 0; width: 16px; height: 16px; cursor: nwse-resize; }
+.wb-resize-sw { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; }
+
+/* 课件页直接铺在白板右侧，黄框标引用位置 */
+.whiteboard-pdf-frame {
+  position: relative;
+  margin-top: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.whiteboard-pdf-frame img {
+  display: block;
+  width: 100%;
+  cursor: zoom-in;
+}
+
+.whiteboard-pdf-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.whiteboard-pdf-pages {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.whiteboard-snippet-title {
+  margin-top: 12px;
+  font-size: 11px;
+  font-weight: 650;
+  color: #94a3b8;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 760px) {
+  .whiteboard-canvas { height: 300px; }
+  .whiteboard-sources { height: auto; max-height: 260px; }
+}
+
+/* ============================================================
+   2026-10-25 知学界面升级：安静、专注、上下文不丢失
+   ============================================================ */
+.tutor-workspace { height: 100dvh; background: #fff; }
+.tutor-aside-left { width: 272px; background: #fafbfc; border-right: 1px solid var(--color-border); }
+.tutor-left { padding: 0; gap: 0; }
+.tutor-left-section,
+.tutor-left-section.tutor-left-grow {
+  padding: 16px;
+  border: 0;
+  border-bottom: 1px solid var(--color-border-light);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.tutor-left-section.tutor-left-grow { border-bottom: 0; }
+.tutor-left-title { margin-bottom: 10px; color: var(--color-text-secondary); font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+.tutor-left-scope { padding: 10px 16px !important; }
+.tutor-scope-btn { min-height: 36px; background: transparent; }
+.tutor-scope-btn:hover { background: var(--color-primary-50); }
+.tutor-map-node { min-height: 34px; padding: 7px 9px; }
+.tutor-map-node.is-active { background: var(--color-primary-50); color: var(--color-primary); }
+.tutor-map-next { border-color: var(--color-primary-100); background: var(--color-primary-50); }
+.tutor-main { background: #fff; }
+.tutor-main-head {
+  min-height: 62px;
+  padding: 10px 20px;
+  background: #fff;
+  border-bottom: 1px solid var(--color-border);
+  backdrop-filter: none;
+}
+.tutor-main-title { padding-right: 16px; margin-right: 2px; border-right-color: var(--color-border); }
+.tutor-main-title-main { color: var(--color-text); font-size: 16px; }
+.tutor-main-title-sub { max-width: 220px; color: var(--color-text-muted); font-size: 11px; }
+.tutor-main-actions { gap: 6px; }
+.tutor-main-actions .ant-btn { color: var(--color-text-secondary); }
+.tutor-main-actions .ant-btn:hover { color: var(--color-primary); }
+.tutor-messages { padding: 24px 28px 12px; background: #fff; }
+.tutor-msg { max-width: 820px; margin: 0 auto 22px; }
+.tutor-bubble { padding: 10px 14px; line-height: 1.75; }
+.tutor-bubble-user { max-width: 78%; background: var(--color-primary); border: 0; border-radius: 12px 12px 3px 12px; box-shadow: none; }
+.tutor-bubble-ai { max-width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.tutor-welcome {
+  max-width: 640px;
+  margin: 10vh auto 0;
+  padding: 0 24px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.tutor-welcome::before { display: none; }
+.tutor-welcome-icon {
+  width: 46px;
+  height: 46px;
+  margin-bottom: 18px;
+  border-radius: 12px;
+  background: var(--color-primary);
+  box-shadow: none;
+  font-size: 22px;
+}
+.tutor-welcome-title { color: var(--color-text); font-size: 24px; letter-spacing: -0.025em; }
+.tutor-welcome-sub { max-width: 540px; margin-top: 10px; color: var(--color-text-secondary); font-size: 14px; line-height: 1.75; }
+.tutor-welcome .ant-btn {
+  border-radius: 8px;
+  border-color: var(--color-border);
+  background: #fff;
+  color: var(--color-text-secondary);
+  box-shadow: none;
+}
+.tutor-welcome .ant-btn:hover { border-color: var(--color-primary-lighter) !important; background: var(--color-primary-50) !important; color: var(--color-primary) !important; transform: none; }
+.tutor-stage { min-height: 28px; }
+.tutor-chip { background: var(--color-bg-muted); border-color: var(--color-border); color: var(--color-text-secondary); }
+.tutor-node-bar { gap: 10px; padding: 10px 20px; border-top: 1px solid var(--color-primary-100); background: #f8f8ff; }
+.tutor-node-name { max-width: 46%; }
+.tutor-node-actions .ant-btn-primary { font-weight: 600 !important; }
+.tutor-composer {
+  width: calc(100% - 40px);
+  max-width: 840px;
+  margin: 0 auto 18px;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid #d9dee7;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(24, 32, 51, 0.05);
+}
+.tutor-composer:focus-within { border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-border-focus); }
+.tutor-composer .ant-btn-primary { min-width: 70px; }
+.tutor-right { background: #fff; }
+.tutor-right-head { min-height: 54px; padding: 10px 16px; }
+.tutor-right-title { font-size: 14px; }
+.tutor-side { background: #fff; }
+.tutor-source-item, .tutor-artifact-item { border-radius: 10px; box-shadow: none; }
+.tutor-panel-overlay { background: rgba(24, 32, 51, 0.24); }
+.tutor-panel-drawer { width: min(420px, 94vw); box-shadow: -12px 0 36px rgba(24, 32, 51, 0.12); }
+.tutor-drawer { box-shadow: var(--shadow-lg); }
+.tutor-mobile-bar { min-height: 48px; padding: 5px 8px; }
+.tutor-center-card { padding: 28px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: #fff; }
+.tutor-firstuse { background: #fafbfc; }
+.whiteboard-source.is-cited { border-color: var(--color-primary-200); background: var(--color-primary-50); }
+.whiteboard-sources { background: #fafbfc; }
+
+@media (max-width: 1100px) and (min-width: 901px) {
+  .tutor-aside-left { width: 244px; }
+  .tutor-main-head { padding-inline: 14px; }
+  .tutor-main-title-sub { display: none; }
+  .tutor-main-actions { gap: 3px; }
+  .tutor-main-actions .ant-btn { padding-inline: 8px; }
+}
+@media (max-width: 900px) {
+  .tutor-workspace { height: calc(100dvh - 56px); }
+  .tutor-main-head { min-height: 52px; padding: 8px 12px; overflow: visible; }
+  .tutor-main-title { display: block; border-right: 0; }
+  .tutor-main-title-sub { display: none; }
+  .tutor-main-actions { margin-left: auto; }
+  .tutor-messages { padding: 18px 18px 8px; }
+  .tutor-msg { margin-bottom: 18px; }
+  .tutor-bubble-user { max-width: 88%; }
+  .tutor-welcome { margin: 8vh auto 0; padding: 0 18px; }
+  .tutor-welcome-title { font-size: 22px; }
+  .tutor-node-bar { padding: 10px 14px; }
+  .tutor-node-info { flex-basis: 100%; }
+  .tutor-node-name { max-width: 58%; }
+  .tutor-composer { width: calc(100% - 24px); margin-bottom: 12px; }
+}
+@media (max-width: 560px) {
+  .tutor-main-title-main { font-size: 14px; }
+  .tutor-main-head .ant-segmented { font-size: 12px; }
+  .tutor-messages { padding: 14px 12px 6px; }
+  .tutor-welcome { margin-top: 7vh; }
+  .tutor-welcome-icon { width: 42px; height: 42px; margin-bottom: 14px; }
+  .tutor-welcome-title { font-size: 21px; }
+  .tutor-welcome-sub { font-size: 13px; }
+  .tutor-bubble-user { max-width: 92%; }
+  .tutor-node-actions { width: 100%; }
+  .tutor-quick-label { display: none; }
+  .tutor-composer { gap: 6px; padding-left: 10px; }
+  .tutor-composer .ant-btn-primary { min-width: 58px; }
+}
+
+/* ============================================================
+   2026-10-25 精修：统一层次、首次输入与克制动效
+   ============================================================ */
+.tutor-workspace { background: var(--color-bg-content); }
+.tutor-aside-left { background: var(--color-bg-panel); }
+.tutor-panel-toggle.is-active {
+  border-color: var(--color-primary-200) !important;
+  background: var(--color-primary-50) !important;
+  color: var(--color-primary) !important;
+}
+.tutor-main-actions .ant-btn,
+.tutor-mobile-bar .ant-btn { min-height: 34px; }
+
+/* 空会话时，auto 外边距把欢迎语和同一个输入组件作为一个整体居中。 */
+.tutor-composer-wrap { width: 100%; flex-shrink: 0; }
+.tutor-main.is-empty .tutor-messages {
+  flex: 0 0 auto;
+  width: 100%;
+  margin-top: auto;
+  padding-bottom: 0;
+  overflow: visible;
+}
+.tutor-main.is-empty .tutor-composer-wrap { margin-bottom: auto; padding-top: 4px; }
+.tutor-main.is-empty .tutor-node-bar { display: none; }
+.tutor-welcome {
+  width: 100%;
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 20px 24px 12px;
+}
+.tutor-welcome-icon { width: 44px; height: 44px; margin-bottom: 14px; font-size: 20px; }
+.tutor-welcome-title { font-size: 25px; line-height: 1.35; }
+.tutor-welcome-context {
+  max-width: 100%;
+  margin-top: 9px;
+  overflow: hidden;
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tutor-welcome-sub { margin-top: 8px; font-size: 14px; line-height: 1.7; }
+.tutor-welcome-actions { justify-content: center; margin-top: 18px !important; }
+.tutor-msg { will-change: auto; }
+.tutor-composer { transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard); }
+
+/* 覆盖层由 framer-motion 驱动，避免与 CSS 关键帧叠加。 */
+.tutor-panel-overlay { z-index: 150; background: var(--color-bg-overlay); }
+.tutor-panel-drawer { animation: none; background: var(--color-bg-elevated); }
+.tutor-mobile-overlay { z-index: 1200; }
+.tutor-drawer { background: var(--color-bg-elevated); }
+.tutor-drawer-left .tutor-left { padding-top: 38px; }
+.tutor-drawer-close { min-width: 34px; }
+.tutor-side-body > * { animation: tutor-content-in var(--duration-fast) var(--ease-standard); }
+@keyframes tutor-content-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* 章节开关与节点选择是两个并列按钮，不产生嵌套交互元素。 */
+.tutor-map-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.tutor-map-row .tutor-map-node { min-width: 0; }
+.tutor-map-toggle,
+.tutor-map-toggle-spacer { width: 24px; height: 30px; flex: 0 0 24px; }
+.tutor-map-toggle {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  transition: color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard);
+}
+.tutor-map-toggle:hover { background: var(--color-bg-muted); color: var(--color-text); }
+.tutor-map-toggle .anticon { transition: transform var(--duration-fast) var(--ease-standard); }
+.tutor-map-toggle.is-collapsed .anticon { transform: rotate(-90deg); }
+.tutor-map-children { overflow: hidden; }
+.tutor-map-node {
+  transition: color var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard);
+}
+.tutor-map-dot { transition: background var(--duration-fast) var(--ease-standard); }
+.tutor-map-node.is-active .tutor-map-dot { box-shadow: 0 0 0 3px var(--color-primary-100); }
+
+/* 引用定位是一次性反馈；高亮结束后恢复引用片段本身的浅色底。 */
+.tutor-source-item { scroll-margin: 80px; }
+.tutor-source-item.is-pulse { animation: tutor-source-pulse 1.35s var(--ease-standard); }
+@keyframes tutor-source-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0); }
+  28% { background: var(--color-primary-100); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.22); }
+}
+
+@media (max-width: 900px) {
+  .tutor-main.is-empty .tutor-messages { padding-bottom: 0; }
+  .tutor-welcome { margin: 0 auto; padding: 16px 18px 10px; }
+  .tutor-panel-drawer, .tutor-drawer { box-shadow: var(--shadow-md); }
+}
+@media (max-width: 560px) {
+  .tutor-main-head .tutor-main-title { display: none; }
+  .tutor-main-head { gap: 6px; }
+  .tutor-main-actions { gap: 2px; }
+  .tutor-main-actions .ant-btn { padding-inline: 7px; }
+  .tutor-welcome { padding-inline: 10px; }
+  .tutor-welcome-title { font-size: 22px; }
+  .tutor-welcome-actions { margin-top: 14px !important; }
+  .tutor-welcome-actions .ant-btn { min-height: 34px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tutor-source-item.is-pulse, .tutor-side-body > * { animation: none; }
+  .tutor-map-node.is-active .tutor-map-dot { box-shadow: none; }
+}

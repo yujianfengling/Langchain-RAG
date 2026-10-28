@@ -149,6 +149,7 @@ def _persist_and_publicize(
     topic: str,
     quiz: List[Dict[str, Any]],
     source: str = "note",
+    turn_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     将生成的题目持久化到题库，并返回"可下发给前端"的公开题目。
@@ -182,9 +183,11 @@ def _persist_and_publicize(
         by_kp, pending = kp_attribution.resolve_items(quiz, allowed)
         out: List[Dict[str, Any]] = []
         for kp_name, group in by_kp.items():
-            out += persist_questions(subject_id, kp_name, group, source=source)
+            out += persist_questions(subject_id, kp_name, group, source=source,
+                                     turn_id=turn_id)
         if pending:
-            out += persist_questions(subject_id, None, pending, source=source)
+            out += persist_questions(subject_id, None, pending, source=source,
+                                     turn_id=turn_id)
         return out
     except Exception as e:
         logger.warning(f"题目入库失败（降级为未入库题目，不参与判分）: {e}")
@@ -387,6 +390,8 @@ def generate_quiz(
     count: int = 5,
     user_id: Optional[str] = None,
     scope: Optional[Dict[str, Any]] = None,
+    turn_id: Optional[str] = None,
+    variant_of: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     生成自测题（V2.5.1 Chat 自测模式）
@@ -429,10 +434,25 @@ def generate_quiz(
                         f"（subject={subject_id}, topic={topic}）")
             return _generate_fallback_quiz(subject_id, topic, model, count)
 
+        type_requirement = (
+            "覆盖 single_choice / judgement / short_answer 至少两种"
+            if count >= 2 else "题型不限，优先使用 single_choice"
+        )
+        variant_note = ""
+        if variant_of:
+            variant_note = (
+                "\n\n## 变式要求\n"
+                "这是对下面这道原题的变式练习。\n"
+                f"原题：{str(variant_of)[:500]}\n"
+                "请保持同一知识点，但更换情境、数字或问法；不要与题干近似，"
+                "不要直接重复原题。\n"
+            )
+
         prompt = f"""你是一名教育自测题生成助手。请基于【知识库证据】生成自测题。
 
 ## 知识点主题
 {topic}
+{variant_note}
 
 ## 知识库证据（仅依据以下内容，不得编造）
 {context[:10000]}
@@ -452,9 +472,18 @@ def generate_quiz(
 }}
 
 ## 规则
-1. 生成 {count} 道题，覆盖 single_choice / judgement / short_answer 至少两种。
-2. 每道题必须能独立回答，explanation 基于知识库证据。
-3. 不得编造知识库中没有的概念。
+1. 生成 {count} 道题，{type_requirement}。
+2. 每道题必须能独立回答，explanation 基于上面的资料。
+3. 不得编造资料里没有的概念。
+
+## 用语要求（重要——这些文字会原样显示给学生）
+学生看不到"知识库""检索片段""证据"这些内部概念，所以一律用他们能懂的话：
+- **禁止出现**"知识库""检索""片段""证据""资料范围""模型"这类词；
+- 指代来源时就说"你上传的资料""课本"，或者干脆直接讲内容——
+  例如写"压杆稳定实验表明……"，而不是"知识库证据（图7）启示1明确指出……"；
+- 资料原文里的编号、图号、"启示1"这类排版标记**不要照抄**；
+  确有必要提页码图号时，写成"（资料第 7 页的图）"这种学生看得懂的形式；
+- explanation 要讲清"为什么"，一句话把道理说透，不要罗列资料来源。
 """
         answer = call_llm(prompt, system_message="你是智慧教育自测题助手。", model=model)
 
@@ -469,7 +498,8 @@ def generate_quiz(
             logger.info(f"基于证据出题为空，降级出题（subject={subject_id}, topic={topic}）")
             return _generate_fallback_quiz(subject_id, topic, model, count)
         # 阶段一：题目入库并返回服务端题目 ID（测验模式提交前不返回标准答案）
-        public_quiz = _persist_and_publicize(subject_id, topic, quiz, source="quiz")
+        public_quiz = _persist_and_publicize(subject_id, topic, quiz, source="quiz",
+                                            turn_id=turn_id)
         return {
             "quiz": public_quiz,
             "model": _resolved_model_name(model),
