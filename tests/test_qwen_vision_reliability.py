@@ -63,6 +63,25 @@ def make_http_error(status_code: int) -> requests.HTTPError:
     return err
 
 
+def _reset_multimodal_singleton(test_case) -> None:
+    """
+    让每个用例重新解析 vision provider（2026-10-28 修复）
+
+    `services.multimodal_service.get_multimodal_service()` 是**进程级单例**，
+    provider 在【首次构造那一刻】就定下来了：若前一个用例（当时还没有
+    DASHSCOPE_API_KEY）先把它造出来，就会把 provider 缓存成 deepseek，
+    之后本文件里 `os.environ["DASHSCOPE_API_KEY"] = ...` 也不会再生效，
+    于是 `provider_used` 断言随机失败——失败与否取决于 xdist 把谁分到同一 worker。
+
+    这里在 setUp 里把单例清空、用完复原，使结果与分发顺序无关。
+    """
+    from services import multimodal_service as mms
+
+    old = getattr(mms, "_multimodal_service", None)
+    mms._multimodal_service = None
+    test_case.addCleanup(setattr, mms, "_multimodal_service", old)
+
+
 class TestVisionConfig(unittest.TestCase):
     """默认 Provider / Model / Key / URL 配置"""
 
@@ -283,6 +302,7 @@ class TestVisionCache(unittest.TestCase):
     """缓存：success写入 / failed不写 / 命中不调API"""
 
     def setUp(self):
+        _reset_multimodal_singleton(self)
         self._tmp = TemporaryDirectory()
         self._img_path = os.path.join(self._tmp.name, "test.png")
         Image.new("RGB", (20, 20), "white").save(self._img_path)
@@ -350,6 +370,7 @@ class TestVisionFailureIsolation(unittest.TestCase):
     """Vision 失败不阻断PDF、不影响 Formula/Table"""
 
     def setUp(self):
+        _reset_multimodal_singleton(self)
         self._tmp = TemporaryDirectory()
         self._img_path = os.path.join(self._tmp.name, "test.png")
         Image.new("RGB", (20, 20), "white").save(self._img_path)

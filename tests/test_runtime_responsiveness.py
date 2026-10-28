@@ -214,7 +214,14 @@ async def test_health_responds_during_smart_note(client):
 async def test_health_responds_during_learning_plan(client):
     """Learning Plan 生成（同步 LLM 4s）期间 /api/health/ready 必须快速返回"""
     from services import learning_service
-    test_db = os.path.join(PROJECT_ROOT, "data", "test_resp_learning.db")
+    # 隔离要求：绝不能写在 PRODUCTION_ROOT/data 下。
+    # 2026-10-28 修复：此前硬编码 PROJECT_ROOT/data/test_resp_learning.db，
+    # 绕过了 pytest 会话隔离，并发（-n 4）时会污染 test_isolation_guard 的
+    # 正式库快照，导致全量随机报红。改为每个用例独占临时目录，跑完整目录删除。
+    import tempfile
+
+    tmp_dir = tempfile.mkdtemp(prefix="resp_learning_")
+    test_db = os.path.join(tmp_dir, "test_resp_learning.db")
     old_db = learning_service.DB_PATH
     learning_service.DB_PATH = test_db
     learning_service._init_db()
@@ -242,9 +249,9 @@ async def test_health_responds_during_learning_plan(client):
         assert ok, f"/api/health/ready 被 Learning Plan 阻塞 {ms:.0f}ms"
     finally:
         learning_service.DB_PATH = old_db
-        for p in (test_db, test_db + "-wal", test_db + "-shm"):
-            if os.path.exists(p):
-                os.remove(p)
+        import shutil
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # ===== 5. Knowledge Graph（已后台化，验证不阻塞）=====

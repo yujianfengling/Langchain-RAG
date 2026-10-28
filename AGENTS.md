@@ -346,3 +346,33 @@ curl -s http://localhost:8000/health/ready
 预生成由建库/重建成功后触发（`api/routes/knowledge.py` 的 `_schedule_quiz_prewarm`），
 每个学科在一个进程内只跑一次。
 
+
+---
+
+## 12. 上下文预算与本地 OCR（2026-10-28）
+
+### 上下文（chat / tutor 共用）
+- 预算逻辑集中在 `services/context_budget.py`：历史预算 = `min(0.35×窗口, 131072)`，
+  最近消息 60%、滚动摘要 40%；摘要撞 95% 上限时裁掉半句。
+- 摘要只写 `conversations.rolling_summary`（chat）或 `tutor_sessions.state_json`（tutor），
+  **绝不写 messages 表**——多处测试断言"消息数 == 2"。
+- 历史顺序必须是**先读历史、再 `add_message(user)`**；反过来会让当前问题在 prompt 里出现两次。
+- 摘要失败不写库、不降水位数，本轮继续用旧摘要；长会话才触发，短会话零额外 LLM 调用。
+
+### 本地 OCR 与页级进度
+- 扫描件走 `rag/loaders/pdf_ocr.py`：`rapidocr` → `liteparse` → `pytesseract`（仅系统有二进制），
+  逐页 OCR + 页级缓存；**不逐图调用付费视觉**。视觉只服务正文 PDF 的插图，且有每文档上限。
+- OCR 并发：`IMPORT_OCR_WORKERS` 默认 2、上限 3；每线程独立 RapidOCR 实例，
+  每页任务独立打开 PDF（fitz 不跨线程共享 doc），进度按完成计数上报。
+- 页级进度靠线程局部表 `_PENDING_ITEMS_BY_PATH` / `_ACTIVE_PARSE_PROGRESS` 传递，
+  **不要改 `_parse_file` / `_parse_with_timeout` / `_parse_file_guarded` 的签名**
+  （`test_import_autobatch.py` / `test_import_fencing.py` 直接 monkeypatch 成 4 元组）。
+- 页码：metadata 的 `page` 保持 **0 基**（`test_adapters` 有断言），展示统一走
+  `pdf_map.display_page()`（int +1、范围字符串逐段 +1）。
+- 章节上下文来自 TOC（优先）/ 字号 / OCR 标题正则；写 `section`、`parent_headings`、`heading_level`。
+- 改解析/章节逻辑时必须同时升 `CONTEXTUAL_VERSION`、`_parse_config_signature`、
+  `_RANGE_CACHE_SCHEMA`，否则旧缓存会吞掉新字段。
+
+### 索引兼容
+- 本轮不重建旧索引：只影响新导入；旧 chunk 的 `contextual_version=1` 照常检索，
+  查询侧按 `meta.json` 选编码器的逻辑不变。

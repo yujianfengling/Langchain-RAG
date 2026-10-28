@@ -107,29 +107,36 @@ def get_education_user_prompt(
 def get_education_prompt_with_context(
     question: str,
     context: str,
-    history: Optional[str] = None
+    history: Optional[str] = None,
+    summary: Optional[str] = None,
 ) -> str:
     """
     获取带上下文的教育提示词
-    
+
     Args:
         question: 用户问题
         context: RAG检索到的上下文
-        history: 格式化的历史对话
-        
+        history: 格式化的历史对话（最近若干轮）
+        summary: 更早对话的滚动摘要（2026-10-28，预算化上下文）
+
     Returns:
         完整的提示词字符串
     """
     # 构建完整提示词
     prompt_parts = [get_education_system_prompt()]
-    
+
     # 添加知识库上下文
     if context:
         prompt_parts.append(f"\n\n以下是相关的课程知识：\n{context}")
-    
+
+    # 更早对话的摘要：只用于理解连续性，不应被当成课程资料引用
+    if summary:
+        prompt_parts.append(
+            f"\n\n以下是本次会话更早内容的摘要（仅用于理解上下文，不要当作资料引用）：\n{summary}")
+
     # 添加对话历史
     if history:
-        prompt_parts.append(f"\n\n以下是之前的对话记录：\n{history}")
+        prompt_parts.append(f"\n\n以下是最近的对话记录：\n{history}")
     
     # 添加当前问题
     prompt_parts.append(f"\n\n学生问题：{question}")

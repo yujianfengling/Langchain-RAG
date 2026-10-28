@@ -182,6 +182,11 @@ def extract_sources(context_docs: List) -> List[Dict[str, Any]]:
             file_name = str(src).split('\\')[-1].split('/')[-1] if src else f'文档_{i+1}'
 
         page = metadata.get('page')
+        try:
+            from rag.loaders.pdf_map import display_page
+            page = display_page(metadata)
+        except Exception:
+            pass
         doc_type = metadata.get('type') or metadata.get('modality') or 'text'
 
         # 原文片段：让学生能点开核对"回答依据的到底是哪段话"。
@@ -189,8 +194,10 @@ def extract_sources(context_docs: List) -> List[Dict[str, Any]]:
         content = getattr(doc, 'page_content', '') or ''
         snippet = re.sub(r'\s+', ' ', content).strip()[:300]
 
-        # 章节/小节（有则给，没有不编）
-        section = metadata.get('section') or metadata.get('chapter') or metadata.get('heading')
+        # 章节/小节（有则给，没有不编）；2026-10-28：带父级标题链
+        parents = str(metadata.get('parent_headings') or '').strip()
+        leaf = metadata.get('section') or metadata.get('chapter') or metadata.get('heading')
+        section = " > ".join(p for p in (parents, str(leaf or '').strip()) if p) or None
 
         # 诊断用分数：优先 rerank，其次检索分数（主界面不展示，放可展开详情）
         score = metadata.get('rerank_score')

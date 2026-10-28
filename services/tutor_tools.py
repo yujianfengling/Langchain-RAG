@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from services import tutor_session
@@ -410,6 +412,138 @@ def _t_ask_user(ctx: ToolContext, question: str,
 # 注册表
 # =====================================================================
 
+# =====================================================================
+# 按需读取：记忆与原文（2026-10-28，progressive disclosure）
+# =====================================================================
+
+def _days_ago(iso: str) -> Optional[int]:
+    try:
+        from datetime import datetime, timezone
+
+        ts = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return max(0, int((datetime.now(timezone.utc) - ts).total_seconds() // 86400))
+    except Exception:
+        return None
+
+
+def _recent_activity(user_id: str, subject_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+    try:
+        from services import learning_events
+
+        events = learning_events.list_events(
+            user_id, subject_id=subject_id, limit=max(1, min(int(limit), 10)))
+    except Exception as e:
+        logger.debug(f"读取最近活动失败: {e}")
+        return []
+    out: List[Dict[str, Any]] = []
+    for event in events or []:
+        payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        label = (payload.get("question") or payload.get("title")
+                 or payload.get("kp_name") or payload.get("topic") or "")
+        out.append({
+            "event_type": event.get("event_type"),
+            "label": str(label)[:200],
+            "days_ago": _days_ago(event.get("created_at")),
+        })
+    return out
+
+
+def _t_read_memory(ctx: ToolContext, max_items: int = 8) -> Dict[str, Any]:
+    """读取学习记忆：摘要 + 偏好 + 推断 + 最近活动（总字符受限）。"""
+    from services import learning_memory
+
+    max_items = max(1, min(int(max_items or 8), 20))
+    memory = learning_memory.get_effective_memory(ctx.user_id, ctx.subject_id) or {}
+    items = memory.get("items") or []
+    preferences: List[Dict[str, Any]] = []
+    inferences: List[Dict[str, Any]] = []
+    for item in items:
+        row = {"key": item.get("key"), "value": item.get("value"),
+               "type": item.get("memory_type"), "note": item.get("source")}
+        if item.get("memory_type") == learning_memory.MEMORY_PREFERENCE:
+            preferences.append(row)
+        else:
+            inferences.append(row)
+    summary = ""
+    try:
+        summary = str((tutor_session.load_context(ctx.user_id, ctx.subject_id) or {})
+                      .get("rolling_summary") or "")
+    except Exception:
+        summary = ""
+    result = {
+        "summary": summary[:600],
+        "preferences": preferences[:max_items],
+        "memory_items": inferences[:max_items],
+        "recent_activity": _recent_activity(ctx.user_id, ctx.subject_id, 5),
+        "count": len(items),
+    }
+    # 工具结果随后还会被 _json_dumps 截 6000；这里先按 3000 字符收缩，避免撑爆上下文
+    try:
+        if len(json.dumps(result, ensure_ascii=False)) > 3000:
+            result["preferences"] = result["preferences"][:3]
+            result["memory_items"] = result["memory_items"][:3]
+            result["recent_activity"] = result["recent_activity"][:3]
+    except Exception:
+        pass
+    return result
+
+
+def _t_read_source(ctx: ToolContext, file_name: str, page: Optional[int] = None,
+                   max_chars: int = 2000) -> Dict[str, Any]:
+    """按文件名 + 页码读取原文；PDF 无文本层时用本地 OCR。"""
+    from config.path_config import get_subjects_dir
+
+    name = str(file_name or "").strip()
+    if not name or "/" in name or "\\" in name or ".." in name:
+        return {"ok": False, "error": "文件名不合法（只接受单个文件名，不能带路径）"}
+    if ctx.scope.get("mode") == "selected":
+        allowed = {m.get("file_name") for m in ctx.scope.get("selected") or []}
+        if name not in allowed:
+            return {"ok": False, "error": "该资料不在本轮选择范围内"}
+
+    subject_dir = Path(get_subjects_dir()) / str(ctx.subject_id)
+    path = subject_dir / name
+    try:
+        if not path.resolve().is_relative_to(subject_dir.resolve()):
+            return {"ok": False, "error": "文件路径越界"}
+    except Exception:
+        pass
+    if not path.is_file():
+        return {"ok": False, "error": f"资料不存在: {name}"}
+
+    max_chars = max(200, min(int(max_chars or 2000), 4000))
+    used_ocr = False
+    page_out: Optional[int] = None
+    if path.suffix.lower() == ".pdf":
+        try:
+            from rag.loaders import pdf_ocr
+
+            total = pdf_ocr.page_count(path)
+            page_out = 1 if page is None else max(1, min(int(page), max(1, total)))
+            text, used_ocr = pdf_ocr.extract_page_text(path, page_out)
+        except Exception as e:
+            return {"ok": False, "error": f"读取 PDF 失败: {e}"}
+    else:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            return {"ok": False, "error": f"读取失败: {e}"}
+
+    text = (text or "").strip()
+    return {
+        "ok": True,
+        "file_name": name,
+        "page": page_out,
+        "used_ocr": used_ocr,
+        "truncated": len(text) > max_chars,
+        "text": text[:max_chars],
+    }
+
+
 _TOPIC_PROP = {"type": "string", "description": "知识点或主题名称"}
 _NODE_PROP = {"type": "string", "description": "知识地图节点 ID（node_ 开头）"}
 
@@ -430,6 +564,25 @@ TOOLS: Dict[str, ToolSpec] = {
         _schema({"query": {"type": "string", "description": "要查找的页面内容"},
                  "top_k": {"type": "integer", "description": "返回页数，1-10"}}, ["query"]),
         _t_search_pages,
+        abilities=(tutor_session.ABILITY_CHAT, tutor_session.ABILITY_EXPLAIN,
+                   tutor_session.ABILITY_PRACTICE)),
+    "read_memory": ToolSpec(
+        "read_memory", "正在读取学习记忆",
+        "读取该学生本学科的真实学习记忆：滚动摘要、偏好、薄弱点推断与最近活动。"
+        "需要个性化依据时调用；不要每轮都调。",
+        _schema({"max_items": {"type": "integer", "description": "每类最多返回条数，1-20"}}),
+        _t_read_memory,
+        abilities=(tutor_session.ABILITY_CHAT, tutor_session.ABILITY_EXPLAIN,
+                   tutor_session.ABILITY_PRACTICE, tutor_session.ABILITY_ORGANIZE)),
+    "read_source": ToolSpec(
+        "read_source", "正在核对原文",
+        "按文件名与页码读取资料原文（PDF 无文本层时用本地 OCR）。"
+        "需要核对某页细节时调用，不要整本读取。",
+        _schema({"file_name": {"type": "string", "description": "资料文件名（不含路径）"},
+                 "page": {"type": "integer", "description": "页码，从 1 开始"},
+                 "max_chars": {"type": "integer", "description": "最多返回字符数，200-4000"}},
+                ["file_name"]),
+        _t_read_source,
         abilities=(tutor_session.ABILITY_CHAT, tutor_session.ABILITY_EXPLAIN,
                    tutor_session.ABILITY_PRACTICE)),
     "get_learning_state": ToolSpec(

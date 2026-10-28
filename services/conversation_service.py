@@ -65,6 +65,11 @@ def _init_db() -> None:
             subject_id TEXT NOT NULL,
             title TEXT NOT NULL DEFAULT '新对话',
             model TEXT,
+            -- 滚动摘要（2026-10-28）：只存会话，不写 messages，避免改变消息计数语义
+            rolling_summary TEXT,
+            summary_upto TEXT,
+            summary_tokens INTEGER DEFAULT 0,
+            summary_updated_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -473,3 +478,89 @@ def get_recent_history(conversation_id: str, max_turns: int = 10,
             continue
         history.append({"role": r["role"], "content": content})
     return history
+
+
+def get_history_with_ids(conversation_id: str, max_turns: int = 40,
+                         user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """带消息 id 的最近历史（正序），供 token 预算与摘要水位线使用。
+
+    与 `get_recent_history` 的区别：多返回 `id/created_at`，且默认取更多轮，
+    真正的取舍交给 `services.context_budget.select_recent` 按 token 预算完成。
+    """
+    if user_id and get_conversation_owner(conversation_id) != user_id:
+        return []
+    limit = max(1, int(max_turns)) * 2
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, role, content, created_at FROM messages "
+            "WHERE conversation_id=? AND message_type='chat' "
+            "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (conversation_id, limit)).fetchall()
+    finally:
+        conn.close()
+
+    out: List[Dict[str, Any]] = []
+    for r in reversed(rows):
+        content = (r["content"] or "").strip()
+        if not content:
+            continue
+        out.append({
+            "id": r["id"],
+            "role": r["role"],
+            "content": content,
+            "created_at": r["created_at"],
+        })
+    return out
+
+
+def get_rolling_summary(conversation_id: str,
+                        user_id: Optional[str] = None) -> Dict[str, Any]:
+    """读取滚动摘要；列缺失（老库）或库忙时返回空摘要，绝不抛出。"""
+    empty = {"summary": "", "upto": "", "tokens": 0}
+    if not conversation_id:
+        return empty
+    if user_id and get_conversation_owner(conversation_id) != user_id:
+        return empty
+    try:
+        conn = _get_db()
+        try:
+            row = conn.execute(
+                "SELECT rolling_summary, summary_upto, summary_tokens "
+                "FROM conversations WHERE id=?",
+                (conversation_id,)).fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"读取滚动摘要失败（按空摘要处理）: {e}")
+        return empty
+    if not row:
+        return empty
+    return {
+        "summary": (row["rolling_summary"] or "").strip(),
+        "upto": (row["summary_upto"] or "").strip(),
+        "tokens": int(row["summary_tokens"] or 0),
+    }
+
+
+def save_rolling_summary(conversation_id: str, summary: str,
+                         upto_message_id: Optional[str] = None,
+                         tokens: int = 0) -> bool:
+    """写入滚动摘要；失败只记日志并返回 False（调用方保留旧摘要重试）。"""
+    if not conversation_id:
+        return False
+    try:
+        conn = _get_db()
+        try:
+            conn.execute(
+                "UPDATE conversations SET rolling_summary=?, summary_upto=?, "
+                "summary_tokens=?, summary_updated_at=? WHERE id=?",
+                ((summary or "").strip(), upto_message_id,
+                 max(0, int(tokens or 0)), _now(), conversation_id))
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception as e:
+        logger.warning(f"写入滚动摘要失败（本轮保留旧摘要）: {e}")
+        return False

@@ -166,6 +166,9 @@ def default_context(user_id: str, subject_id: str) -> Dict[str, Any]:
         "goal": None,
         "deadline": None,
         "daily_minutes": None,
+        # 上下文预算（2026-10-28）：更早轮次的滚动摘要，随 state_json 持久化，零迁移
+        "rolling_summary": "",
+        "summary_upto": None,
         "updated_at": _now(),
     }
 
@@ -173,7 +176,7 @@ def default_context(user_id: str, subject_id: str) -> Dict[str, Any]:
 _PATCHABLE = {
     "course_id", "role", "ability", "current_node_id", "current_map_id",
     "conversation_id", "last_turn_id", "goal", "deadline", "daily_minutes",
-    "guidance_mode",
+    "guidance_mode", "rolling_summary", "summary_upto",
 }
 
 

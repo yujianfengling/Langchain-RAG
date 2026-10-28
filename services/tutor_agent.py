@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from services import material_scope, tutor_session, tutor_tools
 from utils.logger import logger
@@ -31,6 +31,15 @@ MAX_ROUNDS = 6          # 最多模型轮次
 MAX_TOOL_CALLS = 12     # 最多工具调用次数
 MAX_SECONDS = 180       # 单轮总耗时上限
 HISTORY_TURNS = 6       # 带多少轮历史给模型
+TUTOR_OUTPUT_TOKENS = 1024     # tutor 单轮输出预留（用于请求预算；不足以覆盖长回答时靠流式）
+INPUT_TOO_LONG_MESSAGE = ("当前问题与必要的系统指令合计已超出上下文窗口，"
+                          "无法在不破坏指令的前提下压缩。请缩短问题或到新会话中继续。")
+
+# 本轮**工具结果**总字符预算（2026-10-28）：
+# 注意：字符只是辅助上限，真正的口径是 `fit_request` 给出的 token 份额。
+# 单条结果上限 6000 字符，最多 12 次调用 → 最坏约 7.2 万字符（≈4.8 万 token），
+# 会顶穿窗口。这里再设一个累计上限，超出后截断并在前端给出提示。
+MAX_TOOL_RESULT_CHARS = 12000
 
 _COMMON_RULES = """
 ## 硬性规则（必须遵守）
@@ -112,7 +121,8 @@ _ABILITY_PROMPTS: Dict[str, str] = {
 def build_system_prompt(subject_name: str, ability: str, scope: Dict[str, Any],
                         context_state: Dict[str, Any],
                         node: Optional[Dict[str, Any]] = None,
-                        guidance_mode: str = tutor_session.GUIDANCE_DIRECT) -> str:
+                        guidance_mode: str = tutor_session.GUIDANCE_DIRECT,
+                        *, teaching_block: str = "") -> str:
     role = context_state.get("role") or "student"
     mode = tutor_session.normalize_guidance_mode(guidance_mode)
     role_text = "教师" if role in ("teacher", "admin") else "学生"
@@ -130,6 +140,10 @@ def build_system_prompt(subject_name: str, ability: str, scope: Dict[str, Any],
     if node:
         lines.append(f"学生当前学习的知识点：{node.get('label')}（node_id={node.get('node_id')}）")
         lines.append(f"该知识点来源资料：{'、'.join(node.get('source_docs') or []) or '未标注'}")
+    if teaching_block:
+        # 2026-10-28：与 chat 同源的学习者画像/记忆（已含隐私早退，≤900 字符）
+        lines.append("【学习者画像与记忆（系统提供，可据此个性化，不要逐条复述）】")
+        lines.append(teaching_block.strip()[:900])
     lines.append(_ABILITY_PROMPTS.get(ability, _ABILITY_PROMPTS[tutor_session.ABILITY_CHAT]))
     lines.append(_COMMON_RULES)
     # 引导模式只作用于「对话/讲解/练习」；地图与学习整理是产出型任务，
@@ -142,13 +156,25 @@ def build_system_prompt(subject_name: str, ability: str, scope: Dict[str, Any],
     return "\n".join(lines)
 
 
-def _recent_history(user_id: str, subject_id: str, conversation_id: Optional[str],
-                    exclude_turn_id: Optional[str] = None) -> List[Dict[str, str]]:
-    """从持久化轮次恢复对话上下文（刷新/重启后依然连续）。"""
+_TUTOR_SUMMARY_LAST: Dict[str, float] = {}
+_TUTOR_SUMMARY_THROTTLE_SECONDS = 30.0
+
+
+def _history_with_summary(user_id: str, subject_id: str, conversation_id: Optional[str],
+                          exclude_turn_id: Optional[str] = None,
+                          context_state: Optional[Dict[str, Any]] = None,
+                          summarize: bool = True) -> tuple[List[Dict[str, Any]], str]:
+    """按 token 预算恢复最近轮次，并在需要时更新滚动摘要。
+
+    与 chat 共用 `services.context_budget` 的比例；摘要写入 tutor 的 state_json，
+    不新增表、不改消息计数。任何异常都退化为“只用最近轮次”，不阻断回答。
+    """
     if not conversation_id:
-        return []
-    turns = tutor_session.list_turns(user_id, subject_id, limit=30)
-    picked: List[Dict[str, str]] = []
+        return [], ""
+    from services import context_budget as cb
+
+    turns = tutor_session.list_turns(user_id, subject_id, limit=60)
+    picked: List[Dict[str, Any]] = []
     for turn in reversed(turns):
         if turn.get("conversation_id") != conversation_id:
             continue
@@ -156,15 +182,65 @@ def _recent_history(user_id: str, subject_id: str, conversation_id: Optional[str
             continue
         if turn.get("status") != tutor_session.STATE_SUCCEEDED or not turn.get("answer"):
             continue
-        picked.append({"role": "user", "content": turn.get("user_message") or ""})
-        picked.append({"role": "assistant", "content": turn.get("answer") or ""})
-        if len(picked) >= HISTORY_TURNS * 2:
-            break
+        picked.append({"role": "user", "content": turn.get("user_message") or "",
+                       "turn_id": turn.get("id")})
+        picked.append({"role": "assistant", "content": turn.get("answer") or "",
+                       "turn_id": turn.get("id")})
     picked.reverse()
-    # 反转后要保证 user/assistant 成对且从 user 开始
     while picked and picked[0]["role"] != "user":
         picked.pop(0)
-    return picked
+
+    kept, dropped = cb.select_recent(picked, cb.recent_budget(),
+                                     max_turn_limit=cb.max_turns())
+    state = context_state if isinstance(context_state, dict) else {}
+    summary = str(state.get("rolling_summary") or "").strip()
+    if summarize and dropped and cb.summary_enabled() and cb.should_summarize(dropped):
+        updated = _summarize_turns(summary, dropped)
+        if updated:
+            state["rolling_summary"] = updated
+            state["summary_upto"] = dropped[-1].get("turn_id")
+            summary = updated
+            try:
+                tutor_session.save_context(user_id, subject_id, state)
+            except Exception as e:
+                logger.warning(f"保存滚动摘要失败（本轮继续）: {e}")
+    return kept, summary
+
+
+def _summarize_turns(previous_summary: str,
+                     dropped: List[Dict[str, Any]]) -> str:
+    """把被折叠的较早轮次并入摘要；失败返回空串（保留旧摘要）。"""
+    from services import context_budget as cb
+
+    if not dropped:
+        return ""
+    key = "|".join(str(m.get("turn_id") or "") for m in dropped[:2])
+    now = time.time()
+    if now - _TUTOR_SUMMARY_LAST.get(key, 0.0) < _TUTOR_SUMMARY_THROTTLE_SECONDS:
+        return ""
+    _TUTOR_SUMMARY_LAST[key] = now
+    try:
+        from services.ai_service import call_llm
+
+        cap = cb.summary_budget()
+        prompt = cb.build_summary_prompt(previous_summary, dropped)
+        text = call_llm(
+            prompt=prompt,
+            system_message="你只输出中文摘要，不要寒暄，不要编造对话里没有的内容。",
+            max_tokens=cap,
+        )
+        return cb.finalize_summary(text, max_tokens=cap)
+    except Exception as e:
+        logger.warning(f"生成滚动摘要失败（保留旧摘要）: {e}")
+        return ""
+
+
+def _recent_history(user_id: str, subject_id: str, conversation_id: Optional[str],
+                    exclude_turn_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """从持久化轮次恢复对话上下文（保留旧签名，供既有调用/测试使用）。"""
+    kept, _ = _history_with_summary(
+        user_id, subject_id, conversation_id, exclude_turn_id, summarize=False)
+    return kept
 
 
 def _cited_ids(answer: str, sources: List[Dict[str, Any]]) -> List[int]:
@@ -186,6 +262,14 @@ def _summarize_tool_result(name: str, result: Dict[str, Any]) -> str:
             "" if result.get("context_used") else "（未命中）")
     if name == "search_pages":
         return f"按页检索到 {result.get('page_count', 0)} 页"
+    if name == "read_memory":
+        return (f"读取到 {result.get('count', 0)} 条记忆 / "
+                f"{len(result.get('recent_activity') or [])} 条最近活动")
+    if name == "read_source":
+        page = result.get("page")
+        suffix = f" 第 {page} 页" if page else ""
+        suffix += "（OCR）" if result.get("used_ocr") else ""
+        return f"读取《{result.get('file_name')}》{suffix}"
     if name == "generate_practice":
         return f"生成 {result.get('question_count', 0)} 道题（答案不下发）"
     if name == "generate_node_lesson":
@@ -325,17 +409,67 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
             scope=scope, model=model, conversation_id=conversation_id, node_id=node_id,
             turn_id=turn_id)
 
-        system_prompt = build_system_prompt(subject_name, ability, scope, context_state, node,
-                                            guidance_mode=effective_mode)
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-        messages.extend(_recent_history(user_id, subject_id, conversation_id, turn_id))
-        messages.append({"role": "user", "content": message})
+        # 与 chat 同源的学习者画像/记忆；失败不影响回答（隐私早退在 teaching_context 内）
+        teaching_block = ""
+        try:
+            from services import teaching_context
+            teaching_block = (teaching_context.build_teaching_context(
+                user_id=user_id, subject_id=subject_id, question=message) or {}
+            ).get("prompt_block") or ""
+        except Exception as e:
+            logger.warning(f"构建教学上下文失败（不影响回答）: {e}")
+
+        system_prompt = build_system_prompt(
+            subject_name, ability, scope, context_state, node,
+            guidance_mode=effective_mode, teaching_block=teaching_block)
+        history_messages, rolling_summary = _history_with_summary(
+            user_id, subject_id, conversation_id, turn_id, context_state)
 
         tools = tutor_tools.tools_for_ability(ability, role)
+        # 整包请求预算（2026-10-28）：与 chat 链路同一套口径
+        # 工具定义序列化后计入预算；工具结果在循环里按 token 累计上限截断。
+        budget_report: Dict[str, Any] = {}
+        try:
+            from services import context_budget as cb
+
+            fit = cb.fit_request(
+                system=system_prompt, question=message, history=history_messages,
+                summary=rolling_summary,
+                tools=_json_dumps({"tools": tutor_tools.tools_for_ability(ability, role)}),
+                max_output=TUTOR_OUTPUT_TOKENS)
+            if fit.get("too_long"):
+                # 不发送被裁坏的请求：明确告知"输入过长"并结束本轮
+                yield emit("error", {"message": INPUT_TOO_LONG_MESSAGE})
+                tutor_session.finish_turn(turn_id, tutor_session.STATE_FAILED,
+                                          error=INPUT_TOO_LONG_MESSAGE)
+                return
+            system_prompt = fit["system"]
+            history_messages = fit["history"] if isinstance(fit["history"], list) else history_messages
+            rolling_summary = fit["summary"]
+            tools = fit["tools"] if isinstance(fit["tools"], list) else tools
+            budget_report = fit["tokens"]
+            tool_result_token_cap = max(256, int(fit["tokens"]["budget"] * cb.TOOL_RESULT_SHARE))
+        except Exception as e:
+            logger.warning(f"tutor 请求预算计算失败（不压缩）: {e}")
+            tool_result_token_cap = MAX_TOOL_RESULT_CHARS
+        else:
+            logger.info(f"[context-budget] tutor 预算={budget_report.get('budget')} "
+                        f"总输入={budget_report.get('total')} "
+                        f"输出预留={budget_report.get('output_reserve')}")
+
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+        if rolling_summary:
+            messages.append({"role": "system",
+                             "content": "【此前对话摘要】\n" + rolling_summary})
+        messages.extend(history_messages)
+        messages.append({"role": "user", "content": message})
+
         answer_parts: List[str] = []
         trace: List[Dict[str, Any]] = []
         llm_calls = 0
         tool_calls_made = 0
+        tool_result_chars = 0
+        tool_result_tokens = 0
         ask_user_payload: Optional[Dict[str, Any]] = None
 
         from services.model_service import get_model_provider
@@ -431,8 +565,20 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
                     ask_user_payload = {"question": result.get("question"),
                                         "options": result.get("options") or []}
                 payload_for_model = {k: v for k, v in result.items() if not k.startswith("_")}
+                raw_content = _json_dumps(payload_for_model)
+                # 先按 token 份额截断（主口径），再按字符上限兜底（辅助）
+                content = _trim_to_token_budget(raw_content, tool_result_tokens,
+                                                tool_result_token_cap)
+                content, cut = _fit_tool_result(content, tool_result_chars)
+                tool_result_chars += len(content)
+                tool_result_tokens += _count_tokens(content)
+                if cut:
+                    yield emit("notice", {"level": "info",
+                                          "message": "工具返回内容较多，本轮已按上下文预算截断；"
+                                                     "如需完整结果请缩小检索范围"})
+                # tool_call 与 tool 结果必须成对：这里只截断内容，绝不丢弃消息
                 messages.append({"role": "tool", "tool_call_id": call.get("id") or name,
-                                 "content": _json_dumps(payload_for_model)})
+                                 "content": content})
 
         if fallback_reason:
             yield emit("notice", {"level": "info", "message": fallback_reason})
@@ -477,6 +623,43 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
         tutor_session.finish_turn(turn_id, tutor_session.STATE_FAILED,
                                   error=f"{type(e).__name__}: {e}")
         yield emit("error", {"message": f"运行失败：{type(e).__name__}"})
+
+
+def _count_tokens(text: Any) -> int:
+    try:
+        from services import context_budget as cb
+
+        return cb.count_tokens(str(text or ""))
+    except Exception:
+        return max(1, len(str(text or "")) // 4)
+
+
+def _trim_to_token_budget(content: str, used: int, cap: int) -> str:
+    """按 token 份额截断工具结果；已用满则只留一句说明。"""
+    if used >= cap:
+        return "（本轮工具结果已达上下文预算，后续内容不再放入）"
+    try:
+        from services import context_budget as cb
+
+        return cb.trim_to_tokens(content, cap - used)
+    except Exception:
+        return content[: max(0, cap - used)]
+
+
+def _fit_tool_result(content: str, used: int,
+                     limit: Optional[int] = None) -> Tuple[str, bool]:
+    """按本轮累计预算截断工具结果，返回 (内容, 是否被截断)。
+
+    累计未超标 → 原样返回；还有余量 → 截到余量并标注；已无余量 → 只留一句说明。
+    """
+    cap = limit if limit is not None else MAX_TOOL_RESULT_CHARS
+    text = str(content or "")
+    if used + len(text) <= cap:
+        return text, False
+    room = cap - used
+    if room > 200:
+        return text[:room] + "…（本轮工具结果已达上下文预算，此处截断）", True
+    return "（本轮工具结果已达上下文预算，后续内容不再放入）", True
 
 
 def _json_dumps(value: Any) -> str:

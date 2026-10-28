@@ -14,9 +14,10 @@ v2.1 更新：
 - 统一通过 services.ai_service 调用公共逻辑
 """
 
+import os
 import re
 import time
-from typing import List, Dict, Any, Optional, Generator
+from typing import List, Dict, Any, Optional, Generator, Tuple
 
 # 导入公共AI服务（RAG检索、LLM调用、来源提取）
 from services.ai_service import (
@@ -145,6 +146,50 @@ def _default_text_model() -> str:
     """
     from config.models import get_default_model
     return get_default_model()
+
+
+INPUT_TOO_LONG_MESSAGE = ("当前问题与必要的系统指令合计已超出上下文窗口，"
+                          "无法在不破坏指令的前提下压缩。请缩短问题或到新会话中继续。")
+
+
+def _fit_chat_request(system_message: str, question: str, context: str,
+                      formatted_history: str, summary: str,
+                      max_tokens: Optional[int]
+                      ) -> Tuple[str, str, str, str, Dict[str, Any], bool]:
+    """按**整包**请求预算压缩（系统提示/问题/历史/摘要/RAG + 输出预留）。
+
+    与 tutor 链路共用 `services.context_budget.fit_request`，保证三条链路口径一致。
+    任何异常都回退到未压缩的原值，绝不因为算预算而中断回答。
+    """
+    try:
+        from services import context_budget as cb
+
+        fit = cb.fit_request(system=system_message, question=question, rag=context,
+                             history=formatted_history, summary=summary,
+                             max_output=max_tokens)
+    except Exception as e:
+        logger.warning(f"请求预算计算失败（不压缩，按原样发送）: {e}")
+        return system_message, context, formatted_history, summary, {}, False
+    if fit.get("actions"):
+        logger.info("[context-budget] " + "；".join(fit["actions"]))
+    return (fit["system"], fit["rag"],
+            fit["history"] if isinstance(fit["history"], str) else formatted_history,
+            fit["summary"], fit["tokens"], bool(fit.get("too_long")))
+
+
+def _rag_context_max_chars() -> int:
+    """RAG 片段的字符预算（2026-10-28 打通配置项，此前 env 写了也没人读）。
+
+    默认 3000，与既有行为一致；非法/非正值回落默认值。
+    """
+    raw = os.getenv("RAG_CONTEXT_MAX_CHARS")
+    if raw is None or not str(raw).strip():
+        return 3000
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 3000
+    return value if value > 0 else 3000
 
 
 def _resolved_provider(model: Optional[str] = None) -> str:
@@ -299,7 +344,7 @@ def chat_with_ai(
         if conversation_id:
             try:
                 from services.conversation_service import (
-                    get_conversation, add_message, get_recent_history,
+                    get_conversation, add_message, get_history_with_ids,
                     update_conversation_title, touch_conversation,
                 )
                 # 阶段一补验：对象级归属校验（不属于本人按"不存在"处理）
@@ -312,15 +357,15 @@ def chat_with_ai(
                     response["error"] = "会话学科与当前学科不一致，请切换会话"
                     response["latency"] = time.time() - start_time
                     return response
+                # 先读历史（不含本条问题），再写用户消息，避免当前问题重复
+                db_history = get_history_with_ids(conversation_id, max_turns=60,
+                                                  user_id=user_id)
+                history = db_history if db_history else (history or [])
                 add_message(conversation_id, "user", question,
                             model=model or _default_text_model())
                 update_conversation_title(conversation_id, _make_title(question),
                                           user_id=user_id)
                 touch_conversation(conversation_id, model=model, user_id=user_id)
-                # 服务端读取最近历史（优先 DB，不信任前端 history）
-                db_history = get_recent_history(conversation_id, max_turns=10,
-                                                user_id=user_id)
-                history = db_history if db_history else (history or [])
             except Exception as e:
                 logger.error(f"会话上下文处理失败: {e}", exc_info=True)
 
@@ -339,7 +384,8 @@ def chat_with_ai(
         #    numbered=True：片段带 [i] 编号，与 sources.id 对齐，供回答标注引用
         if context_used:
             try:
-                context = build_context(context_docs, max_chars=3000, numbered=True)
+                context = build_context(context_docs,
+                                        max_chars=_rag_context_max_chars(), numbered=True)
             except Exception as e:
                 logger.warning(f"构建上下文失败: {e}")
                 context = ""
@@ -351,15 +397,22 @@ def chat_with_ai(
         detail_level = detect_detail_level(question)
         system_message, teaching_ctx = _personalized_system_message(
             user_id, subject_id, detail_level, question=question)
-        if history:
-            formatted_history = _format_history(history)
-            prompt = get_education_prompt_with_context(question, context, formatted_history)
-        else:
-            prompt = get_education_prompt_with_context(question, context)
+        formatted_history, rolling_summary = _build_history_context(
+            conversation_id, history, user_id)
 
         # 4. 调用LLM（V2.5.3：按详细程度控制输出预算）
         if max_tokens is None:
             max_tokens = 1600 if detail_level == DETAIL_EXPANDED else 700
+        # 整包请求预算（2026-10-28）：先预留输出，再按优先级压缩输入
+        system_message, context, formatted_history, rolling_summary, budget_tokens, too_long = (
+            _fit_chat_request(system_message, question, context,
+                              formatted_history, rolling_summary, max_tokens))
+        if too_long:
+            response["error"] = INPUT_TOO_LONG_MESSAGE
+            response["latency"] = time.time() - start_time
+            return response
+        prompt = get_education_prompt_with_context(
+            question, context, formatted_history, summary=rolling_summary)
         answer = call_llm(
             prompt=prompt,
             system_message=system_message,
@@ -368,6 +421,9 @@ def chat_with_ai(
             max_tokens=max_tokens,
         )
         response["detail_level"] = detail_level
+        if budget_tokens:
+            # 透出真实用量，便于验收核查（不影响回答内容）
+            response["context_budget"] = budget_tokens
         if teaching_ctx:
             # 透出"为什么这样安排"，前端可展示，也便于验收核查
             response["teaching"] = {
@@ -512,7 +568,7 @@ def chat_stream(
     if conversation_id:
         try:
             from services.conversation_service import (
-                get_conversation, add_message, get_recent_history,
+                get_conversation, add_message, get_history_with_ids,
                 update_conversation_title, touch_conversation,
             )
             # 阶段一补验：只允许在本人会话上读写（否则本次回答不落库）
@@ -546,7 +602,17 @@ def chat_stream(
 
         # ===== 普通聊天模式（chat）=====
 
-        # 1. 持久化用户消息（会话存在时）
+        # 1. 先读取历史（不含本条问题），再写用户消息。
+        #    否则当前问题会既出现在 history 里、又拼在 prompt 末尾，模型看到两份。
+        if conv_meta:
+            try:
+                db_history = get_history_with_ids(conversation_id, max_turns=60,
+                                                  user_id=user_id)
+                history = db_history if db_history else (history or [])
+            except Exception as e:
+                logger.warning(f"读取会话历史失败: {e}")
+
+        # 2. 持久化用户消息（会话存在时）
         if conv_meta:
             try:
                 add_message(conversation_id, "user", question,
@@ -556,15 +622,6 @@ def chat_stream(
                 touch_conversation(conversation_id, model=model, user_id=user_id)
             except Exception as e:
                 logger.error(f"写入用户消息失败: {e}", exc_info=True)
-
-        # 2. 服务端读取最近历史（优先 DB；无会话时回退前端 history）
-        if conv_meta:
-            try:
-                db_history = get_recent_history(conversation_id, max_turns=10,
-                                                user_id=user_id)
-                history = db_history if db_history else (history or [])
-            except Exception as e:
-                logger.warning(f"读取会话历史失败: {e}")
 
         # 3. RAG检索（V2.5.4：记录 rag_start/rag_end）
         rag_start = time.time()
@@ -581,7 +638,8 @@ def chat_stream(
         # 4. 构建上下文 + 来源（V2.5.3：context 字符预算，保留最相关证据）
         if context_used:
             try:
-                context = build_context(context_docs, max_chars=3000, numbered=True)
+                context = build_context(context_docs,
+                                        max_chars=_rag_context_max_chars(), numbered=True)
             except Exception as e:
                 logger.warning(f"构建上下文失败: {e}")
                 context = ""
@@ -593,11 +651,10 @@ def chat_stream(
         detail_level = detect_detail_level(question)
         system_message, teaching_ctx = _personalized_system_message(
             user_id, subject_id, detail_level, question=question)
-        if history:
-            formatted_history = _format_history(history)
-            prompt = get_education_prompt_with_context(question, context, formatted_history)
-        else:
-            prompt = get_education_prompt_with_context(question, context)
+        formatted_history, rolling_summary = _build_history_context(
+            conversation_id, history, user_id)
+        prompt = get_education_prompt_with_context(
+            question, context, formatted_history, summary=rolling_summary)
 
         # 6. 获取Provider（支持请求级模型选择）与真实模型名
         from services.model_service import get_model_provider, get_model_config
@@ -620,13 +677,22 @@ def chat_stream(
         # 8. 真流式调用LLM（V2.5.3：按详细程度控制输出预算）
         provider_start = time.time()
         full_answer = ""
+        # 普通问答简洁模式：约600~800 tokens；详细模式：约1600
+        if max_tokens is None:
+            max_tokens = 1600 if detail_level == DETAIL_EXPANDED else 700
+        # 整包请求预算（2026-10-28）：与非流式口径一致
+        system_message, context, formatted_history, rolling_summary, budget_tokens, too_long = (
+            _fit_chat_request(system_message, question, context,
+                              formatted_history, rolling_summary, max_tokens))
+        if too_long:
+            yield {"type": "error", "message": INPUT_TOO_LONG_MESSAGE}
+            return
+        prompt = get_education_prompt_with_context(
+            question, context, formatted_history, summary=rolling_summary)
         messages = [
             {"role": "system", "content": system_message},
             {"role": "user", "content": prompt},
         ]
-        # 普通问答简洁模式：约600~800 tokens；详细模式：约1600
-        if max_tokens is None:
-            max_tokens = 1600 if detail_level == DETAIL_EXPANDED else 700
         for chunk in _call_llm_stream(provider, messages, temperature=temperature, max_tokens=max_tokens):
             if not chunk:
                 continue
@@ -1065,6 +1131,81 @@ def _call_llm_stream(provider: Any, messages: List[Dict[str, str]], temperature=
     chunk_size = 10
     for i in range(0, len(content), chunk_size):
         yield content[i : i + chunk_size]
+
+
+_SUMMARY_LAST: Dict[str, float] = {}
+_SUMMARY_THROTTLE_SECONDS = 30.0
+
+
+def _build_history_context(conversation_id: Optional[str],
+                           history: Optional[List[Dict[str, Any]]],
+                           user_id: Optional[str]) -> tuple[str, str]:
+    """返回 (预算内的历史文本, 滚动摘要)。
+
+    预算由 services.context_budget 统一计算；格式化仍走 `_format_history`，
+    以保持既有测试对函数调用的契约。任何异常都回退到旧行为，不阻断对话。
+    """
+    from services import context_budget as cb
+
+    summary_text = ""
+    try:
+        if conversation_id:
+            from services.conversation_service import get_rolling_summary
+            summary_text = get_rolling_summary(conversation_id, user_id=user_id).get("summary", "")
+    except Exception as e:
+        logger.warning(f"读取滚动摘要失败（按空摘要处理）: {e}")
+
+    if not history:
+        return "", summary_text
+
+    try:
+        kept, dropped = cb.select_recent(
+            history, cb.recent_budget(), max_turn_limit=cb.max_turns())
+        if conversation_id and dropped and cb.summary_enabled() and cb.should_summarize(dropped):
+            updated = _summarize_history(conversation_id, summary_text, dropped)
+            if updated:
+                summary_text = updated
+        if not kept:
+            return _format_history(history, max_turns=cb.max_turns()), summary_text
+        # 已经按预算选过，这里传足轮数，避免 _format_history 再截一次
+        return _format_history(kept, max_turns=max(1, (len(kept) + 1) // 2)), summary_text
+    except Exception as e:
+        logger.warning(f"预算化历史失败，回退固定轮次: {e}")
+        return _format_history(history, max_turns=cb.max_turns()), summary_text
+
+
+def _summarize_history(conversation_id: str, previous_summary: str,
+                       dropped: List[Dict[str, Any]]) -> str:
+    """把被折叠的较早轮次并入滚动摘要；失败返回空串（保留旧摘要）。"""
+    import time as _time
+
+    from services import context_budget as cb
+
+    now = _time.time()
+    if now - _SUMMARY_LAST.get(conversation_id, 0.0) < _SUMMARY_THROTTLE_SECONDS:
+        return ""
+    _SUMMARY_LAST[conversation_id] = now
+
+    try:
+        from services.conversation_service import save_rolling_summary
+
+        cap = cb.summary_budget()
+        prompt = cb.build_summary_prompt(previous_summary, dropped)
+        text = call_llm(
+            prompt=prompt,
+            system_message="你只输出中文摘要，不要寒暄，不要编造对话里没有的内容。",
+            max_tokens=cap,
+        )
+        text = cb.finalize_summary(text, max_tokens=cap)
+        if not text:
+            return ""
+        upto = dropped[-1].get("id") if dropped else None
+        save_rolling_summary(conversation_id, text, upto_message_id=upto,
+                             tokens=cb.count_tokens(text))
+        return text
+    except Exception as e:
+        logger.warning(f"生成滚动摘要失败（保留旧摘要，本轮继续）: {e}")
+        return ""
 
 
 def _format_history(history: List[Dict[str, str]], max_turns: int = 5) -> str:

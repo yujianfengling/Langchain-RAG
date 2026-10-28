@@ -405,8 +405,9 @@ def _pending_migrations() -> Dict[str, List[str]]:
         try:
             if _table_exists(conn, "conversations"):
                 cols = _table_columns(conn, "conversations")
-                if "user_id" not in cols:
-                    pending["conversations"] = ["user_id"]
+                required = [c for c in ("user_id", "rolling_summary") if c not in cols]
+                if required:
+                    pending["conversations"] = required
             if _table_exists(conn, "messages"):
                 cols = _table_columns(conn, "messages")
                 if "interaction_id" not in cols:
@@ -457,6 +458,11 @@ _PLAN_COLUMNS = {
 
 _CONVERSATION_COLUMNS = {
     "user_id": "TEXT",
+    # 上下文预算（2026-10-28）：滚动摘要与水位线，老库由 ensure_columns 加法迁移
+    "rolling_summary": "TEXT",
+    "summary_upto": "TEXT",
+    "summary_tokens": "INTEGER DEFAULT 0",
+    "summary_updated_at": "TEXT",
 }
 
 _MESSAGE_COLUMNS = {
