@@ -34,9 +34,10 @@ def _clear_limit_env(monkeypatch):
 def test_default_limit_values(monkeypatch):
     _clear_limit_env(monkeypatch)
     caps = formats.limits()
-    assert caps["max_file_mb"] == 200          # 普通文档
-    assert caps["max_archive_mb"] == 500       # 压缩包
-    assert caps["max_extract_file_mb"] == 200  # 展开后单成员
+    # 2026-10-28：普通文档与压缩包成员 200 -> 512MB；压缩包容器 1024MB
+    assert caps["max_file_mb"] == 512          # 普通文档
+    assert caps["max_archive_mb"] == 1024      # 压缩包
+    assert caps["max_extract_file_mb"] == 512  # 展开后单成员
     assert caps["max_extract_total_mb"] == 1024  # 单批展开总量
     assert caps["max_total_mb"] == 1024        # 旧字段兼容
     assert caps["max_files"] == 100

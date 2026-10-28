@@ -80,6 +80,21 @@ def _item_max_seconds(path: Optional[Path] = None) -> float:
             doc = fitz.open(str(path))
             pages = doc.page_count
             doc.close()
+            # 扫描件按页 OCR 通常远慢于文本抽取：不受 300 页阈值限制，
+            # 直接给 IMPORT_OCR_ITEM_MAX_SECONDS（默认 1800s）。页级缓存支持断点续跑。
+            ocr_on = (os.getenv("IMPORT_OCR_ENGINE", "auto") or "").strip().lower() not in (
+                "off", "none", "0", "false")
+            if ocr_on and pages > 0:
+                try:
+                    from rag.loaders import pdf_ocr
+                    if pdf_ocr.detect_scanned(path):
+                        try:
+                            ocr_max = float(os.getenv("IMPORT_OCR_ITEM_MAX_SECONDS", "1800"))
+                        except (TypeError, ValueError):
+                            ocr_max = 1800.0
+                        return max(ocr_max, base)
+                except Exception as e:
+                    logger.debug(f"扫描件判断失败，按普通 PDF 计时: {e}")
             try:
                 threshold = int(os.getenv("IMPORT_PDF_RANGE_THRESHOLD", "300"))
             except (TypeError, ValueError):
@@ -326,12 +341,69 @@ def _vision_abort_requested() -> bool:
     return bool(event is not None and event.is_set())
 
 
+# ---- 页级进度（2026-10-28）----
+#
+# 不改 `_parse_file/_parse_with_timeout/_parse_file_guarded` 的签名（多处测试直接
+# monkeypatch 成 4 元组）。用线程局部表把“当前解析哪个 item”传给解析线程，
+# 由 pdf_loader 每完成一页调用 `_report_parse_progress`；写库节流，失败静默。
+_PENDING_ITEMS_BY_PATH: Dict[str, str] = {}
+_ACTIVE_PARSE_PROGRESS: Dict[int, str] = {}
+_PROGRESS_LOCK = threading.Lock()
+_PROGRESS_LAST: Dict[str, float] = {}
+
+
+def _report_parse_progress(done: int, total: int) -> None:
+    """页级进度上报：≥2s 或每 2% 才写一次库；任何异常都不能影响解析。"""
+    if not total or int(total) <= 0:
+        return
+    done = max(0, min(int(done), int(total)))
+    tid = threading.get_ident()
+    with _PROGRESS_LOCK:
+        item_id = _ACTIVE_PARSE_PROGRESS.get(tid)
+    if not item_id:
+        return
+    now = time.monotonic()
+    last = _PROGRESS_LAST.get(item_id, 0.0)
+    step = max(1, int(total) // 50)
+    if done < total and (now - last) < 2.0 and (done % step) != 0:
+        return
+    _PROGRESS_LAST[item_id] = now
+    try:
+        _update_item(item_id, progress=min(0.99, done / float(total)),
+                     message=f"解析中 {done}/{total} 页")
+    except Exception:
+        pass
+
+
+def _ocr_user_note(display_name: str, stats: Dict[str, Any]) -> str:
+    """把扫描件的可理解边界写成一句用户可读的话（进 job.warnings，前端可见）。"""
+    if not stats:
+        return ""
+    pages = int(stats.get("pages") or 0)
+    with_text = int(stats.get("pages_with_text") or 0)
+    blank = int(stats.get("pages_blank") or 0)
+    failed = int(stats.get("pages_failed") or 0)
+    parts = [f"{display_name}：扫描件走本地 OCR（{stats.get('engine') or '未知引擎'}）",
+             f"{with_text}/{pages} 页识别出文字"]
+    if blank:
+        preview = "、".join(str(p) for p in (stats.get("pages_blank_list") or [])[:10])
+        parts.append(f"{blank} 页未识别到文字（第 {preview} 页）")
+    if failed:
+        preview = "、".join(str(p) for p in (stats.get("pages_failed_list") or [])[:10])
+        parts.append(f"{failed} 页识别失败需人工确认（第 {preview} 页）")
+    parts.append("插图/图表未作理解，仅取到其中印刷文字")
+    return "；".join(parts)
+
+
 def _parse_config_signature() -> str:
     """解析配置指纹：用于"内容没变就复用"的幂等判定（视觉提示词版本/模式等）"""
     from rag.enrichment.multimodal_enricher import VISION_PROMPT_VERSION
     return "|".join([
         f"vision_prompt={VISION_PROMPT_VERSION}",
         f"vision_mode={os.getenv('VISION_MODE', 'vision')}",
+        f"pdf_map={os.getenv('PDF_HEADING_DETECT', '1')}",
+        f"ocr={os.getenv('IMPORT_OCR_ENGINE', 'auto')}",
+        "ctx=2",
     ])
 
 
@@ -558,14 +630,27 @@ def create_import_job(subject_id: str, files: Sequence[Tuple[str, bytes]],
             rejected.append({"filename": filename, "reason": reason,
                              "error_type": etype})
             continue
-        if len(content) == 0:
+        # 2026-10-28：大文件走“已落盘的临时文件”，避免整份读进内存；
+        # bytes 入参保持原行为（测试与旧调用不变）。
+        is_path = isinstance(content, (str, Path))
+        if is_path:
+            try:
+                size = Path(content).stat().st_size
+            except OSError:
+                rejected.append({"filename": filename,
+                                 "reason": "临时文件读取失败（可能已被清理）",
+                                 "error_type": "io_error"})
+                continue
+        else:
+            size = len(content or b"")
+        if size == 0:
             rejected.append({"filename": filename, "reason": "文件内容为空",
                              "error_type": "empty_content"})
             continue
         is_archive = formats.is_archive(ext) if ext else False
         limit_bytes = archive_bytes if is_archive else doc_bytes
-        if len(content) > limit_bytes:
-            actual_mb = round(len(content) / (1024 * 1024), 2)
+        if size > limit_bytes:
+            actual_mb = round(size / (1024 * 1024), 2)
             limit_mb = limit_bytes // (1024 * 1024)
             kind = "压缩包" if is_archive else "普通文档"
             rejected.append({
@@ -573,8 +658,8 @@ def create_import_job(subject_id: str, files: Sequence[Tuple[str, bytes]],
                 "reason": f"文件实际 {actual_mb}MB，超过{kind}单文件上限 {limit_mb}MB",
                 "error_type": "size_exceeded"})
             continue
-        if total + len(content) > max_total_bytes:
-            actual_mb = round((total + len(content)) / (1024 * 1024), 2)
+        if total + size > max_total_bytes:
+            actual_mb = round((total + size) / (1024 * 1024), 2)
             limit_mb = max_total_bytes // (1024 * 1024)
             rejected.append({
                 "filename": filename,
@@ -586,7 +671,7 @@ def create_import_job(subject_id: str, files: Sequence[Tuple[str, bytes]],
                              "reason": f"本批文件数超过上限 {limits['max_files']}",
                              "error_type": "count_exceeded"})
             continue
-        total += len(content)
+        total += size
         accepted.append((filename, content))
 
     job_id = _new_id("imp")
@@ -598,8 +683,17 @@ def create_import_job(subject_id: str, files: Sequence[Tuple[str, bytes]],
         base = Path(filename.replace("\\", "/")).name
         safe = _safe_stored_name(base)
         dest = raw_dir / f"{seq:03d}_{safe}"
-        dest.write_bytes(content)
-        raw_rows.append((seq, base, str(dest), len(content)))
+        if isinstance(content, (str, Path)):
+            src = Path(content)
+            try:
+                os.replace(src, dest)          # 同一数据盘：原子重命名，不复制
+            except OSError:
+                shutil.move(str(src), str(dest))
+            size = dest.stat().st_size
+        else:
+            dest.write_bytes(content)
+            size = len(content)
+        raw_rows.append((seq, base, str(dest), size))
 
     status = "queued" if accepted else "failed"
     summary_text = ("任务已排队" if accepted
@@ -729,11 +823,16 @@ def _parse_file(path: Path) -> Tuple[List[Any], Optional[str], Optional[str], Di
     from rag.document import load_document_result
     start = time.monotonic()
     result = load_document_result(path)
+    raw_meta = dict(getattr(result, "metadata", None) or {})
+    nested = raw_meta.get("vision_stats")
+    vision_stats = nested if isinstance(nested, dict) else raw_meta
     meta: Dict[str, Any] = {
-        "vision_stats": dict(getattr(result, "metadata", None) or {}) or {},
+        "vision_stats": vision_stats or {},
+        "ocr_stats": raw_meta.get("ocr_stats") or {},
+        "pages_total": raw_meta.get("pages_total") or 0,
+        "pages_parsed": raw_meta.get("pages_parsed") or 0,
+        "parse_engine": raw_meta.get("parse_engine") or "",
     }
-    meta["vision_stats"] = meta["vision_stats"].get("vision_stats", {}) if isinstance(
-        meta["vision_stats"], dict) else {}
     meta["parse_ms"] = int((time.monotonic() - start) * 1000)
     if result.success:
         return result.documents, None, None, meta
@@ -742,15 +841,22 @@ def _parse_file(path: Path) -> Tuple[List[Any], Optional[str], Optional[str], Di
 
 def _parse_file_guarded(path: Path, abort: "threading.Event"
                         ) -> Tuple[List[Any], Optional[str], Optional[str], Dict[str, Any]]:
-    """在解析线程里登记 abort Event，供增强器在派发新视觉工作前检查（任务 6）。"""
+    """在解析线程里登记 abort Event 与页级进度槽（2026-10-28）。"""
     tid = threading.get_ident()
     with _ACTIVE_PARSE_ABORTS_LOCK:
         _ACTIVE_PARSE_ABORTS[tid] = abort
+    item_id = None
     try:
+        with _PROGRESS_LOCK:
+            item_id = _PENDING_ITEMS_BY_PATH.pop(str(Path(path).resolve()), None)
+            if item_id:
+                _ACTIVE_PARSE_PROGRESS[tid] = item_id
         return _parse_file(path)
     finally:
         with _ACTIVE_PARSE_ABORTS_LOCK:
             _ACTIVE_PARSE_ABORTS.pop(tid, None)
+        with _PROGRESS_LOCK:
+            _ACTIVE_PARSE_PROGRESS.pop(tid, None)
 
 
 def _parse_with_timeout(path: Path, timeout: float
@@ -1651,9 +1757,18 @@ def _run_job_locked(job_id: str, executor_id: str,
                                     ensure_ascii=False))
                             continue
 
-                docs, error_type, message, meta = _parse_item_with_retries(src_path)
+                try:
+                    with _PROGRESS_LOCK:
+                        _PENDING_ITEMS_BY_PATH[str(src_path.resolve())] = item_id
+                    docs, error_type, message, meta = _parse_item_with_retries(src_path)
+                finally:
+                    with _PROGRESS_LOCK:
+                        _PENDING_ITEMS_BY_PATH.pop(str(src_path.resolve()), None)
                 vision_stats = meta.get("vision_stats") or {}
+                ocr_stats = meta.get("ocr_stats") or {}
                 stage_timings["vision_ms"] += int(vision_stats.get("vision_ms") or 0)
+                stage_timings["ocr_ms"] = int(stage_timings.get("ocr_ms") or 0) + int(
+                    ocr_stats.get("elapsed_ms") or 0)
                 timings = {
                     "parse_ms": int(meta.get("parse_ms") or 0),
                     "vision_ms": int(vision_stats.get("vision_ms") or 0),
@@ -1663,6 +1778,16 @@ def _run_job_locked(job_id: str, executor_id: str,
                     "vision_timeout": int(vision_stats.get("vision_timeout") or 0),
                     "images_total": int(vision_stats.get("images_total") or 0),
                     "images_deduped": int(vision_stats.get("images_deduped") or 0),
+                    # 本地 OCR（2026-10-28）：扫描件页数与引擎，便于解释耗时
+                    "ocr_ms": int(ocr_stats.get("elapsed_ms") or 0),
+                    "ocr_pages": int(ocr_stats.get("pages") or 0),
+                    "ocr_pages_blank": int(ocr_stats.get("pages_blank") or 0),
+                    "ocr_pages_failed": int(ocr_stats.get("pages_failed") or 0),
+                    "ocr_pages_figure": int(ocr_stats.get("pages_figure_only") or 0),
+                    "ocr_engine": str(ocr_stats.get("engine") or ""),
+                    "pages_total": int(meta.get("pages_total") or 0),
+                    "pages_parsed": int(meta.get("pages_parsed") or 0),
+                    "parse_engine": str(meta.get("parse_engine") or ""),
                     "item_timed_out": bool(meta.get("item_timed_out")),
                     "retries": int(meta.get("retries") or 0),
                     # 内存峰值（任务 6）：解析阶段 Python 分配峰值 + 进程 RSS
@@ -1682,6 +1807,14 @@ def _run_job_locked(job_id: str, executor_id: str,
                     if error_type == "item_timeout":
                         warnings.append(f"{cand['display_name']}：{message}")
                     continue
+
+                # 扫描件（本地 OCR）：把"图表未理解 / 空白页 / 识别失败"写进**用户可见**结果，
+                # 不能只留在日志里（2026-10-28）。
+                if str(meta.get("parse_engine") or "").startswith("local_ocr"):
+                    note = _ocr_user_note(cand["display_name"],
+                                          meta.get("ocr_stats") or {})
+                    if note:
+                        warnings.append(note)
 
                 content = src_path.read_bytes()
                 decision = _decide_target(subject_dir, cand["display_name"], content)

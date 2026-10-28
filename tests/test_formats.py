@@ -113,9 +113,11 @@ def test_limits_defaults(monkeypatch):
                  "IMPORT_MAX_DEPTH", "IMPORT_MAX_SECONDS"):
         monkeypatch.delenv(name, raising=False)
     caps = formats.limits()
-    assert caps["max_file_mb"] == 200
-    assert caps["max_archive_mb"] == 500
-    assert caps["max_extract_file_mb"] == 200
+    # 2026-10-28：单文件与压缩包成员上限 200 -> 512MB（真实 349.8MB 教材需要）；
+    # 压缩包容器给到 1024MB，才能容纳 512MB 的成员。压缩包展开总量/数量/深度不变。
+    assert caps["max_file_mb"] == 512
+    assert caps["max_archive_mb"] == 1024
+    assert caps["max_extract_file_mb"] == 512
     assert caps["max_extract_total_mb"] == 1024
     assert caps["max_total_mb"] == 1024
     assert caps["max_files"] == 100

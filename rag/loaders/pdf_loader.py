@@ -6,13 +6,15 @@ V2.3.0: 集成新的 PDF 分析器架构，支持元素检测和提取。
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Union, Optional
+from typing import Any, Dict, List, Sequence, Union, Optional
 import hashlib
 import json
 import logging
 import os
+import time
 
 from .base import BaseLoader, LoadResult
+from . import pdf_map, pdf_ocr
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +114,28 @@ class PdfLoader(BaseLoader):
             LoadResult
         """
         try:
+            # 扫描件分流（2026-10-28）：文本层为空时走本地逐页 OCR，
+            # 不再生成几百个 IMAGE 元素、逐图调用付费视觉（旧路径会 600s 超时并丢页）。
+            if self._is_scanned_pdf(file_path):
+                return self._load_scanned_pdf(file_path)
+
+            vision_state = {"images": 0, "started": time.time()}
+
             def _enrich_one(doc):
                 try:
+                    metadata = getattr(doc, "metadata", None) or {}
+                    modality = str(metadata.get("modality") or "")
+                    if modality in ("image", "table", "formula"):
+                        max_images = max(1, int(os.getenv("VISION_MAX_IMAGES_PER_DOC", "20") or "20"))
+                        budget_s = float(os.getenv("VISION_DOC_BUDGET_SECONDS", "180") or "180")
+                        if (vision_state["images"] >= max_images
+                                or (time.time() - vision_state["started"]) >= budget_s):
+                            try:
+                                doc.metadata["vision_skip_reason"] = "doc_budget"
+                            except Exception:
+                                pass
+                            return doc
+                        vision_state["images"] += 1
                     out = self.enricher._enrich_single_document(doc)
                     # 增强后正文为空的（判定为噪声/装饰）直接丢弃，不进索引
                     return out if (out.page_content or "").strip() else None
@@ -161,25 +183,201 @@ class PdfLoader(BaseLoader):
             # 识别出的正文再随合并进入最终 chunk。
             documents = self.adapter.adapt(
                 elements, file_path, merge_small=True, pre_merge_hook=_enrich_one)
-            
+            self._mark_page_base(documents)
+
+            # 章节上下文（2026-10-28）：TOC 优先，字号/正则补充
+            if documents and os.getenv("PDF_HEADING_DETECT", "1") not in ("0", "false", "off"):
+                headings = pdf_map.merge_headings(
+                    pdf_map.toc_headings(file_path),
+                    pdf_map.collect_from_elements(elements))
+                pdf_map.annotate(documents, headings)
+
             if not documents:
                 logger.warning(f"文档转换失败: {file_path}")
                 # 降级到旧架构
                 return self._load_with_legacy_architecture(file_path)
             
             logger.info(f"PDF 加载成功（新架构）: {file_path}, {len(documents)} 个文档")
-            return self._create_success_result(documents)
+            meta = {
+                "pages_total": page_count or 0,
+                "pages_parsed": page_count or 0,
+                "parse_engine": "pymupdf",
+                "vision_stats": getattr(self.enricher, "last_stats", {}) or {},
+            }
+            return self._create_success_result(documents, metadata=meta)
             
         except Exception as e:
             logger.warning(f"新架构加载失败，降级到旧架构: {str(e)}")
             return self._load_with_legacy_architecture(file_path)
     
+    # ==================== 扫描件本地 OCR（2026-10-28） ====================
+
+    @staticmethod
+    def _mark_page_base(docs: List[Any]) -> None:
+        """标记 PDF 的 page 是 0 基；展示层只对这种文档 +1。"""
+        for doc in docs or []:
+            meta = getattr(doc, "metadata", None)
+            if meta is None:
+                meta = {}
+                try:
+                    doc.metadata = meta
+                except Exception:
+                    continue
+            meta.setdefault("page_base", 0)
+
+    def _is_scanned_pdf(self, file_path: Path) -> bool:
+        """是否走本地 OCR：PDF、文本层为空、且本机有可用 OCR 引擎。"""
+        try:
+            if file_path.suffix.lower() != ".pdf":
+                return False
+            if (os.getenv("IMPORT_OCR_ENGINE", "auto") or "").strip().lower() in (
+                    "off", "none", "0", "false"):
+                return False
+            if not pdf_ocr.detect_scanned(file_path):
+                return False
+            name, reason = pdf_ocr.select_engine()
+            if not name:
+                logger.warning(
+                    f"PDF 无文本层，但本地 OCR 不可用（{reason}）。"
+                    "请安装 rapidocr/liteparse，或把 IMPORT_OCR_ENGINE 设为 off 以走原链路。")
+                return False
+            return True
+        except Exception as e:
+            logger.warning(f"扫描件判断失败（按普通 PDF 处理）: {e}")
+            return False
+
+    def _load_scanned_pdf(self, file_path: Path) -> LoadResult:
+        """逐页本地 OCR，每页一个 Document（保留真实页码）。"""
+        from langchain_core.documents import Document
+
+        engine, reason = pdf_ocr.select_engine()
+        if not engine:
+            return self._create_error_result(
+                f"扫描件需要本地 OCR，但当前不可用：{reason}",
+                error_type="ocr_unavailable")
+        total = pdf_ocr.page_count(file_path)
+        logger.info(f"[pdf-ocr] 扫描件 {file_path.name}：{total} 页，引擎={engine}")
+        started = time.time()
+        page_stats: Dict[str, Any] = {}
+        pages = pdf_ocr.ocr_pdf_pages(
+            file_path, on_page=self._report_ocr_page,
+            should_abort=self._ocr_should_abort, engine=engine, stats=page_stats)
+
+        documents: List[Any] = []
+        for page_no, text in sorted((pages or {}).items()):
+            cleaned = (text or "").strip()
+            if not cleaned:
+                continue
+            documents.append(Document(page_content=cleaned, metadata={
+                "type": "text",
+                "modality": "text",
+                "page": max(0, int(page_no) - 1),  # 0 基，展示时统一 +1
+                "page_base": 0,
+                "source": str(file_path),
+                "file_name": file_path.name,
+                "file_type": "pdf",
+                "ocr": True,
+                "ocr_engine": engine,
+            }))
+
+        headings = pdf_map.headings_from_pages(pages or {})
+        pdf_map.annotate(documents, headings)
+        elapsed_ms = int((time.time() - started) * 1000)
+
+        # 空 OCR 页不允许静默跳过：记下页码并判断是否为纯图（大概率是图表/插图），
+        # 让任务与日志都能明确提示“这些页没被理解”，而不是只报一个成功总结。
+        blank_pages = sorted(int(p) for p in (page_stats.get("blank") or []))
+        failed_pages = sorted(int(p) for p in (page_stats.get("failed") or []))
+        figure_pages = self._pages_with_images(file_path, blank_pages)
+        if failed_pages:
+            preview = "、".join(str(p) for p in failed_pages[:20])
+            logger.warning(f"[pdf-ocr] {file_path.name} 有 {len(failed_pages)} 页 OCR 失败"
+                           f"（不是空白页，需要人工确认）：第 {preview} 页")
+        if blank_pages:
+            preview = "、".join(str(p) for p in blank_pages[:20])
+            more = "…" if len(blank_pages) > 20 else ""
+            suffix = (f"；其中第 {'、'.join(str(p) for p in figure_pages[:20])} 页"
+                      f"含嵌入式图片，可能主要由图表/插图构成" if figure_pages else "")
+            logger.warning(
+                f"[pdf-ocr] {file_path.name} 有 {len(blank_pages)}/{total} 页未识别到文本："
+                f"第 {preview}{more} 页{suffix}。"
+                "扫描件中的插图/图表本身不会被理解，只能取到其中的印刷文字。")
+
+        metadata = {
+            "pages_total": total,
+            "pages_parsed": len(documents),
+            "parse_engine": f"local_ocr:{engine}",
+            "ocr_stats": {
+                "engine": engine,
+                "pages": len(pages or {}),
+                "pages_with_text": len(documents),
+                "pages_blank": len(blank_pages),
+                "pages_blank_list": blank_pages[:100],
+                # 与“空白页”分开：这些页 OCR 抛错，需要人工确认而不是当成没内容
+                "pages_failed": len(failed_pages),
+                "pages_failed_list": failed_pages[:100],
+                "pages_cached": len(page_stats.get("cached") or []),
+                "pages_figure_only": len(figure_pages),
+                "figures_interpreted": False,
+                "elapsed_ms": elapsed_ms,
+            },
+        }
+        if not documents:
+            return self._create_error_result(
+                f"扫描件本地 OCR 未产出文本（引擎={engine}，{total} 页）。"
+                "请检查扫描清晰度或换用其他 OCR 引擎。",
+                metadata=metadata, error_type="ocr_unavailable")
+        logger.info(f"[pdf-ocr] {file_path.name} 完成：{len(documents)}/{total} 页有文本，"
+                    f"{elapsed_ms} ms")
+        return LoadResult(documents=documents, success=True, metadata=metadata)
+
+    @staticmethod
+    def _pages_with_images(file_path: Path, page_numbers: Sequence[int]) -> List[int]:
+        """判断哪些页含嵌入式图片（用于区分“空白页”与“纯图/图表页”）。"""
+        if not page_numbers:
+            return []
+        out: List[int] = []
+        try:
+            import fitz
+
+            doc = fitz.open(str(file_path))
+        except Exception:
+            return []
+        try:
+            for page_no in page_numbers:
+                try:
+                    if doc[page_no - 1].get_images(full=True):
+                        out.append(int(page_no))
+                except Exception:
+                    continue
+        finally:
+            try:
+                doc.close()
+            except Exception:
+                pass
+        return out
+
+    def _report_ocr_page(self, page_no: int, text: str, total: int) -> None:
+        """把页级进度上报给导入任务（失败静默，绝不影响解析）。"""
+        try:
+            from services.import_service import _report_parse_progress
+            _report_parse_progress(page_no, total)
+        except Exception:
+            pass
+
+    def _ocr_should_abort(self) -> bool:
+        try:
+            from services.import_service import _vision_abort_requested
+            return bool(_vision_abort_requested())
+        except Exception:
+            return False
+
     # ==================== 大 PDF 分段解析（2026-10-07） ====================
     # 实测：958 页教材一次性解析 ~84s、7.4 万个元素；按 200 页分段每段 ~17s。
     # 分段后每段独立完成并落盘缓存：超时/中断只丢当前段，重试从缺失段继续，
     # 不会"整本教材一次超时后全部重来"。页码按 page_offset 还原为**全书真实页码**。
 
-    _RANGE_CACHE_SCHEMA = "pdfrange-v1"
+    _RANGE_CACHE_SCHEMA = "pdfrange-v2"
 
     def _range_pages(self) -> int:
         try:
@@ -254,6 +452,9 @@ class PdfLoader(BaseLoader):
         ranges = [(s, min(s + span, total)) for s in range(0, total, span)]
         docs: List[Any] = []
         parsed = 0
+        headings_toc = (pdf_map.toc_headings(file_path)
+                        if os.getenv("PDF_HEADING_DETECT", "1") not in ("0", "false", "off")
+                        else [])
         if not ranges:
             return []
         for start, end in ranges:
@@ -265,6 +466,9 @@ class PdfLoader(BaseLoader):
                 except Exception:
                     cached = None
             if cached is not None:
+                self._mark_page_base(cached)
+                if headings_toc:
+                    pdf_map.annotate(cached, headings_toc)
                 docs.extend(cached)
                 continue
             parsed += 1
@@ -275,6 +479,11 @@ class PdfLoader(BaseLoader):
             elements = self._extract_images_from_elements(elements, file_path)
             part_docs = self.adapter.adapt(elements, file_path, merge_small=True,
                                            pre_merge_hook=hook)
+            self._mark_page_base(part_docs)
+            # 章节上下文（2026-10-28）：TOC 优先，字号/OCR 补充；写进缓存供重试复用
+            range_headings = pdf_map.merge_headings(
+                headings_toc, pdf_map.collect_from_elements(elements))
+            pdf_map.annotate(part_docs, range_headings)
             for d in part_docs:
                 try:
                     d.metadata.setdefault("page_range", f"{start + 1}-{end}")

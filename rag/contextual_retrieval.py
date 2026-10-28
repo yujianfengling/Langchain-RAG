@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from config.path_config import get_data_dir
 from utils.logger import logger
 
-CONTEXTUAL_VERSION = 1
+CONTEXTUAL_VERSION = 2
 _CACHE_DIR = lambda: Path(get_data_dir()) / "cache" / "contextual"
 
 
@@ -51,11 +51,19 @@ def deterministic_prefix(meta: Dict[str, Any]) -> str:
     source = _source_name(meta)
     if source:
         parts.append(f"资料《{source}》")
+    parents = str(meta.get("parent_headings") or "").strip()
     section = str(meta.get("section") or "").strip()
-    if section:
-        parts.append(f"章节：{section}")
+    # 章节路径：父级标题链 + 当前标题（2026-10-28，借鉴 heading 栈）
+    path = " > ".join(p for p in (parents, section) if p)
+    if path:
+        parts.append(f"章节：{path}")
     page = meta.get("page")
     if page not in (None, ""):
+        try:
+            from rag.loaders.pdf_map import display_page
+            page = display_page(meta)
+        except Exception:
+            pass
         parts.append(f"第 {page} 页")
     if not parts:
         return ""

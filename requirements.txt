@@ -46,3 +46,10 @@ odfpy==1.4.1
 EbookLib==0.20
 # 旧版 .ppt/.doc 的 Microsoft Office COM 转换（仅 Windows；缺失时能力清单如实标为不可用）
 pywin32==312; sys_platform == "win32"
+# 上下文预算（2026-10-28）：tiktoken 缺失时自动退化 chars/4，不阻断对话
+tiktoken>=0.7.0
+# 扫描件本地 OCR（2026-10-28）：纯本地、离线、按页返回；缺失时明确降级，不静默成功
+rapidocr>=3.0
+onnxruntime>=1.18.0
+# 可选：内置 Tesseract 的本地解析器；未安装时自动跳过（不写进必需依赖）
+# liteparse>=2.14

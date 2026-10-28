@@ -11,7 +11,7 @@
 |---|---|---|---|---|
 | 课件 | `.pptx` | ✅ | python-pptx | 幻灯片顺序、标题、文本框正文、**表格**（转 Markdown）、**备注**、**组合形状递归**、图片走视觉；`metadata.page` = 真实幻灯片号 |
 | 课件 | `.ppt` | ✅（有转换组件时） | LibreOffice 或 Microsoft Office COM → pptx | 检测不到转换组件时**明确失败**（`converter_unavailable`），绝不改后缀冒充 pptx |
-| 文档 | `.pdf` | ✅ | pdfplumber（可选视觉增强） | 扫描件复用既有视觉/OCR 链路 |
+| 文档 | `.pdf` | ✅ | PyMuPDF + 本地 OCR 兜底（rapidocr/liteparse） | 扫描件自动分流到本地逐页 OCR，不逐图调用付费视觉 |
 | 文档 | `.docx` | ✅ | docx2txt | |
 | 文档 | `.doc` | ✅（有转换组件时） | LibreOffice 或 Microsoft Office COM → docx | 同上 |
 | 文档 | `.txt` / `.md` | ✅ | stdlib | |
@@ -74,15 +74,23 @@
 
 | 配置项（env） | 默认 | 含义 |
 |---|---|---|
-| `IMPORT_MAX_DOCUMENT_MB` | 200 MB | 普通文档单文件上限（旧字段 `max_file_mb`）|
-| `IMPORT_MAX_ARCHIVE_MB` | 500 MB | 压缩包单文件上限（`max_archive_mb`）|
-| `IMPORT_MAX_EXTRACT_FILE_MB` | 200 MB | 压缩包展开后**单个成员**上限（`max_extract_file_mb`）|
+| `IMPORT_MAX_DOCUMENT_MB` | 512 MB | 普通文档单文件上限（旧字段 `max_file_mb`）|
+| `IMPORT_MAX_ARCHIVE_MB` | 1024 MB | 压缩包单文件上限（`max_archive_mb`）|
+| `IMPORT_MAX_EXTRACT_FILE_MB` | 512 MB | 压缩包展开后**单个成员**上限（`max_extract_file_mb`）|
 | `IMPORT_MAX_EXTRACT_TOTAL_MB` | 1024 MB | 单批**展开总量**上限（`max_extract_total_mb`，旧字段 `max_total_mb` 同义）|
 | `IMPORT_MAX_FILES` | 100 | 文件数量（含展开成员）|
 | `IMPORT_MAX_DEPTH` | 2 | 递归深度 |
-| `IMPORT_MAX_SECONDS` | 300 | 整批预算（秒）；到时剩余成员记为 `unprocessed`、job=`partial` 且可继续 |
+| `IMPORT_MAX_SECONDS` | 7200 | **整个任务**的墙钟上限（秒）；任务内部按 `IMPORT_BATCH_SECONDS` 自动分批 |
 | `IMPORT_ITEM_MAX_SECONDS` | 180 | 单文件解析墙钟上限（秒）；超时记 `item_timeout` 并继续后面的文件 |
-| `VISION_MAX_CONCURRENCY` | 3 | 同一批图片视觉调用的受控并发数 |
+| `IMPORT_PDF_ITEM_MAX_SECONDS` | 1200 | 大 PDF（>300 页）单文件上限（秒）|
+| `IMPORT_OCR_ENGINE` | auto | `auto | rapidocr | liteparse | pytesseract | off` |
+| `IMPORT_OCR_DPI` | 200 | 扫描页渲染 DPI（越高越慢）|
+| `IMPORT_OCR_MAX_SIDE` | 1600 | 渲染后最长边上限；实测 1600 比 2200 快约一倍，识别字数几乎不变 |
+| `IMPORT_OCR_WORKERS` | 2 | 页级 OCR 并发（上限 3；1=串行）|
+| `IMPORT_OCR_ITEM_MAX_SECONDS` | 2700 | 扫描件 OCR 单文件上限（秒）；页级缓存可断点续跑 |
+| `VISION_MAX_CONCURRENCY` | 6 | 同一批图片视觉调用的受控并发数 |
+| `VISION_MAX_IMAGES_PER_DOC` | 20 | 正文 PDF 每份最多识图数（防超时）|
+| `VISION_DOC_BUDGET_SECONDS` | 180 | 正文 PDF 识图总预算（秒）|
 | `VISION_IMAGE_TIMEOUT_SECONDS` | 30 | 单张图片视觉调用墙钟上限（秒）；超时继续其余图片 |
 
 ### 3.1 超大图与图片提速（2026-10-07）
@@ -96,6 +104,16 @@
 
 兼容：仍接受旧 env `IMPORT_MAX_FILE_MB` 作为 `IMPORT_MAX_DOCUMENT_MB` 的回退。
 超限一律返回**准确原因**（哪个限制、实际多大、上限多少），绝不超限后仍继续建库或假成功。
+
+### 3.0 扫描件与本地 OCR（2026-10-28）
+
+- 判定：PDF 抽样页文本层几乎为空 → 视为扫描件，走 `rag/loaders/pdf_ocr.py` 的**逐页 OCR**，
+  每页一个 Document，`page` 保持 0 基（展示时 +1），因此引用页码真实可核对。
+- 引擎优先级：`rapidocr`（自带 ONNX 模型、离线、按页）→ `liteparse`（内置 Tesseract）→
+  `pytesseract`（仅检测到系统 tesseract 时）→ 明确失败（`ocr_unavailable`）。
+- 缓存：`<data>/cache/ocr_pages/<文件SHA>/p<页>_<引擎>_<DPI>_v1.txt`；中断重跑只补缺失页。
+- 视觉模型只服务正文 PDF 的插图，且受 `VISION_MAX_IMAGES_PER_DOC` / `VISION_DOC_BUDGET_SECONDS` 限制；
+  扫描件默认**不**调用付费视觉（`IMPORT_OCR_CAPTION_IMAGES=0`）。
 
 ### 3.1 请求体大小的两层边界（不是后端应用层）
 

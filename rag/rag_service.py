@@ -610,7 +610,15 @@ def build_context(documents: List[Document], max_chars: Optional[int] = None,
             # 获取元数据
             metadata = doc.metadata if hasattr(doc, 'metadata') else {}
             source = metadata.get('source', f'文档{i}')
-            section = metadata.get('section', '')
+            parents = str(metadata.get('parent_headings') or '').strip()
+            leaf = str(metadata.get('section') or '').strip()
+            section = " > ".join(p for p in (parents, leaf) if p)
+            page = metadata.get('page')
+            try:
+                from .loaders.pdf_map import display_page
+                page = display_page(metadata)
+            except Exception:
+                pass
             retrieval_type = metadata.get('retrieval_type', '')
             rerank_score = metadata.get('rerank_score', None)
 
@@ -618,6 +626,8 @@ def build_context(documents: List[Document], max_chars: Optional[int] = None,
             source_label = (f"[{i}] 来源: {source}" if numbered else f"来源: {source}")
             if section:
                 source_label += f" > {section}"
+            if page not in (None, ""):
+                source_label += f" 第 {page} 页"
             if retrieval_type:
                 source_label += f" [{retrieval_type}]"
             if rerank_score is not None:

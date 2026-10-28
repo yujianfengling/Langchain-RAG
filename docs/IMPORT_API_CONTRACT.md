@@ -18,16 +18,19 @@
     "converter": { "available": true, "path": "C:\\Program Files\\Microsoft Office\\root\\Office16",
                    "kind": "msoffice",
                    "note": "已检测到 Microsoft Office；通过 COM 转换，可用应用：PowerPoint/Word" },
-    "limits": { "max_file_mb": 200, "max_archive_mb": 500,
-                "max_extract_file_mb": 200, "max_extract_total_mb": 1024,
+    "limits": { "max_file_mb": 512, "max_archive_mb": 1024,
+                "max_extract_file_mb": 512, "max_extract_total_mb": 1024,
                 "max_total_mb": 1024, "max_files": 100,
-                "max_depth": 2, "max_seconds": 300 },
+                "max_depth": 2, "max_seconds": 7200 },
+    "ocr": { "name": "rapidocr", "available": true, "note": "", "dpi": 200 },
     "accept": ".pptx,.ppt,.pdf,.docx,.doc,.txt,.md,.xlsx,.xls,.csv,.png,.jpg,.jpeg,.webp,.zip,..."
   } }
 ```
 
 - `available=false` 的格式仍会出现在清单里，但前端要标注"需要转换组件/暂不支持"，后端必须返回明确原因，不得假装成功。
 - `accept` 只包含 `available=true` 的扩展名，供 <input accept> 与拖拽校验共用。
+- `ocr`（2026-10-28 新增）：本机本地 OCR 引擎状态。扫描版 PDF 依赖它；
+  `available=false` 时不得静默入库空内容，应把条目标为失败并给出原因。
 
 ## 2. 发起导入
 
@@ -47,10 +50,12 @@
   unsupported_format / converter_unavailable / size_exceeded / count_exceeded）；
   这是**附加字段**，不改变既有字段含义。
 - `limits` 的默认值随 `IMPORT_MAX_*` 环境变量变化，前端应读取响应而不是写死：
-  `max_file_mb` = 普通文档单文件（默认 200MB，env `IMPORT_MAX_DOCUMENT_MB`）；
-  `max_archive_mb` = 压缩包单文件（默认 500MB，env `IMPORT_MAX_ARCHIVE_MB`）；
-  `max_extract_file_mb` = 展开后单个成员（默认 200MB，env `IMPORT_MAX_EXTRACT_FILE_MB`）；
+  `max_file_mb` = 普通文档单文件（默认 512MB，env `IMPORT_MAX_DOCUMENT_MB`）；
+  `max_archive_mb` = 压缩包单文件（默认 1024MB，env `IMPORT_MAX_ARCHIVE_MB`）；
+  `max_extract_file_mb` = 展开后单个成员（默认 512MB，env `IMPORT_MAX_EXTRACT_FILE_MB`）；
   `max_extract_total_mb` / `max_total_mb` = 单批展开总量（默认 1024MB，env `IMPORT_MAX_EXTRACT_TOTAL_MB`）。
+  2026-10-28：普通文档与单个成员上限由 200 提到 512MB（真实教材 349.8MB），
+  压缩包容器给到 1024MB 才能容纳 512MB 成员；展开总量/数量/层数等安全限制不变。
   `POST /knowledge/upload` 与 `/import` 都按"是否压缩包"取不同上限，二者保持一致。
 - `converter.kind` 如实取值 `"libreoffice"` / `"msoffice"` / `null`（不可用时为 null）；
   `available=false` 时 `.ppt/.doc` 的 `requires` 仍为 `"libreoffice"`，前端据此归类
@@ -125,6 +130,8 @@
   `summary_text` 形如"N 份可学习，M 份未处理（可继续）"。
 - 未进入索引的条目不得写成"可学习"：只有在统一建库成功后
   `indexing → ready`；建库失败回退为 `failed`（error_type=`build_failed`，可重试）。
+- 扫描件没有本地 OCR 或 OCR 未产出文本时，error_type=`ocr_unavailable`（可重试），
+  不得把空内容当成"可学习"。
 - 建库失败绝不清空已有知识库（沿用"备份→构建→失败回滚"）。
 
 ### 3.2 计时（2026-10-07 新增，便于页面显示"最慢文件/最慢阶段"）
@@ -132,7 +139,10 @@
 - 每个 item 附带 `timings`：`parse_ms / vision_ms / vision_calls / vision_cached /
   vision_failed / vision_timeout / images_total / images_deduped / item_timed_out`，
   以及复用时的 `reused`、单条建库的 `chunks`。
-- job 附带 `stage_timings`：`extract_ms / parse_ms / build_ms / vision_ms / total_ms`
+- 2026-10-28 新增（本地 OCR）：`ocr_ms / ocr_pages / ocr_engine /
+  pages_total / pages_parsed / parse_engine`。扫描件的 `progress` 语义为页级真实百分比，
+  同时 `message` 形如"解析中 12/252 页"。
+- job 附带 `stage_timings`：`extract_ms / parse_ms / build_ms / vision_ms / ocr_ms / total_ms`
   （单条建库时另有 `build_chunks`）。所有计时均为非负整数毫秒。
 
 说明（实现侧，2026-10-07）：

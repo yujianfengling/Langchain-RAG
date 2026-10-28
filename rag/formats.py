@@ -303,10 +303,10 @@ def limits() -> Dict[str, Any]:
 
     字段与语义：
     - max_file_mb          普通文档单文件上限（旧字段，语义保持 = 非压缩包）
-                           默认 200，env IMPORT_MAX_DOCUMENT_MB
+                           默认 512，env IMPORT_MAX_DOCUMENT_MB
                            （兼容旧 env IMPORT_MAX_FILE_MB 作为回退）
-    - max_archive_mb       压缩包单文件上限，默认 500，env IMPORT_MAX_ARCHIVE_MB
-    - max_extract_file_mb  压缩包展开后**单个成员**上限，默认 200，
+    - max_archive_mb       压缩包单文件上限，默认 1024，env IMPORT_MAX_ARCHIVE_MB
+    - max_extract_file_mb  压缩包展开后**单个成员**上限，默认 512，
                            env IMPORT_MAX_EXTRACT_FILE_MB
     - max_extract_total_mb 单批**展开总量**上限，默认 1024，
                            env IMPORT_MAX_EXTRACT_TOTAL_MB
@@ -328,12 +328,14 @@ def limits() -> Dict[str, Any]:
                           所以"单个文件卡死拖住整批"不是靠调大预算修好的。
     """
     # 兼容旧 env：优先新名，未设置时回退旧名 IMPORT_MAX_FILE_MB
-    doc_mb = _env_int("IMPORT_MAX_DOCUMENT_MB", _env_int("IMPORT_MAX_FILE_MB", 200))
+    # 2026-10-28：单文件与压缩包成员上限 200 -> 512MB（真实教材 349.8MB 需要）
+    doc_mb = _env_int("IMPORT_MAX_DOCUMENT_MB", _env_int("IMPORT_MAX_FILE_MB", 512))
     extract_total_mb = _env_int("IMPORT_MAX_EXTRACT_TOTAL_MB", 1024)
     return {
         "max_file_mb": doc_mb,
-        "max_archive_mb": _env_int("IMPORT_MAX_ARCHIVE_MB", 500),
-        "max_extract_file_mb": _env_int("IMPORT_MAX_EXTRACT_FILE_MB", 200),
+        # 容器要能容纳 512MB 成员（已压缩内容在 zip 里几乎不缩小），所以给到 1024
+        "max_archive_mb": _env_int("IMPORT_MAX_ARCHIVE_MB", 1024),
+        "max_extract_file_mb": _env_int("IMPORT_MAX_EXTRACT_FILE_MB", 512),
         "max_extract_total_mb": extract_total_mb,
         "max_total_mb": extract_total_mb,
         "max_files": _env_int("IMPORT_MAX_FILES", 100),
@@ -379,12 +381,19 @@ def capabilities() -> Dict[str, Any]:
     specs = _build_specs()
     formats = [s.to_public() for s in specs if not s.archive]
     archives = [s.to_public() for s in specs if s.archive]
+    # 本地 OCR 状态（2026-10-28）：扫描件依赖它；不可用时前端/日志必须能解释原因
+    try:
+        from rag.loaders import pdf_ocr
+        ocr = pdf_ocr.engine_status()
+    except Exception as e:  # 能力清单不能因为 OCR 探测失败而整体不可用
+        ocr = {"name": None, "available": False, "note": f"OCR 状态探测失败: {e}"}
     return {
         "formats": formats,
         "archives": archives,
         "converter": converter_capabilities(),
         "limits": limits(),
         "accept": accept_string(),
+        "ocr": ocr,
     }
 
 

@@ -128,27 +128,55 @@ async def import_materials(subject_id: str,
         raise ValidationError(f"单批文件数超过限制（最大 {limits['max_files']}）")
 
     payload = []
-    for upload in files:
-        if not upload.filename:
-            continue
-        content = await upload.read()
-        ext = formats.normalize_ext(Path(upload.filename).suffix)
-        # 压缩包用 max_archive_mb，普通文档用 max_file_mb；超限立刻失败，不进入建库
-        limit_bytes = formats.upload_limit_bytes(ext)
-        if len(content) > limit_bytes:
-            actual_mb = round(len(content) / (1024 * 1024), 2)
-            limit_mb = limit_bytes // (1024 * 1024)
-            kind = "压缩包" if formats.is_archive(ext) else "普通文档"
-            raise ValidationError(
-                f"文件 {upload.filename} 实际 {actual_mb}MB，超过{kind}单文件上限 {limit_mb}MB")
-        payload.append((upload.filename, content))
-
-    if not payload:
-        raise ValidationError("没有可导入的文件")
-
+    temp_paths = []
     from services import import_service
-    result = await run_in_threadpool(
-        import_service.create_import_job, subject_id, payload, user_id)
+    import uuid
+
+    chunk_size = 4 * 1024 * 1024
+    tmp_dir = Path(import_service._import_tmp_root()) / "incoming"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        for upload in files:
+            if not upload.filename:
+                continue
+            ext = formats.normalize_ext(Path(upload.filename).suffix)
+            # 压缩包用 max_archive_mb，普通文档用 max_file_mb；边写边校验，超限立即停止
+            limit_bytes = formats.upload_limit_bytes(ext)
+            dest = tmp_dir / f"upl_{uuid.uuid4().hex}{Path(upload.filename).suffix}"
+            # 先登记再写：客户端中途断连（ClientDisconnect）或超限抛错时，
+            # 下面的 finally 才能删掉这个**正在写**的半成品文件（2026-10-28）。
+            temp_paths.append(dest)
+            size = 0
+            with open(dest, "wb") as fh:
+                while True:
+                    chunk = await upload.read(chunk_size)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if limit_bytes and size > limit_bytes:
+                        actual_mb = round(size / (1024 * 1024), 2)
+                        limit_mb = limit_bytes // (1024 * 1024)
+                        kind = "压缩包" if formats.is_archive(ext) else "普通文档"
+                        raise ValidationError(
+                            f"文件 {upload.filename} 实际 {actual_mb}MB，"
+                            f"超过{kind}单文件上限 {limit_mb}MB")
+                    fh.write(chunk)
+            if size == 0:
+                raise ValidationError(f"文件 {upload.filename} 内容为空")
+            payload.append((upload.filename, dest))
+
+        if not payload:
+            raise ValidationError("没有可导入的文件")
+
+        result = await run_in_threadpool(
+            import_service.create_import_job, subject_id, payload, user_id)
+    finally:
+        # 被接受的文件已 move 到任务目录；这里只清理被拒绝/异常/断连遗留的临时文件
+        for path in temp_paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     rejected = result.get("rejected") or []
     message = (f"已接收 {result['accepted']} 个文件，正在后台解析"

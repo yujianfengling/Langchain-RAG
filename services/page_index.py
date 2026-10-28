@@ -177,6 +177,15 @@ def build_page_index(subject_id: str, force: bool = False) -> Dict[str, Any]:
                     image.save(str(image_path), "WEBP", quality=80, method=4)
 
                     text = _page_text(page)
+                    if not text and os.getenv("PAGE_INDEX_OCR", "1") not in (
+                            "0", "false", "off"):
+                        # 2026-10-28：优先用导入链路同一套本地 OCR（rapidocr/liteparse），
+                        # 复用已渲染的页面图，避免再次渲染。
+                        try:
+                            from rag.loaders.pdf_ocr import ocr_image
+                            text = ocr_image(image)
+                        except Exception as e:
+                            logger.debug(f"页面索引：本地 OCR 失败（继续旧兜底）: {e}")
                     if not text:
                         text = _ocr(image)
                     blocks = []
