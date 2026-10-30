@@ -436,10 +436,13 @@ def build_knowledge_graph(
         model = os.getenv("GRAPH_MODEL", None)
 
     # 1. 复用知识库已切分的 chunk（index.pkl 的 documents 即 RAG 构建时持久化的 split 结果）
-    vs_base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                           "data", "vector_store")
+    # 2026-10-31：改走 get_data_dir()（EDU_DATA_DIR 感知）。原实现拼项目根的
+    # data/vector_store，真实索引在 EDU_DATA_DIR 下时永远"知识库尚未构建"
+    # ——知识图谱因此从未在演示环境跑通过。
+    from config.path_config import get_data_dir
+    vs_base = Path(get_data_dir()) / "vector_store"
     safe_name = _safe_dir_name(subject_id)
-    index_pkl = os.path.join(vs_base, safe_name, "index.pkl")
+    index_pkl = vs_base / safe_name / "index.pkl"
 
     if not os.path.exists(index_pkl):
         raise FileNotFoundError(f"知识库尚未构建或索引缺失，请先构建知识库: {subject_id}")

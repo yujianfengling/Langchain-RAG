@@ -2060,6 +2060,11 @@ def _schedule_page_index_after_import(job_id: str, subject_id: str) -> None:
         from services import page_index
         for path, material_id in entries:
             try:
+                # 替换失效时会记该文档的取消账（防旧任务把已删内容写回）；
+                # 本次是**新版**调度，必须先清账，否则注册时被旧账误杀——
+                # 实测同名替换后 pages=0 而 doc_state 仍显示已覆盖（2026-10-31）。
+                page_index.clear_cancel_request(
+                    subject_id, page_index._doc_id_for_file(path.name))
                 result = page_index.build_document_page_index(
                     subject_id, path, material_id=material_id)
                 logger.info(

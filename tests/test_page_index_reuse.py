@@ -231,3 +231,49 @@ def test_truncation_is_explicit():
     finally:
         page_index._MAX_PAGES_PER_DOC = original
     assert monkey is None
+
+
+def test_clear_cancel_request_allows_rebuild_after_replace():
+    """替换失效记取消账后，新版调度前清账 → 重建正常写页（2026-10-31 回归）。
+
+    实测 bug：同名替换导入时 _invalidate_replaced_pages 记取消账，
+    同一次导入随后调度的重建任务注册时被旧账误杀 → pages=0。
+    """
+    subject = _subject()
+    pdf = _make_text_pdf(subject)
+    doc_id = "f:" + pdf.name
+
+    # 模拟替换失效动作：删页 + 记取消账
+    page_index.cancel_document_tasks(subject, doc_id)
+    page_index.delete_document_pages(subject, file_name=pdf.name)
+
+    # 旧任务此刻注册仍必须被拦（保护语义不回退）
+    blocked = page_index.build_document_page_index(subject, pdf)
+    assert blocked["cancelled"] is True and blocked["indexed"] == 0
+
+    # 新版调度：先清账再建页（import_service._worker 的行为）
+    page_index.clear_cancel_request(subject, doc_id)
+    out = page_index.build_document_page_index(subject, pdf)
+    assert out["ok"] is True and out["indexed"] == 1
+    assert page_index.search_pages(subject, "relational algebra")
+
+    # 清账后 doc_state 与 pages 一致（不再出现 0 页却显示已覆盖）
+    status = page_index.get_page_index_status(subject)
+    detail = [d for d in status["document_details"] if d["doc_id"] == doc_id]
+    assert detail and detail[0]["indexed_pages"] == detail[0]["total_pages"]
+
+
+def test_cancelled_build_reports_honest_coverage():
+    """被取消的建页不得把未建页报成已覆盖。"""
+    subject = _subject()
+    pdf = _make_text_pdf(subject, "cancel_honest.pdf")
+    doc_id = "f:" + pdf.name
+    page_index.cancel_document_tasks(subject, doc_id)
+    out = page_index.build_document_page_index(subject, pdf)
+    assert out["cancelled"] is True
+    status = page_index.get_page_index_status(subject)
+    detail = [d for d in status["document_details"] if d["doc_id"] == doc_id]
+    assert detail, "取消后也应留下如实的 doc_state 行"
+    assert detail[0]["indexed_pages"] == 0
+    assert detail[0]["covered_to"] == 0
+    assert detail[0]["truncated"] is False

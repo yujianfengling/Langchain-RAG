@@ -619,7 +619,9 @@ async def delete_document(subject_id: str, filename: str,
         )
     except _kb_exc() as e:
         error_msg = str(e)
-        if "不存在" in error_msg:
+        # 只有"知识库不存在"才映射成 404 KB 未找到；"文件不存在"是另一回事，
+        # 掩盖成 KB 错误会误导排查（2026-10-31 实测：删不存在文件被报成库没了）。
+        if error_msg.startswith("知识库不存在"):
             raise KnowledgeBaseNotFoundError(subject_id)
         else:
             raise RAGServiceError(error_msg)

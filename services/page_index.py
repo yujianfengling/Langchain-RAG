@@ -188,6 +188,24 @@ def resolve_doc_id(subject_id: str, doc_id: str) -> str:
         conn.close()
 
 
+def clear_cancel_request(subject_id: str, doc_id: Optional[str] = None) -> None:
+    """清除取消账上的记录（2026-10-31 回归修复）。
+
+    为什么需要：删除/替换资料时会记取消账，防止"正在跑的旧任务把已删内容写回来"。
+    但同一次导入的后续动作（替换成功后调度重建）**key 相同**，注册时读到旧账
+    就被误杀——实测替换后 pages=0 而 doc_state 却显示已覆盖。
+    导入方在调度**新版**建页前必须显式清账：新任务读的是新文件，不属于被拦对象。
+    """
+    with _ACTIVE_LOCK:
+        if doc_id:
+            _CANCEL_REQUESTS.pop(_task_key(subject_id, str(doc_id)), None)
+        else:
+            prefix = f"{subject_id}::"
+            for key in [k for k in _CANCEL_REQUESTS if k.startswith(prefix)]:
+                _CANCEL_REQUESTS.pop(key, None)
+            _CANCEL_REQUESTS.pop(f"{subject_id}::*", None)
+
+
 def _page_blocks(page: Any, scale: float) -> List[Dict[str, Any]]:
     """取**文本层真实 block 坐标**；没有文本层时返回空列表。
 
@@ -425,6 +443,13 @@ def build_document_page_index(
             pass
 
     covered_end = end
+    # 被取消的任务不得把"未建出的页"报成已覆盖（2026-10-31）：
+    # 实际覆盖 = 起始页之前 + 本次成功写入的页数。
+    cancelled = bool(task_flag.is_set())
+    if cancelled:
+        covered_end = start - 1 + indexed
+    # "截断"只指因**单文档上限**未覆盖；被取消造成的缺口不算截断。
+    truncated = bool(not cancelled and total_pages > covered_end)
     try:
         state_conn = _conn()
         try:
@@ -434,7 +459,7 @@ def build_document_page_index(
                     truncated, source_sha, updated_at)
                    VALUES (?,?,?,?,?,?,?,?)""",
                 (subject_id, doc_id, file_name, total_pages, covered_end,
-                 1 if total_pages > covered_end else 0, source_sha,
+                 1 if truncated else 0, source_sha,
                  datetime.now().isoformat(timespec="seconds")))
             state_conn.commit()
         finally:
@@ -456,7 +481,7 @@ def build_document_page_index(
         "blocks_pages": blocks_pages,
         "failed_pages": failed_pages,
         "cancelled": bool(_aborted()),
-        "truncated": bool(total_pages > covered_end),
+        "truncated": truncated,
         "uncovered_from": (covered_end + 1) if total_pages > covered_end else None,
         "uncovered_pages": max(0, total_pages - covered_end),
     }
@@ -874,6 +899,6 @@ __all__ = [
     "build_page_index", "build_document_page_index", "search_pages", "get_page_image",
     "get_page_index_status", "list_document_pages", "list_page_texts",
     "delete_subject_pages", "delete_document_pages", "cancel_document_tasks",
-    "active_page_index_tasks", "page_image_url", "images_root",
+    "clear_cancel_request", "active_page_index_tasks", "page_image_url", "images_root",
     "set_doc_alias", "resolve_doc_id",
 ]
