@@ -70,11 +70,36 @@ export const rebuildKnowledge = async (subjectId: string): Promise<ApiResponse<a
   return apiClient.post(`/knowledge/${subjectId}/rebuild`);
 };
 
-/** 建立页面级索引（图片型课件检索兜底；只处理 PDF） */
-export const buildPageIndex = async (subjectId: string, force = false): Promise<ApiResponse<any>> => {
+/**
+ * 建立页面级索引（图片型课件检索兜底；PDF/PPT）。
+ * 后台异步执行，立即返回 queued；进度轮询 getPageIndexStatus。
+ * 继续处理超上限的剩余页：传 docId + pageFrom。
+ */
+export const buildPageIndex = async (
+  subjectId: string,
+  opts: { force?: boolean; docId?: string; pageFrom?: number } = {},
+): Promise<ApiResponse<any>> => {
   return apiClient.post(`/knowledge/${subjectId}/pages/build`, null, {
-    params: { force }, timeout: LONG_TASK_TIMEOUT,
+    params: {
+      force: opts.force ?? false,
+      doc_id: opts.docId || undefined,
+      page_from: opts.pageFrom ?? 1,
+      background: true,
+    },
+    timeout: LONG_TASK_TIMEOUT,
   });
+};
+
+/** 页面索引状态：已建页数、每份资料覆盖范围、正在进行的任务与页级进度 */
+export const getPageIndexStatus = async (subjectId: string): Promise<ApiResponse<any>> => {
+  return apiClient.get(`/knowledge/${subjectId}/pages/status`);
+};
+
+/** 某份资料已建立的页面列表（页面图地址由服务端返回，前端不拼 doc_id） */
+export const getDocumentPages = async (
+  subjectId: string, filename: string,
+): Promise<ApiResponse<any>> => {
+  return apiClient.get(`/knowledge/${subjectId}/documents/${encodeURIComponent(filename)}/pages`);
 };
 
 /**

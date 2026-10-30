@@ -280,10 +280,6 @@ button, input, textarea, select { font: inherit; }
 .material-card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--color-text-secondary); font-size: 12px; }
 .material-card-progress { overflow: hidden; color: var(--color-text-secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .material-card-actions { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 4px; }
-.material-process { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 24px; padding: 13px 16px; border: 1px solid var(--color-border); border-radius: 12px; background: #fff; color: var(--color-text-secondary); font-size: 13px; }
-.material-process-step { display: inline-flex; align-items: center; gap: 7px; }
-.material-process-number { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--color-primary-50); color: var(--color-primary); font-size: 11px; font-weight: 700; }
-.material-process-arrow { color: #a3aab6; }
 .material-detail { margin-top: 24px !important; }
 .material-doc-name { min-width: 0; max-width: min(360px, 34vw) !important; }
 
@@ -351,9 +347,6 @@ a:hover { color: var(--color-primary-hover); }
   .page-actions .ant-select { max-width: 100%; }
   .ant-card-body { padding: 16px; }
   .ant-card-head { padding: 0 16px !important; }
-  .material-process { gap: 8px; padding: 12px; }
-  .material-process-arrow { display: none; }
-  .material-process-step { width: 100%; }
   .material-doc-name { max-width: 52vw !important; }
   .material-detail .ant-list-item { align-items: flex-start; flex-direction: column; gap: 6px; }
   .material-detail .ant-list-item-action { margin: 0; }

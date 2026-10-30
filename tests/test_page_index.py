@@ -60,10 +60,11 @@ def test_build_search_and_image():
     assert image and Path(image).is_file()
     assert Path(image).is_relative_to(page_index.images_root())
 
-    # 重复构建：页数未变应跳过
+    # 重复构建：断点跳过已完成页（2026-10-30 语义：按页跳过，不再有
+    # "页数未变整份文档跳过"的旧计数，旧键 skipped_documents 已移除）
     again = page_index.build_page_index(subject)
     assert again["pages"] == 0
-    assert again["skipped_documents"] == 1
+    assert again["skipped"] == 1
 
     # force 重建
     forced = page_index.build_page_index(subject, force=True)

@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert, Button, Card, Checkbox, Collapse, Empty, Form, Input, List, Modal, Popconfirm,
-  Space, Spin, Tag, Tooltip, Typography, message,
+  Progress, Space, Spin, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
   BuildOutlined, DatabaseOutlined, DeleteOutlined,
@@ -12,7 +12,8 @@ import {
 import { useCourse } from '../context/CourseContext';
 import { createSubject } from '../api/subjects';
 import {
-  buildPageIndex, deleteDocument, getDocuments, getKnowledgeStats, rebuildKnowledge,
+  buildPageIndex, deleteDocument, getDocuments, getPageIndexStatus, getKnowledgeStats,
+  rebuildKnowledge,
 } from '../api/knowledge';
 import apiClient from '../api/axios';
 import { getTutorSession } from '../api/tutor';
@@ -83,6 +84,43 @@ interface SubjectCardData {
   progressText: string;
 }
 
+/** 单份资料的建页结果（服务端 doc_state，刷新后仍在） */
+interface PageDocState {
+  doc_id: string;
+  file_name: string;
+  total_pages: number;
+  indexed_pages: number;
+  covered_to: number;
+  truncated: boolean;
+  uncovered_from: number | null;
+  uncovered_pages: number;
+  updated_at: string;
+}
+
+/** 正在跑的建页任务（内存态，进程重启即消失；已完成页永远以数据库为准） */
+interface PageActiveTask {
+  doc_id: string;
+  file_name: string;
+  done: number;
+  total: number;
+  page: number;
+}
+
+interface PageStatusPayload {
+  pages?: number;
+  documents?: number;
+  updated_at?: string | null;
+  document_details?: PageDocState[];
+  active?: PageActiveTask[];
+}
+
+/** 只有 PDF/PPT 会有页面索引；其它格式不该显示建页状态 */
+const isPageIndexed = (name: string): boolean =>
+  /\.(pdf|pptx|ppt)$/i.test(name || '');
+
+const PAGE_POLL_MS = 2000;
+const PAGE_QUEUE_GRACE_MS = 8000;
+
 const describeError = (e: unknown, fallback = '操作失败，请重试'): string => {
   const err = e as {
     response?: { data?: { message?: string; detail?: string } };
@@ -132,9 +170,13 @@ const MaterialsPage: React.FC = () => {
   const [detailStats, setDetailStats] = useState<StatsResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [pdfPreview, setPdfPreview] = useState<{
-    name: string; mode: 'pages' | 'blob'; url?: string;
-    pages?: Array<{ page: number; url: string }>; loading: boolean;
+    name: string; mode: 'pages' | 'blob'; url?: string; docId?: string;
+    /** url 为空串表示这一页没有可用页面图（建页失败/被取消），前端如实占位而不是跳过 */
+    pages?: Array<{ page: number; url: string }>;
+    total?: number; loading: boolean;
   } | null>(null);
+  /** 预览代际号：关掉弹窗或换一份资料后，仍在飞的取图批次要作废并释放 blob */
+  const previewSeq = useRef(0);
 
   /**
    * 带登录态查看资料。
@@ -145,10 +187,11 @@ const MaterialsPage: React.FC = () => {
   const revokePdfPreview = (preview: typeof pdfPreview) => {
     if (!preview) return;
     if (preview.url) URL.revokeObjectURL(preview.url);
-    preview.pages?.forEach((page) => URL.revokeObjectURL(page.url));
+    preview.pages?.forEach((page) => { if (page.url) URL.revokeObjectURL(page.url); });
   };
 
   const closePdfPreview = () => {
+    previewSeq.current += 1;      // 让在飞的批次失效
     revokePdfPreview(pdfPreview);
     setPdfPreview(null);
   };
@@ -160,6 +203,39 @@ const MaterialsPage: React.FC = () => {
     );
     const blob = res instanceof Blob ? res : (res as any)?.data;
     return URL.createObjectURL(new Blob([blob], { type: 'image/webp' }));
+  };
+
+  /**
+   * 按页预览：先开窗、再逐批取图（一批 4 页）。
+   * 一次并发几十上百个 blob 请求会同时压住浏览器和服务端，而且用户要等全部
+   * 下载完才看到第一页；教材动辄两三百页，必须先出图再补齐。
+   * 资料能不能学，取决于知识库检索，**不取决于这里是否加载完**。
+   */
+  const streamPagePreview = async (docName: string, docId: string, pageNumbers: number[]) => {
+    const seq = ++previewSeq.current;
+    revokePdfPreview(pdfPreview);
+    setPdfPreview({
+      name: docName, mode: 'pages', docId, pages: [],
+      total: pageNumbers.length, loading: true,
+    });
+    const loaded: Array<{ page: number; url: string }> = [];
+    const BATCH = 4;
+    for (let i = 0; i < pageNumbers.length; i += BATCH) {
+      if (previewSeq.current !== seq) return;
+      const batch = pageNumbers.slice(i, i + BATCH);
+      const urls = await Promise.all(
+        batch.map((p) => fetchPageUrl(docId, p).catch(() => '')));
+      if (previewSeq.current !== seq) {
+        // 弹窗已关或已切到别的资料：这批 blob 没人用了，必须释放
+        urls.forEach((u) => { if (u) URL.revokeObjectURL(u); });
+        return;
+      }
+      batch.forEach((p, k) => loaded.push({ page: p, url: urls[k] || '' }));
+      const finished = i + BATCH >= pageNumbers.length;
+      setPdfPreview((prev) => (prev && previewSeq.current === seq
+        ? { ...prev, pages: [...loaded], loading: !finished }
+        : prev));
+    }
   };
 
   const viewDocument = async (docName: string) => {
@@ -187,19 +263,14 @@ const MaterialsPage: React.FC = () => {
     }
 
     try {
-      const meta = await apiClient.get(
+      const pageRes = await apiClient.get(
         `/knowledge/${encodeURIComponent(selectedId)}/documents/${encodeURIComponent(docName)}/pages`,
       );
-      const data = meta?.data ?? meta;
+      const data = pageRes?.data ?? pageRes;
       const pages = data?.pages || [];
       if (pages.length > 0) {
-        const docId = data.doc_id || `f:${docName}`;
-        const urls = await Promise.all(pages.map((p: any) => fetchPageUrl(docId, p.page)));
-        revokePdfPreview(pdfPreview);
-        setPdfPreview({
-          name: docName, mode: 'pages', loading: false,
-          pages: pages.map((p: any, index: number) => ({ page: p.page, url: urls[index] })),
-        });
+        void streamPagePreview(docName, data.doc_id || `f:${docName}`,
+                               pages.map((p: any) => Number(p.page)));
         return;
       }
     } catch (e: any) {
@@ -227,6 +298,9 @@ const MaterialsPage: React.FC = () => {
   const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
   const [rebuilding, setRebuilding] = useState(false);
   const [pageIndexing, setPageIndexing] = useState(false);
+  const [pageStatus, setPageStatus] = useState<PageStatusPayload | null>(null);
+  /** 刚提交的建页任务（key = doc_id，`*` 表示整学科）→ 提交时刻，用于跨越服务端登记空窗 */
+  const [pagePending, setPagePending] = useState<Record<string, number>>({});
   const [creating, setCreating] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
@@ -333,6 +407,17 @@ const MaterialsPage: React.FC = () => {
     }
   }, []);
 
+  const loadPageStatus = useCallback(async (sid: string) => {
+    if (!sid) return;
+    try {
+      const res = await getPageIndexStatus(sid);
+      const data = ((res as any)?.data ?? res) as PageStatusPayload;
+      setPageStatus(data || {});
+    } catch {
+      // 读状态失败不打扰用户：覆盖范围沿用上一次结果，后台建页本身不受影响
+    }
+  }, []);
+
   useEffect(() => {
     if (ctx.status === 'ready') { void loadMeta(allIds); }
   }, [ctx.status, allIds, loadMeta]);
@@ -346,6 +431,48 @@ const MaterialsPage: React.FC = () => {
   useEffect(() => {
     if (selectedId) { void loadDetail(selectedId); }
   }, [selectedId, loadDetail]);
+
+  // 页面索引状态：切换学科就读一次（刷新后状态从服务端恢复，不靠前端记忆）
+  useEffect(() => {
+    if (!selectedId) { setPageStatus(null); setPagePending({}); return; }
+    void loadPageStatus(selectedId);
+  }, [selectedId, loadPageStatus]);
+
+  /** 正在跑的建页任务（服务端权威） */
+  const pageActive = useMemo<PageActiveTask[]>(
+    () => pageStatus?.active || [], [pageStatus]);
+  const pageDocs = useMemo<PageDocState[]>(
+    () => pageStatus?.document_details || [], [pageStatus]);
+
+  /**
+   * 提交建页后到服务端登记任务之间有空窗（要开文档、算 SHA），
+   * 这段窗口里 active 还是空的；不给宽限就会看到"点了没反应"。
+   */
+  const isPending = (key: string) => {
+    const ts = pagePending[key];
+    return !!ts && Date.now() - ts < PAGE_QUEUE_GRACE_MS;
+  };
+  const docBusy = (docId: string) =>
+    pageActive.some((a) => a.doc_id === docId) || isPending(docId);
+  const subjectBuilding = pageActive.length > 0 || isPending('*');
+
+  // 有任务在跑（或刚提交）才轮询；跑完自动停，不做无意义的常驻请求
+  useEffect(() => {
+    if (!selectedId) return;
+    if (pageActive.length === 0 && Object.keys(pagePending).length === 0) return;
+    const timer = window.setTimeout(() => {
+      void loadPageStatus(selectedId);
+      setPagePending((prev) => {
+        const now = Date.now();
+        const next: Record<string, number> = {};
+        for (const [key, ts] of Object.entries(prev)) {
+          if (now - ts < PAGE_QUEUE_GRACE_MS) next[key] = ts;
+        }
+        return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+      });
+    }, PAGE_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [selectedId, pageActive.length, pagePending, loadPageStatus]);
 
   const cards = useMemo<SubjectCardData[]>(() => {
     const out: SubjectCardData[] = [];
@@ -411,8 +538,10 @@ const MaterialsPage: React.FC = () => {
       await deleteDocument(selectedId, name);
       message.success('已删除');
       setSelectedDocs((prev) => prev.filter((n) => n !== name));
-      await loadDetail(selectedId);
-      await loadMeta(allIds);
+      // 删除后服务端已同步失效该资料的页面索引与页面图；
+      // 若正开着它的按页预览，必须关掉——否则看到的还是已删资料的页面图。
+      if (pdfPreview && pdfPreview.name === name) closePdfPreview();
+      await Promise.all([loadDetail(selectedId), loadMeta(allIds), loadPageStatus(selectedId)]);
     } catch (e) {
       message.error(describeError(e, '删除失败，请重试'));
     }
@@ -437,13 +566,30 @@ const MaterialsPage: React.FC = () => {
     if (!selectedId) return;
     setPageIndexing(true);
     try {
-      const res = await buildPageIndex(selectedId);
-      const data = (res as any)?.data;
-      message.success('页面索引已更新：' + (data?.pages ?? 0) + ' 页');
+      await buildPageIndex(selectedId, {});
+      setPagePending((prev) => ({ ...prev, '*': Date.now() }));
+      message.info('建页任务已开始，进度按资料显示在下方；资料现在就能用于伴学，不必等建页完成');
+      await loadPageStatus(selectedId);
     } catch (e) {
       message.error(describeError(e, '页面索引建立失败，请重试'));
     } finally {
       setPageIndexing(false);
+    }
+  };
+
+  /**
+   * 单份资料的建页：首次建立 / 继续处理超出单文档上限的剩余页 / 失败页重试。
+   * pageFrom>1 就是"接着上次没覆盖到的页继续"，已建好的页服务端会跳过。
+   */
+  const handleBuildDocPages = async (docId: string, pageFrom = 1) => {
+    if (!selectedId) return;
+    try {
+      await buildPageIndex(selectedId, { docId, pageFrom });
+      setPagePending((prev) => ({ ...prev, [docId]: Date.now() }));
+      message.info(pageFrom > 1 ? `从第 ${pageFrom} 页继续建页…` : '该资料的建页任务已开始');
+      await loadPageStatus(selectedId);
+    } catch (e) {
+      message.error(describeError(e, '建页失败，请重试'));
     }
   };
 
@@ -469,6 +615,73 @@ const MaterialsPage: React.FC = () => {
 
   const toggleDoc = (name: string, checked: boolean) => {
     setSelectedDocs((prev) => (checked ? [...prev, name] : prev.filter((n) => n !== name)));
+  };
+
+  /**
+   * 每份资料的建页状态行：进行中进度 / 覆盖范围 / 失败可重试 / 超上限可继续。
+   * 状态全部来自服务端（doc_state + 活跃任务），所以刷新页面后仍然对得上。
+   */
+  const pageStateRow = (doc: KnowledgeDoc) => {
+    if (!isPageIndexed(doc.name)) return null;
+    const st = pageDocs.find((d) => d.file_name === doc.name);
+    const docId = st?.doc_id || `f:${doc.name}`;
+    const act = pageActive.find((a) => a.file_name === doc.name);
+    const busy = docBusy(docId);
+    // 从没建过页也没有任务在跑：不占版面，工具栏的「建立页面索引」已经能发起
+    if (!st && !act && !busy) return null;
+    const missing = st ? Math.max(0, st.covered_to - st.indexed_pages) : 0;
+    const rowStyle: React.CSSProperties = {
+      display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
+      marginTop: 4, paddingLeft: 26,
+    };
+    return (
+      <div style={rowStyle}>
+        {act ? (
+          <>
+            <Progress
+              percent={act.total > 0 ? Math.round((act.done / act.total) * 100) : 0}
+              size="small" style={{ width: 110, margin: 0 }}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              建页中 {act.done}/{act.total}（第 {act.page} 页）
+            </Text>
+          </>
+        ) : busy ? (
+          <Text type="secondary" style={{ fontSize: 12 }}>建页任务已提交，正在启动…</Text>
+        ) : st ? (
+          <>
+            <Tag color={st.truncated || missing > 0 ? 'orange' : 'green'} style={{ marginInlineEnd: 0 }}>
+              页面 {st.indexed_pages}/{st.total_pages}
+            </Tag>
+            {missing > 0 && (
+              <>
+                <Text type="secondary" style={{ fontSize: 12 }}>{missing} 页未成功</Text>
+                {writable && (
+                  <Button size="small" type="link" style={{ padding: 0, height: 'auto' }}
+                          onClick={() => void handleBuildDocPages(docId, 1)}>
+                    重试
+                  </Button>
+                )}
+              </>
+            )}
+            {st.truncated && (
+              <>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  第 {st.uncovered_from} 页起未覆盖（共 {st.uncovered_pages} 页）
+                </Text>
+                {writable && (
+                  <Button size="small" type="link" style={{ padding: 0, height: 'auto' }}
+                          onClick={() => void handleBuildDocPages(
+                            docId, st.uncovered_from || st.covered_to + 1)}>
+                    继续处理
+                  </Button>
+                )}
+              </>
+            )}
+          </>
+        ) : null}
+      </div>
+    );
   };
 
   if (ctx.status === 'loading') {
@@ -508,14 +721,6 @@ const MaterialsPage: React.FC = () => {
         />
       )}
       {ctx.forbidden && <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={ctx.forbidden} />}
-
-      <div className="material-process" aria-label="资料使用步骤">
-        <span className="material-process-step"><span className="material-process-number">1</span>创建或加入学科</span>
-        <span className="material-process-arrow">→</span>
-        <span className="material-process-step"><span className="material-process-number">2</span>上传并检查资料</span>
-        <span className="material-process-arrow">→</span>
-        <span className="material-process-step"><span className="material-process-number">3</span>勾选范围，开始学习</span>
-      </div>
 
       {cards.length === 0 ? (
         <Card>
@@ -557,10 +762,14 @@ const MaterialsPage: React.FC = () => {
                     </div>
                   </div>
 
-                  <Paragraph type="secondary" ellipsis={{ rows: 2 }} className="material-card-description">
-                    {item.description
-                      || (item.source === 'course' ? '课程资料由教师维护，可阅读并用于伴学' : '上传自己的资料，建立专属知识库')}
-                  </Paragraph>
+                  {/* 只展示用户自己写的描述。原先没有描述时会塞一句通用口号
+                      （"上传自己的资料，建立专属知识库"），每张卡片都一样，
+                      纯占高度不传递信息（2026-10-30 精简）。 */}
+                  {item.description && (
+                    <Paragraph type="secondary" ellipsis={{ rows: 2 }} className="material-card-description">
+                      {item.description}
+                    </Paragraph>
+                  )}
 
                   <div className="material-card-meta">
                     <span>{item.docCount === null ? '资料数量读取中' : '资料 ' + item.docCount + ' 份'}</span>
@@ -601,9 +810,6 @@ const MaterialsPage: React.FC = () => {
             <Space wrap>
               <DatabaseOutlined style={{ color: 'var(--color-primary)' }} />
               <Text strong style={{ fontSize: 15 }}>{selectedCard.name}</Text>
-              <Tag color={selectedCard.source === 'course' ? 'blue' : 'default'}>
-                {selectedCard.source === 'course' ? '教师课程' : '个人学科'}
-              </Tag>
             </Space>
           )}
           extra={<Button type="text" icon={<ReloadOutlined />} onClick={() => loadDetail(selectedId)}>刷新</Button>}
@@ -649,10 +855,11 @@ const MaterialsPage: React.FC = () => {
               <Button icon={<BuildOutlined />} loading={rebuilding} disabled={docs.length === 0} onClick={handleRebuild}>
                 重建知识库
               </Button>
-              <Tooltip title="为 PDF 逐页生成图片与 OCR 文本，图片型课件也能按页检索">
-                <Button icon={<FileImageOutlined />} loading={pageIndexing}
+              <Tooltip title="为 PDF/PPT 逐页生成页面图与文字，图片型课件也能按页检索、按页看原文。资料入库后即可开始伴学，建页只影响「看原页」。">
+                <Button icon={<FileImageOutlined />}
+                        loading={pageIndexing || subjectBuilding}
                         disabled={docs.length === 0} onClick={handleBuildPages}>
-                  建立页面索引
+                  {subjectBuilding ? '正在建页…' : '建立页面索引'}
                 </Button>
               </Tooltip>
             </Space>
@@ -722,23 +929,26 @@ const MaterialsPage: React.FC = () => {
                         ) : null,
                       ].filter(Boolean) as React.ReactNode[]}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, width: '100%' }}>
-                        <Checkbox
-                          checked={selectedDocs.includes(doc.name)}
-                          onChange={(e) => toggleDoc(doc.name, e.target.checked)}
-                        />
-                        <FileTextOutlined style={{ color: 'var(--color-primary)', flexShrink: 0 }} />
-                        <Text
-                          ellipsis
-                          title={doc.name}
-                          className="material-doc-name"
-                        >
-                          {doc.name}
-                        </Text>
-                        <Tag style={{ flexShrink: 0 }}>{(doc.type || '').replace('.', '').toUpperCase()}</Tag>
-                        <Text type="secondary" style={{ fontSize: 12, marginLeft: 'auto', flexShrink: 0 }}>
-                          {doc.size} · {doc.upload_time}
-                        </Text>
+                      <div style={{ minWidth: 0, width: '100%' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                          <Checkbox
+                            checked={selectedDocs.includes(doc.name)}
+                            onChange={(e) => toggleDoc(doc.name, e.target.checked)}
+                          />
+                          <FileTextOutlined style={{ color: 'var(--color-primary)', flexShrink: 0 }} />
+                          <Text
+                            ellipsis
+                            title={doc.name}
+                            className="material-doc-name"
+                          >
+                            {doc.name}
+                          </Text>
+                          <Tag style={{ flexShrink: 0 }}>{(doc.type || '').replace('.', '').toUpperCase()}</Tag>
+                          <Text type="secondary" style={{ fontSize: 12, marginLeft: 'auto', flexShrink: 0 }}>
+                            {doc.size} · {doc.upload_time}
+                          </Text>
+                        </div>
+                        {pageStateRow(doc)}
                       </div>
                     </List.Item>
                   );
@@ -842,14 +1052,16 @@ const MaterialsPage: React.FC = () => {
               maxHeight: '78vh', overflowY: 'auto', padding: 10,
               borderRadius: 8, background: '#e9eef2',
             }}>
-              {pdfPreview.loading ? (
-                <div style={{ padding: 48, textAlign: 'center' }}><Spin tip="正在载入 PDF…" /></div>
-              ) : (
-                (pdfPreview.pages || []).map((page, index) => (
-                  <div key={page.page} style={{ marginBottom: index === (pdfPreview.pages || []).length - 1 ? 0 : 12 }}>
-                    <Text type="secondary" style={{ display: 'block', fontSize: 11, marginBottom: 4 }}>
-                      第 {page.page} 页
-                    </Text>
+              <Text type="secondary" style={{ display: 'block', fontSize: 11, marginBottom: 8 }}>
+                已载入 {(pdfPreview.pages || []).length} / 共 {pdfPreview.total ?? (pdfPreview.pages || []).length} 页
+                {pdfPreview.loading ? '（边看边载入）' : ''}
+              </Text>
+              {(pdfPreview.pages || []).map((page, index, arr) => (
+                <div key={page.page} style={{ marginBottom: index === arr.length - 1 ? 0 : 12 }}>
+                  <Text type="secondary" style={{ display: 'block', fontSize: 11, marginBottom: 4 }}>
+                    第 {page.page} 页
+                  </Text>
+                  {page.url ? (
                     <img
                       src={page.url}
                       alt={`${pdfPreview.name} 第 ${page.page} 页`}
@@ -859,8 +1071,20 @@ const MaterialsPage: React.FC = () => {
                         borderRadius: 6, boxShadow: '0 2px 10px rgba(15,23,42,.08)',
                       }}
                     />
-                  </div>
-                ))
+                  ) : (
+                    <div style={{
+                      padding: '26px 12px', textAlign: 'center', background: '#fff',
+                      borderRadius: 6, border: '1px dashed var(--color-border, #d9d9d9)',
+                    }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        这一页没有可用的页面图（建页失败或被取消），可在资料列表点「重试」
+                      </Text>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {pdfPreview.loading && (
+                <div style={{ padding: 18, textAlign: 'center' }}><Spin size="small" /></div>
               )}
             </div>
           ) : (

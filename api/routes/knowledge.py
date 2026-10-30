@@ -4,6 +4,7 @@
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
@@ -361,6 +362,24 @@ def _student_visible_names(user_id: str, subject_id: str):
         return None
 
 
+def _page_doc_file_name(subject_id: str, doc_id: str) -> str:
+    """页面索引 doc_id → 文件名（`m:<material_id>` 别名先解析成 `f:<文件名>`）。"""
+    from services import page_index
+    resolved = page_index.resolve_doc_id(subject_id, str(doc_id or ""))
+    return resolved[2:] if resolved.startswith("f:") else resolved
+
+
+def _require_page_readable(user_id: str, subject_id: str, file_name: str) -> None:
+    """页面级接口的文件边界：与原文件下载接口同一套判定，不能更宽。
+
+    学生的"学科可读"不等于"每个文件都可读"——`teacher_only`（教师草稿）资料
+    在班学生拿不到原文件，也不能拿它的页面图或页面列表。
+    """
+    allowed = _student_visible_names(user_id, subject_id)
+    if allowed is not None and str(file_name or "") not in allowed:
+        raise HTTPException(status_code=403, detail="该资料仅授课教师可见")
+
+
 async def _readable_subjects(user_id: str, subjects: list) -> list:
     """过滤出当前用户可读的学科（课程学科只对本课程教师/在班学生可见）"""
     from services import teaching_access
@@ -608,12 +627,51 @@ async def delete_document(subject_id: str, filename: str,
 
 @router.post("/knowledge/{subject_id}/pages/build", response_model=SuccessResponse)
 async def build_page_index(subject_id: str, force: bool = False,
+                           doc_id: str = "", page_from: int = 1,
+                           background: bool = True,
                            user_id: str = Depends(require_subject_write)):
-    """为学科下的 PDF 建立**页面级**索引（图片型课件的检索兜底）。"""
+    """为学科建**页面级**索引（图片型课件的检索兜底）。
+
+    - 不传 doc_id：逐份处理学科下全部 PDF/PPT；
+    - 传 doc_id（支持 m:/f:）：只处理该资料；配合 page_from 可"继续处理
+      超出单文档页数上限的剩余页"；
+    - background=true（默认）：后台执行，立即返回 queued，进度看 /pages/status；
+      大文档同步执行容易把 HTTP 请求拖到超时，且学习不该被它阻塞。
+    """
     _ensure_subject_id(subject_id)
     from services import page_index
-    data = await run_in_threadpool(page_index.build_page_index, subject_id, force)
-    return SuccessResponse(data=data, message="页面索引已更新")
+    from config.path_config import get_subjects_dir
+    subject_dir = Path(get_subjects_dir()) / subject_id
+
+    def _build():
+        if doc_id:
+            resolved = page_index.resolve_doc_id(subject_id, doc_id)
+            name = resolved[2:] if resolved.startswith("f:") else resolved
+            target = subject_dir / name
+            if not target.is_file():
+                raise HTTPException(status_code=404, detail=f"资料不存在: {name}")
+            return page_index.build_document_page_index(
+                subject_id, target, force=force, page_from=page_from)
+        return page_index.build_page_index(subject_id, force=force)
+
+    if not background:
+        data = await run_in_threadpool(_build)
+        return SuccessResponse(data=data, message="页面索引已更新")
+
+    def _run() -> None:
+        try:
+            _build()
+        except HTTPException:
+            pass
+        except Exception as e:  # 后台失败不能静默
+            from utils.logger import logger
+            logger.warning(f"[page-index] 手动建页失败 {subject_id}: {e}")
+
+    threading.Thread(target=_run, name=f"page-index-api-{subject_id}",
+                     daemon=True).start()
+    data = {"queued": True,
+            "active": page_index.active_page_index_tasks(subject_id)}
+    return SuccessResponse(data=data, message="页面索引任务已开始，进度见 /pages/status")
 
 
 @router.get("/knowledge/{subject_id}/pages/status", response_model=SuccessResponse)
@@ -630,6 +688,7 @@ async def document_page_list(subject_id: str, filename: str,
                              user_id: str = Depends(require_subject_read)):
     """资料库 PDF 预览：返回该文档已建立的页面列表（不带原文件）。"""
     _ensure_subject_id(subject_id)
+    _require_page_readable(user_id, subject_id, filename)
     from services import page_index
     doc_id = "f:" + filename
     data = await run_in_threadpool(page_index.list_document_pages, subject_id, doc_id)
@@ -645,6 +704,11 @@ async def page_index_search(subject_id: str, q: str = "", top_k: int = 5,
     _ensure_subject_id(subject_id)
     from services import page_index
     data = await run_in_threadpool(page_index.search_pages, subject_id, q, top_k)
+    # 「学科可读」不等于「每个文件都可读」：教师草稿资料的页面同样不能出现在学生的
+    # 页面检索结果里，否则原文件被挡住了、页面图却漏出去（2026-10-30）。
+    allowed = _student_visible_names(user_id, subject_id)
+    if allowed is not None:
+        data = [hit for hit in data if str(hit.get("file_name") or "") in allowed]
     return SuccessResponse(data={"pages": data}, message="ok")
 
 
@@ -654,6 +718,8 @@ async def page_index_image(subject_id: str, doc_id: str, page: int,
     """返回页面 WebP。路径必须落在 page_images 根目录内，防止越权读文件。"""
     _ensure_subject_id(subject_id)
     from services import page_index
+    _require_page_readable(user_id, subject_id,
+                           _page_doc_file_name(subject_id, doc_id))
     path = await run_in_threadpool(page_index.get_page_image, subject_id, doc_id, page)
     if not path:
         raise HTTPException(status_code=404, detail="页面图不存在")

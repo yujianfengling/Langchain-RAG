@@ -311,6 +311,13 @@ def delete_subject_knowledge(subject_id: str) -> Dict[str, Any]:
             shutil.rmtree(subject_data_dir)
             logger.info(f"学科资料目录已删除: {subject_data_dir}")
 
+        # 2026-10-30：页面索引与页面图同步失效（含活跃建页任务取消）
+        try:
+            from services import page_index
+            page_index.delete_subject_pages(subject_id)
+        except Exception as e:
+            logger.warning(f"清理页面索引失败（不阻断删除）: {e}")
+
         return {
             "success": True,
             "subject_id": subject_id,
@@ -341,6 +348,15 @@ def cleanup_subject_data(subject_id: str) -> None:
         except Exception as e:
             logger.warning(f"清理学科数据失败（不阻断删除）: {rel}, {str(e)}")
     _remove_index_sidecars(subject_id)
+    # 2026-10-30：页面索引与页面图一并失效；同时取消该学科正在跑的建页任务，
+    # 防止"删完又被旧任务写回来"。
+    try:
+        from services import page_index
+        removed = page_index.delete_subject_pages(subject_id)
+        if removed:
+            logger.info(f"删除学科页面索引 {removed} 页: {subject_id}")
+    except Exception as e:
+        logger.warning(f"清理页面索引失败（不阻断删除）: {e}")
 
 
 def get_vector_store_dir(subject_id: str) -> str:
@@ -632,6 +648,14 @@ def delete_subject_document(subject_id: str, filename: str) -> Dict[str, Any]:
         
         file_path.unlink()
         logger.info(f"文件删除成功: subject={subject_id}, file={safe_filename}")
+
+        # 2026-10-30：页面索引与页面图立即失效，并取消该文档正在跑的建页任务，
+        # 否则页面搜索与引用仍会指向已删资料。
+        try:
+            from services import page_index
+            page_index.delete_document_pages(subject_id, file_name=safe_filename)
+        except Exception as e:
+            logger.warning(f"清理该资料的页面索引失败（不阻断删除）: {e}")
 
         # v2.6 修复：删除源文件后必须让索引失效。
         # 此前只 unlink 文件、索引岿然不动，用户删完文件立刻提问，

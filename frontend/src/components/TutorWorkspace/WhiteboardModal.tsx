@@ -388,6 +388,7 @@ const WhiteboardModal: React.FC<{
         title={(
           <div className="whiteboard-drag-title" onPointerDown={startWindowDrag}>
             <span>AI 白板</span>
+            <span className="whiteboard-drag-desc">依据本轮资料生成板书，分步讲、可展开</span>
             <span className="whiteboard-drag-hint">拖动标题移动</span>
           </div>
         )}

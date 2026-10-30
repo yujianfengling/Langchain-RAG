@@ -1852,6 +1852,9 @@ def _run_job_locked(job_id: str, executor_id: str,
                         else:
                             shutil.move(str(final_path), str(sup_path))
                         replaced_all.append((str(sup_path), str(final_path)))
+                        # 内容被同名替换：旧页面图与页面文本必须立刻失效，否则
+                        # "看原页"和页面检索还会指向上一版内容（新页由导入后的建页任务重建）。
+                        _invalidate_replaced_pages(subject_id, decision["name"])
                     except Exception as e:
                         logger.warning(f"旧版本留档失败（继续替换，不影响新版本生效）: {e}")
                 final_path.write_bytes(content)
@@ -1990,6 +1993,90 @@ def _run_job_locked(job_id: str, executor_id: str,
     finally:
         # 清理本次解包/临时内容（重试/继续所需的上传原文另外保留）
         shutil.rmtree(tmp_job_dir / "extracted", ignore_errors=True)
+
+# ==================== 导入后续接页面索引（2026-10-30） ====================
+_PAGE_INDEX_SUFFIXES = (".pdf", ".pptx", ".ppt")
+_PAGE_INDEX_SCHEDULED: set = set()
+_PAGE_INDEX_SCHEDULED_LOCK = threading.Lock()
+
+
+def _invalidate_replaced_pages(subject_id: str, file_name: str) -> None:
+    """资料被同名替换后，让它的页面索引与页面图立即失效（失败只记日志，不影响替换）。
+
+    同时会取消该文档正在跑的建页任务，避免旧任务把上一版的页面又写回来。
+    """
+    try:
+        from services import page_index
+        page_index.delete_document_pages(subject_id, file_name=file_name)
+    except Exception as e:
+        logger.debug(f"替换资料时清理页面索引失败（不影响替换）: {e}")
+
+
+def _schedule_page_index_after_import(job_id: str, subject_id: str) -> None:
+    """建库成功后接续建页面索引，不再让用户另外找"建立页面索引"。
+
+    设计取舍：
+    - 资料**此时已经可以检索学习**，页面图只是"看原页/定位高亮"那一层，
+      所以异步、逐份串行执行，失败只记日志，绝不影响导入结果；
+    - 复用导入期的页级 OCR 缓存（`PageTextCache`），扫描件不会跑第二遍 OCR；
+    - 串行而非并发：导入刚结束，机器可能还在跑别的任务，建页不该抢 CPU。
+    页级断点在 page_index 内部保证，中断后重跑只补缺失页。
+    """
+    if os.getenv("IMPORT_PAGE_INDEX", "1").strip().lower() in ("0", "false", "off"):
+        return
+    try:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                "SELECT doc_id, stored_path FROM import_items "
+                "WHERE job_id=? AND status='ready'", (job_id,)).fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug(f"读取导入条目失败（跳过页面索引）: {e}")
+        return
+
+    entries = []
+    for row in rows:
+        raw_path = str(row["stored_path"] or "")
+        if not raw_path:
+            continue
+        path = Path(raw_path)
+        if path.suffix.lower() not in _PAGE_INDEX_SUFFIXES or not path.is_file():
+            continue
+        doc_id = str(row["doc_id"] or "")
+        material_id = doc_id[2:] if doc_id.startswith("m:") else None
+        entries.append((path, material_id))
+    if not entries:
+        return
+
+    key = f"{job_id}:{subject_id}"
+    with _PAGE_INDEX_SCHEDULED_LOCK:
+        if key in _PAGE_INDEX_SCHEDULED:
+            return
+        _PAGE_INDEX_SCHEDULED.add(key)
+
+    def _worker() -> None:
+        from services import page_index
+        for path, material_id in entries:
+            try:
+                result = page_index.build_document_page_index(
+                    subject_id, path, material_id=material_id)
+                logger.info(
+                    f"[page-index] {path.name}: 新建 {result.get('indexed')} 页，"
+                    f"复用OCR缓存 {result.get('reused_cache')} 页，"
+                    f"实际OCR {result.get('ocr_pages')} 页，"
+                    f"共 {result.get('total_pages')} 页"
+                    + (f"，未覆盖自第 {result.get('uncovered_from')} 页起"
+                       if result.get("truncated") else ""))
+            except Exception as e:
+                logger.warning(f"[page-index] {path.name} 建页失败（不影响学习）: {e}")
+
+    threading.Thread(target=_worker, name=f"page-index-{subject_id}",
+                     daemon=True).start()
+    logger.info(
+        f"[page-index] 导入后接续建页：{len(entries)} 份资料（后台执行，不阻塞学习）")
+
 
 def _include_reused_ready_docs(reuse_job_id: str, parse_cfg: str,
                                ready_names: set, parsed_docs: List[Any]) -> None:
@@ -2175,6 +2262,13 @@ def _finish_job(job_id: str, status: str, summary_text: str,
         kb_json=json.dumps(_kb_public(job["subject_id"] if job else ""), ensure_ascii=False),
         stage_timings_json=json.dumps(stage_timings or {}, ensure_ascii=False),
     )
+    # 2026-10-30：资料已可学习的收尾（含 partial——部分成功也要给已建好的部分建页）。
+    # 失败任务不建页；建页本身异步、失败不影响导入结果。
+    if status in ("succeeded", "partial") and job and counts["ready"] > 0:
+        try:
+            _schedule_page_index_after_import(job_id, str(job["subject_id"]))
+        except Exception as e:
+            logger.debug(f"接续页面索引失败（不影响导入结果）: {e}")
 
 
 def _kb_public(subject_id: str) -> Dict[str, Any]:

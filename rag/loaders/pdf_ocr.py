@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import threading
 from pathlib import Path
@@ -113,10 +114,20 @@ def _file_sha(path: Path) -> str:
     return h.hexdigest()[:24]
 
 
+def _cache_root() -> Path:
+    return Path(get_data_dir()) / "cache" / "ocr_pages"
+
+
 def _cache_dir(pdf_path: Path) -> Path:
-    d = Path(get_data_dir()) / "cache" / "ocr_pages" / _file_sha(pdf_path)
+    d = _cache_root() / _file_sha(pdf_path)
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _cache_dir_readonly(pdf_path: Path) -> Optional[Path]:
+    """只读定位：不存在就返回 None，**不创建目录**（页面索引只读缓存时用）。"""
+    d = _cache_root() / _file_sha(pdf_path)
+    return d if d.is_dir() else None
 
 
 def _cache_path(pdf_path: Path, page_no: int, engine: str, dpi: int) -> Path:
@@ -137,6 +148,97 @@ def _write_cache(path: Path, text: str) -> None:
         path.write_text(text or "", encoding="utf-8")
     except OSError as e:
         logger.debug(f"OCR 页缓存写入失败（不影响本次）: {e}")
+
+
+# 缓存文件名格式：p{页码}_{引擎}_{DPI}_{缓存版本}.txt
+_CACHE_NAME_RE = re.compile(r"^p(\d+)_([a-z]+)_(\d+)_(v\d+)\.txt$")
+_KNOWN_ENGINES = ("rapidocr", "liteparse", "pytesseract")
+
+
+class PageTextCache:
+    """导入期页级 OCR 缓存的**只读**视图（2026-10-30）。
+
+    为什么要有这个类：页面索引曾经自己再 OCR 一遍，导致同一本扫描件
+    OCR 两次（实测 252 页白烧 30 分钟）。这里提供一条**受控**的复用路径。
+
+    严格性（和"随便 glob 一份文本"的区别）：
+    - 目录按**文件 SHA** 定位，文件换了就换目录，不会串到别的文件；
+    - 文件名必须完整匹配 `p{页码}_{引擎}_{DPI}_{版本}.txt`，
+      页码、引擎、缓存版本逐项比对，不匹配的一律不用；
+    - 只返回**纯文本**与元信息。缓存里没有坐标，**不冒充 bbox**——
+      调用方要坐标只能回文本层（`page.get_text("blocks")`）。
+
+    DPI 取舍：优先当前配置 DPI；没有时取该页已有的最大 DPI（识别质量最好），
+    并在 `dpi` 字段如实回报实际用的值。
+    """
+
+    def __init__(self, pdf_path: Path, dpi: Optional[int] = None,
+                 engine: Optional[str] = None) -> None:
+        self.pdf_path = Path(pdf_path)
+        self.sha = _file_sha(self.pdf_path)
+        self.dpi = int(dpi or _env_int("IMPORT_OCR_DPI", _DEFAULT_DPI))
+        self.engine = (engine or "").strip().lower()
+        self.dir = _cache_root() / self.sha
+        self._by_page: Dict[int, List[Tuple[str, int, Path]]] = {}
+        self._load_index()
+
+    def _load_index(self) -> None:
+        """只列本文件 SHA 目录，逐个文件名严格解析；不递归、不 glob。"""
+        if not self.dir.is_dir():
+            return
+        try:
+            entries = list(os.scandir(self.dir))
+        except OSError as e:
+            logger.debug(f"读取 OCR 缓存目录失败: {e}")
+            return
+        for entry in entries:
+            try:
+                if not entry.is_file():
+                    continue
+            except OSError:
+                continue
+            match = _CACHE_NAME_RE.match(entry.name)
+            if not match:
+                continue
+            page_no, engine, dpi, version = match.groups()
+            if version != OCR_CACHE_VERSION:
+                continue          # 配置版本变了，旧缓存不认
+            if engine not in _KNOWN_ENGINES:
+                continue
+            if self.engine and engine != self.engine:
+                continue
+            try:
+                page_int, dpi_int = int(page_no), int(dpi)
+            except (TypeError, ValueError):
+                continue
+            if page_int < 1:
+                continue
+            self._by_page.setdefault(page_int, []).append(
+                (engine, dpi_int, Path(entry.path)))
+
+    def get(self, page_no: int) -> Optional[Dict[str, Any]]:
+        """取某页缓存文本；没有就返回 None（调用方自己决定要不要 OCR）。"""
+        candidates = self._by_page.get(int(page_no))
+        if not candidates:
+            return None
+        exact = [c for c in candidates if c[1] == self.dpi]
+        if exact:
+            engine, dpi, path = exact[0]
+        else:
+            engine, dpi, path = max(candidates, key=lambda c: c[1])
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as e:
+            logger.debug(f"读取页缓存失败 p{page_no}: {e}")
+            return None
+        return {"text": text or "", "engine": engine, "dpi": dpi,
+                "version": OCR_CACHE_VERSION, "has_bbox": False}
+
+    def pages(self) -> List[int]:
+        return sorted(self._by_page)
+
+    def coverage(self) -> int:
+        return len(self._by_page)
 
 
 def page_count(pdf_path: Path) -> int:
@@ -554,6 +656,7 @@ def extract_page_text(pdf_path: Path, page_1based: int,
 
 __all__ = [
     "OCR_CACHE_VERSION",
+    "PageTextCache",
     "select_engine",
     "engine_status",
     "page_count",

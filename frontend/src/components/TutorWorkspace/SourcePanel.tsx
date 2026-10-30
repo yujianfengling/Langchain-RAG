@@ -27,8 +27,10 @@ const SourcePanel: React.FC<{
   focusSourceId?: number | null;
   /** 2026-10-24：白板承接“课件依据”后，右栏不再重复展示引用原文 */
   showSources?: boolean;
+  /** 学科 ID：文本检索来源只有页码没有页面图地址，用它反推「查看页面图」入口 */
+  subjectId?: string;
 }> = ({ sources, citedIds, artifacts, trace, stages, onOpenArtifact, onDeleteArtifact,
-        onUpdateArtifact, focusSourceId, showSources = true }) => {
+        onUpdateArtifact, focusSourceId, showSources = true, subjectId = '' }) => {
   const [tab, setTab] = useState<'sources' | 'artifacts' | 'trace'>(
     showSources ? 'sources' : 'artifacts');
   const [pulseSourceId, setPulseSourceId] = useState<number | null>(null);
@@ -55,7 +57,19 @@ const SourcePanel: React.FC<{
   const openPageImage = async (source: any) => {
     try {
       // 页面图接口需要登录态；<img src> 带不上 X-User-Token，只能用 axios 取 blob。
-      const res = await apiClient.get(String(source.page_image_url).replace(/^\/api/, ''),
+      // 2026-10-30：文本检索来源只有页码、没有 page_image_url（与白板同口径补链），
+      // 用文件名反推 doc_id 仍能打开原页；没建页时 404 → 如实提示，不伪造。
+      const url = source.page_image_url
+        || (subjectId && source.page != null && source.file_name
+          ? `/knowledge/${encodeURIComponent(subjectId)}/pages/image?${new URLSearchParams({
+              doc_id: `f:${source.file_name}`, page: String(source.page),
+            }).toString()}`
+          : '');
+      if (!url) {
+        message.warning('这条片段没有可打开的原页');
+        return;
+      }
+      const res = await apiClient.get(url.replace(/^\/api/, ''),
         { responseType: 'blob' });
       const blob = res instanceof Blob ? res : (res as any)?.data;
       const objectUrl = URL.createObjectURL(blob as Blob);
@@ -66,9 +80,13 @@ const SourcePanel: React.FC<{
         height: Number(source.image_height) || undefined,
       });
     } catch {
-      message.error('页面图加载失败，请确认已建立页面索引');
+      message.error('该页暂无页面图（可能还没建页），原文片段仍在左侧');
     }
   };
+  /** 有页面图地址，或有页码+文件名（可反推）才显示「查看页面图」 */
+  const hasPageView = (source: any): boolean =>
+    !!source.page_image_url
+    || !!(subjectId && source.page != null && source.file_name);
   const bboxStyle = (): React.CSSProperties | undefined => {
     if (!preview?.bbox || !preview.width || !preview.height) return undefined;
     const [x1, y1, x2, y2] = preview.bbox;
@@ -138,7 +156,7 @@ const SourcePanel: React.FC<{
                     </div>
                     {s.section && <div className="tutor-source-section">{s.section}</div>}
                     <div className="tutor-source-snippet">{s.snippet || '（无原文片段）'}</div>
-                    {s.page_image_url && (
+                    {hasPageView(s) && (
                       <Button size="small" type="link" icon={<FileImageOutlined />}
                               onClick={() => openPageImage(s)}>
                         查看页面图

@@ -693,6 +693,10 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
               />
               <span className="udz-progress-text">
                 已处理 {processed}/{totals.total} 份
+                {/* 2026-10-30 修复：此前只报「已处理 + 未处理」，把「处理中」漏掉。
+                    实测总数 3 / 处理中 1 / 未处理 2 时，文案读起来是「0/3，未处理 2」，
+                    0+2≠3，用户会以为计数错了。三个数必须都出现。 */}
+                {totals.processing > 0 ? '，处理中 ' + totals.processing + ' 份' : ''}
                 {totals.unprocessed > 0 ? '，未处理 ' + totals.unprocessed + ' 份' : ''}
               </span>
             </div>

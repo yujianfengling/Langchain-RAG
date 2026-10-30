@@ -793,6 +793,7 @@ const includeNodeSources = useCallback(() => {
       </div>
       <SourcePanel
         showSources
+        subjectId={subjectId}
         sources={panelSources}
         citedIds={panelCitedIds}
         artifacts={artifacts}
@@ -883,30 +884,36 @@ const includeNodeSources = useCallback(() => {
             />
           </Tooltip>
           <div className="tutor-main-actions">
-            <Tooltip title="回看这个学科以前的问答与讲解">
-              <Button size="small" type="text" icon={<HistoryOutlined />} onClick={() => void openHistory()}>历史</Button>
+            {/* 2026-10-30：原「工具」下拉已拆开——白板/录音笔记和「历史」并排成独立按钮。
+                收在下拉里时用户必须先点一次才知道有什么，功能等于藏起来了。
+                说明走 Tooltip 且 trigger 含 focus：键盘 Tab 过去也能读到一句话简介。 */}
+            <Tooltip title="回看这个学科以前的问答与讲解" trigger={['hover', 'focus']}>
+              <Button size="small" type="text" icon={<HistoryOutlined />} aria-label="历史"
+                      onClick={() => void openHistory()}>
+                <span className="tutor-action-label">历史</span>
+              </Button>
             </Tooltip>
-            <Dropdown
-              trigger={['click']}
-              menu={{
-                items: [
-                  { key: 'board', icon: <HighlightOutlined />, label: '白板' },
-                  { key: 'lecture', icon: <AudioOutlined />, label: '录音笔记' },
-                ],
-                onClick: ({ key }) => {
-                  if (key === 'board') void openWhiteboard();
-                  if (key === 'lecture') setLectureOpen(true);
-                },
-              }}
-            >
-              <Button size="small" icon={<MoreOutlined />} aria-label="更多学习工具">工具</Button>
-            </Dropdown>
-            <Tooltip title={rightOpen ? '收起引用、成果与详情' : '展开引用、成果与详情'}>
+            <Tooltip title="用这一轮回答的资料生成板书，可逐层展开讲" trigger={['hover', 'focus']}>
+              <Button size="small" type="text" icon={<HighlightOutlined />} aria-label="白板"
+                      onClick={() => void openWhiteboard()}>
+                <span className="tutor-action-label">白板</span>
+              </Button>
+            </Tooltip>
+            <Tooltip title="录一段课堂讲解，自动转写并整理成可复习的笔记" trigger={['hover', 'focus']}>
+              <Button size="small" type="text" icon={<AudioOutlined />} aria-label="录音笔记"
+                      onClick={() => setLectureOpen(true)}>
+                <span className="tutor-action-label">录音笔记</span>
+              </Button>
+            </Tooltip>
+            <Tooltip title={rightOpen ? '收起引用、成果与详情' : '展开引用、成果与详情'}
+                     trigger={['hover', 'focus']}>
               <Button
-                size="small" icon={<FileTextOutlined />} aria-expanded={rightOpen}
+                size="small" type="text" icon={<FileTextOutlined />} aria-expanded={rightOpen}
                 onClick={(event) => toggleRightPanel(!rightOpen, event.currentTarget)}
                 className={'tutor-panel-toggle' + (rightOpen ? ' is-active' : '')}
-              >{isNarrow ? '面板' : '成果与详情'}</Button>
+              >
+                <span className="tutor-action-label">{isNarrow ? '面板' : '成果与详情'}</span>
+              </Button>
             </Tooltip>
           </div>
         </div>
@@ -934,11 +941,13 @@ const includeNodeSources = useCallback(() => {
                   {subjects.find((item) => item.value === subjectId)?.label || '当前学科'}
                   {nodeDetail?.label ? ` · ${nodeDetail.label}` : ''}
                 </div>
-                <div className="tutor-welcome-sub">
-                  {guidanceMode === 'socratic'
-                    ? '当前是引导模式：先说说你的思路，我会一层层提示，不直接给答案。'
-                    : '基于当前学科资料提问、练习或整理笔记。回答附资料引用，随时核对原文。'}
-                </div>
+                {/* 引导模式必须说明"不直接给答案"，否则学生会以为系统坏了；
+                    直接模式下这句只是重复口号（下面按钮已经说明能做什么），去掉。 */}
+                {guidanceMode === 'socratic' && (
+                  <div className="tutor-welcome-sub">
+                    当前是引导模式：先说说你的思路，我会一层层提示，不直接给答案。
+                  </div>
+                )}
                 <Space wrap size={8} className="tutor-welcome-actions">
                   {readyMaterials.length === 0 ? (
                     <Button type="primary" icon={<DatabaseOutlined />}

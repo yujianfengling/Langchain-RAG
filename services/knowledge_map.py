@@ -27,6 +27,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from config.path_config import get_data_dir
+from services import chapter_outline
 from utils.logger import logger
 
 DB_PATH = os.path.join(str(get_data_dir()), "learning_map.db")
@@ -150,19 +151,27 @@ def _text_file_excerpt(subject_id: str, filename: str, limit: int = 6000) -> str
 
 def collect_evidence(user_id: Optional[str], subject_id: str,
                      scope: Dict[str, Any], max_docs: int = 20,
-                     per_doc_chars: int = 1400) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+                     per_doc_chars: int = 1400) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """
     为每个范围内的资料收集证据片段（保证「每份资料都有交代」）。
 
     Returns:
-        (evidence, coverage_hint)
-        evidence: [{"doc_id","file_name","snippet","page","chunk_id"}]
+        (evidence, outlines)
+        evidence: [{"doc_id","file_name","snippet","page","chunk_id","kind"?,"chapter"?}]
+        outlines: {文件名: chapter_outline.document_outline(...)}，只含真解析出章节的资料
+
+    2026-10-30：非文本资料原先只做一次相似度检索，一本 252 页的教材最终只有
+    3 段 × 1400 字进模型，模型看不见第 2/3/4…章，生成的路线只剩 5 章，
+    而 uncovered 还是空的（13 章被静默丢掉）。现在优先用**原文解析出的章节大纲**
+    + 每章开头的真实正文作证据：既让模型看得到每一章，也省掉一次检索调用。
     """
     from services import ai_service
+    from services import chapter_outline
     from services import material_scope
 
     materials = scope.get("selected") or []
     evidence: List[Dict[str, Any]] = []
+    outlines: Dict[str, Dict[str, Any]] = {}
     for item in materials[:max_docs]:
         filename = item.get("file_name") or ""
         excerpt = _text_file_excerpt(subject_id, filename)
@@ -172,7 +181,22 @@ def collect_evidence(user_id: Optional[str], subject_id: str,
                 "snippet": excerpt[:per_doc_chars], "page": None, "chunk_id": None,
             })
             continue
-        # 非文本资料：用资料名做一次检索，取该资料自己的片段
+        # 首选：章节大纲 + 每章开头正文（真实内容，不调模型、不做检索）
+        try:
+            outline = chapter_outline.document_outline(subject_id, filename)
+        except Exception as e:
+            logger.debug(f"解析章节大纲失败 {filename}: {e}")
+            outline = {"file_name": filename, "chapters": [], "source": "none",
+                       "pages": 0, "note": f"章节解析失败: {e}"}
+        if outline.get("chapters"):
+            rows = chapter_outline.chapter_excerpts(
+                subject_id, filename, outline,
+                per_chapter_chars=max(240, min(per_doc_chars, 700)))
+            if rows:
+                outlines[filename] = outline
+                evidence.extend(rows)
+                continue
+        # 退路：没解析出章节（未建页索引 / 无书签）时，仍用资料名做一次检索
         try:
             result = ai_service.retrieve_and_build_context(
                 question=f"{filename} 目录 章节 知识点", subject_id=subject_id,
@@ -190,7 +214,7 @@ def collect_evidence(user_id: Optional[str], subject_id: str,
                 "snippet": (getattr(doc, "page_content", "") or "")[:per_doc_chars],
                 "page": meta.get("page"), "chunk_id": meta.get("chunk_id") or meta.get("id"),
             })
-    return evidence, []
+    return evidence, outlines
 
 
 # =====================================================================
@@ -207,7 +231,7 @@ _MAP_PROMPT = """请根据下面的课程资料片段，整理一份**章节 →
 
 ## 本次范围的**全部资料**（共 {doc_count} 份）
 {doc_list}
-
+{chapter_section}
 要求：
 1. 严格返回 JSON，结构为：
 {{"title": "课程名", "nodes": [{{"label": "知识点名", "level": "chapter|section|point",
@@ -225,11 +249,24 @@ _MAP_PROMPT = """请根据下面的课程资料片段，整理一份**章节 →
 6. 每个知识点名称不超过 20 个字，准确反映资料内容。
 7. 若资料文件名里带有章节信息（如"第3章"），**按它组织章节层级**，
    不要自己另起一套编号。
+8. 不要为了凑节点数而编造资料里没有的知识点；某一章的片段不足以提炼知识点时，
+   **只给该章的章节节点**即可。
 
 资料片段：
 {evidence}
 
 请返回 JSON："""
+
+# 有原文解析出的章节清单时插入这一段（清单是权威的，模型必须逐章交代）
+_CHAPTER_SECTION = """
+## 从原文解析出的**章节清单**（权威，共 {chapter_count} 章）
+{chapter_list}
+
+关于这份清单的硬性要求：
+- **每一章都必须有一个 level="chapter" 的节点**，label 用清单里的原文标题（不要改写、不要合并相邻章）；
+- 章下的知识点（level="point"）只在对应片段确有内容时才写，parent 填该章的 label；
+- 清单里没有的章节不要凭空补出来。
+"""
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -252,13 +289,31 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _validate_map(raw: Dict[str, Any], allowed_files: List[str]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+def _chapter_entry(chapter: Dict[str, Any]) -> Dict[str, Any]:
+    """把 chapter_outline 的一条章节转成对外结构（label 用原文标题，页码 0 基）。"""
+    from services import chapter_outline
+    number = chapter.get("number")
+    title = chapter.get("title") or ""
+    return {"number": number, "label": chapter_outline.chapter_label(number, title),
+            "page": chapter.get("page"), "source_docs": list(chapter.get("source_docs") or [])}
+
+
+def _validate_map(raw: Dict[str, Any], allowed_files: List[str],
+                  expected_chapters: Optional[List[Dict[str, Any]]] = None,
+                  ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
     结构校验（借鉴 Archify validator：每条诊断带 code/subject/evidence/fix）。
 
     返回 (规范化后的地图骨架, diagnostics)。规范化后的节点带稳定 ID 与层级路径。
+
+    2026-10-30：新增 `expected_chapters`（原文解析出的章节清单）后，校验不再只看
+    "每份资料有没有被引用"。此前一本 18 章的教材只生成 5 章，uncovered 却是空的——
+    章节缺口完全静默。现在漏掉的章会进 `uncovered_chapters` 并报 `chapter_missing`。
     """
+    from services import chapter_outline
+
     diagnostics: List[Dict[str, Any]] = []
+    expected = [_chapter_entry(c) for c in (expected_chapters or [])]
     nodes_in = raw.get("nodes") if isinstance(raw, dict) else None
     if not isinstance(nodes_in, list) or not nodes_in:
         diagnostics.append({
@@ -266,7 +321,8 @@ def _validate_map(raw: Dict[str, Any], allowed_files: List[str]) -> Tuple[Dict[s
             "evidence": "模型未返回可用节点", "fix": "重新生成或检查资料是否为空",
         })
         return {"title": raw.get("title") if isinstance(raw, dict) else None,
-                "nodes": [], "uncovered": list(allowed_files)}, diagnostics
+                "nodes": [], "uncovered": list(allowed_files),
+                "uncovered_chapters": expected}, diagnostics
 
     allowed = set(allowed_files)
     title = str(raw.get("title") or "").strip() or "学习路线"
@@ -356,7 +412,25 @@ def _validate_map(raw: Dict[str, Any], allowed_files: List[str]) -> Tuple[Dict[s
         if fname not in covered_docs and fname not in uncovered:
             uncovered.append(fname)
 
-    return {"title": title, "nodes": nodes, "uncovered": uncovered}, diagnostics
+    # 章节覆盖核对（2026-10-30）：原文清单里的每一章，必须有节点真的交代。
+    # 判定覆盖：label 与清单完全一致，或章号对上（模型改写了标题也算交代过，
+    # 但改写会在下一轮生成时被硬性提示词纠正）。漏掉的章如实上报，不替模型编造。
+    covered_labels = {normalize_label(n["label"]) for n in nodes}
+    covered_numbers = {chapter_outline.chapter_number_of(n["label"]) for n in nodes}
+    uncovered_chapters: List[Dict[str, Any]] = []
+    for chapter in expected:
+        if (chapter["label"] in covered_labels
+                or chapter.get("number") in covered_numbers):
+            continue
+        uncovered_chapters.append(chapter)
+        diagnostics.append({
+            "code": "chapter_missing", "subject": "coverage",
+            "evidence": chapter["label"],
+            "fix": "资料里有这一章但模型没有生成对应节点；可用更少资料重试，或手动补充",
+        })
+
+    return {"title": title, "nodes": nodes, "uncovered": uncovered,
+            "uncovered_chapters": uncovered_chapters}, diagnostics
 
 
 def _find_cycles(nodes: List[Dict[str, Any]]) -> List[List[str]]:
@@ -400,7 +474,8 @@ def _fallback_map(subject_name: str, evidence: List[Dict[str, Any]]) -> Dict[str
             "prerequisites": [], "source_docs": [ev["file_name"]],
             "coverage_note": "模型未可用，按资料清单生成的兜底路线", "entity_version": 1,
         })
-    return {"title": subject_name or "学习路线", "nodes": nodes, "uncovered": []}
+    return {"title": subject_name or "学习路线", "nodes": nodes, "uncovered": [],
+            "uncovered_chapters": []}
 
 
 def generate_map(user_id: Optional[str], subject_id: str, scope: Dict[str, Any],
@@ -416,12 +491,16 @@ def generate_map(user_id: Optional[str], subject_id: str, scope: Dict[str, Any],
     if existing and not force and existing.get("source_signature") == signature:
         return {**existing, "reused": True, "generated": False}
 
-    evidence, _ = collect_evidence(user_id, subject_id, scope)
+    evidence, outlines = collect_evidence(user_id, subject_id, scope)
     allowed_files = [m.get("file_name") for m in (scope.get("selected") or []) if m.get("file_name")]
+    # 原文解析出的章节清单（权威）：拼进提示词让模型逐章交代，
+    # 并在校验时兜住"模型漏章"——这是"第1章直接跳第6/9章"的根治点（2026-10-30）。
+    expected_chapters = chapter_outline.merged_chapters(outlines)
     diagnostics: List[Dict[str, Any]] = []
     if not evidence:
         return {"map_id": None, "subject_id": subject_id, "title": subject_name,
-                "nodes": [], "uncovered": allowed_files, "diagnostics": [{
+                "nodes": [], "uncovered": allowed_files, "uncovered_chapters": [],
+                "diagnostics": [{
                     "code": "no_evidence", "subject": "materials",
                     "evidence": "所选资料没有可用内容", "fix": "先上传资料并建库"}],
                 "source_signature": signature, "generated": False, "reused": False}
@@ -443,6 +522,16 @@ def generate_map(user_id: Optional[str], subject_id: str, scope: Dict[str, Any],
         if not doc_names:
             doc_names = sorted({ev.get("file_name") for ev in evidence if ev.get("file_name")})
         doc_list = "\n".join("- " + n for n in doc_names) or "（无）"
+        # 有原文权威章节清单时，插入逐章交代的硬性要求段；没有就留空（不占提示词）
+        if expected_chapters:
+            chapter_list = "\n".join(
+                f"- {_chapter_entry(c)['label']}（起始页 {int(c['page'] or 0) + 1}）"
+                for c in expected_chapters if c.get("page") is not None) or "\n".join(
+                    f"- {_chapter_entry(c)['label']}" for c in expected_chapters)
+            chapter_section = _CHAPTER_SECTION.format(
+                chapter_count=len(expected_chapters), chapter_list=chapter_list)
+        else:
+            chapter_section = ""
         # 节点数按资料数自适应：每份资料大致对应 1~3 个知识点
         doc_count = max(1, len(doc_names))
         min_nodes = max(8, doc_count)
@@ -452,6 +541,7 @@ def generate_map(user_id: Optional[str], subject_id: str, scope: Dict[str, Any],
                   .replace("{doc_list}", doc_list)
                   .replace("{min_nodes}", str(min_nodes))
                   .replace("{max_nodes}", str(max_nodes))
+                  .replace("{chapter_section}", chapter_section)
                   .replace("{evidence}", evidence_text))
         result = provider.chat(
             [{"role": "system", "content": _MAP_SYSTEM}, {"role": "user", "content": prompt}],
@@ -476,7 +566,8 @@ def generate_map(user_id: Optional[str], subject_id: str, scope: Dict[str, Any],
                             "evidence": f"{type(e).__name__}: {e}", "fix": "检查模型配置后重试"})
 
     if raw:
-        skeleton, validation_diags = _validate_map(raw, allowed_files)
+        skeleton, validation_diags = _validate_map(raw, allowed_files,
+                                                   expected_chapters=expected_chapters)
         diagnostics.extend(validation_diags)
     else:
         skeleton = _fallback_map(subject_name, evidence)
@@ -503,6 +594,7 @@ def generate_map(user_id: Optional[str], subject_id: str, scope: Dict[str, Any],
         "title": skeleton.get("title") or subject_name,
         "nodes": nodes,
         "uncovered": skeleton.get("uncovered") or [],
+        "uncovered_chapters": skeleton.get("uncovered_chapters") or [],
         "source_signature": signature,
         "diagnostics": diagnostics,
         "generated_at": _now(),

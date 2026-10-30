@@ -181,6 +181,10 @@ const LectureNotesModal: React.FC<{
   return (
     <Modal title="课堂录音笔记" open={open} onCancel={handleClose} width={780} footer={null}
            destroyOnClose>
+      {/* 功能简介（2026-10-30）：原先只写「课堂录音笔记」，用户不清楚录什么、生成什么 */}
+      <div style={{ fontSize: 12, color: '#8c8c8c', lineHeight: '18px', marginBottom: 8 }}>
+        录一段课堂讲解或自己的复述，系统先转写成文字，再整理成带要点的复习笔记；录音只在本机转写，笔记存到当前学科。
+      </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
         {!recording ? (
           <Button danger type="primary" icon={<AudioOutlined />} disabled={uploading}

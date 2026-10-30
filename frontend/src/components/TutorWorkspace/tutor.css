@@ -1038,3 +1038,23 @@
   .tutor-source-item.is-pulse, .tutor-side-body > * { animation: none; }
   .tutor-map-node.is-active .tutor-map-dot { box-shadow: none; }
 }
+
+/* ==================== 顶部操作按钮（2026-10-30） ====================
+   「白板 / 录音笔记」从「工具」下拉里拆出来，和「历史」并排成独立按钮；
+   功能简介走 Tooltip（trigger 含 focus，键盘也能读到）。
+   窄屏只留图标：按钮文字隐藏后 aria-label 与 Tooltip 仍然说明用途，
+   这样头部不会换行、也不会把下面的输入区挤窄。 */
+@media (max-width: 560px) {
+  .tutor-main-actions .tutor-action-label { display: none; }
+  .tutor-main-actions .ant-btn { padding-inline: 6px; }
+}
+
+/* 白板标题栏里的一行简介：窄屏隐藏，避免挤掉「拖动标题移动」提示 */
+.whiteboard-drag-desc {
+  font-size: 11px;
+  font-weight: 400;
+  color: #94a3b8;
+}
+@media (max-width: 720px) {
+  .whiteboard-drag-desc { display: none; }
+}

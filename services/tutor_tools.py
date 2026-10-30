@@ -107,12 +107,40 @@ def _t_search_materials(ctx: ToolContext, query: str, top_k: int = 5) -> Dict[st
     }
 
 
+def _visible_page_names(ctx: ToolContext) -> Optional[set]:
+    """页面检索的文件边界；None = 不做文件级过滤（历史全局学科/授课教师）。
+
+    与 RAG 检索同一口径：① 教师草稿资料在班学生不可见；② 用户勾选了资料范围
+    就只在该范围内命中。页面图能直接看到原页，边界不能比正文检索更宽。
+    """
+    from services import teaching_access
+    try:
+        names = teaching_access.student_visible_document_names(ctx.user_id, ctx.subject_id)
+    except Exception:
+        names = None
+    allowed = set(names) if names is not None else None
+    scope = ctx.scope or {}
+    if scope.get("mode") == "selected":
+        chosen = {str(item.get("file_name") or "") for item in (scope.get("selected") or [])}
+        chosen.discard("")
+        if chosen:
+            allowed = chosen if allowed is None else (allowed & chosen)
+    return allowed
+
+
 def _t_search_pages(ctx: ToolContext, query: str, top_k: int = 5) -> Dict[str, Any]:
     """按页检索：图片型课件/扫描件的兜底；没有索引时如实说明。"""
     from services import page_index
     top_k = max(1, min(int(top_k or 5), 10))
-    pages = page_index.search_pages(ctx.subject_id, query, top_k)
+    allowed = _visible_page_names(ctx)
+    # 先多取一些再按权限/范围过滤，否则被过滤掉的名额不会补回来
+    raw = page_index.search_pages(ctx.subject_id, query, top_k * 3 if allowed else top_k)
+    pages = ([p for p in raw if str(p.get("file_name") or "") in allowed][:top_k]
+             if allowed is not None else raw[:top_k])
     if not pages:
+        if raw:
+            return {"ok": True, "page_count": 0, "sources": [],
+                    "note": "命中的页面不在你当前的资料范围内"}
         status = page_index.get_page_index_status(ctx.subject_id)
         note = ("该学科还没有页面索引，可先在资料库点「建立页面索引」"
                 if not status.get("pages") else "页面索引里没有命中这一页")
