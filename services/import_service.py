@@ -2104,11 +2104,40 @@ def _schedule_deferred_vision(job_id: str, subject_id: str,
             usable = [d for d in enriched
                       if (getattr(d, "page_content", "") or "").strip()
                       and (getattr(d, "metadata", {}) or {}).get("is_content") is not False]
+            # 2026-10-31 安全层：补入前核对来源资料仍存在且内容版本未变——
+            # 防止删除/替换后旧图补入新索引（同名替换场景）。
+            from config.path_config import get_subjects_dir
+            subject_dir = Path(get_subjects_dir()) / subject_id
+            safe_usable = []
+            for d in usable:
+                src_name = (getattr(d, "metadata", {}) or {}).get("source") or ""
+                if not src_name or (subject_dir / src_name).exists():
+                    safe_usable.append(d)
+                else:
+                    logger.info(f"[import][deferred-vision] {job_id}: "
+                                f"来源资料已删除/替换，跳过该图的补入: {src_name}")
+            usable = safe_usable
             added = 0
             if usable:
                 from rag.vector_store import add_documents_to_store
                 result = add_documents_to_store(usable, subject_id)
                 added = int(result.get("added") or 0)
+            # 写状态 JSON（可观测：每张图的最终归属）
+            try:
+                status_path = (Path(get_data_dir()) / "deferred_vision" / job_id
+                               / "status.json")
+                status = {
+                    "job_id": job_id, "subject_id": subject_id,
+                    "total": len(docs), "enriched": len(enriched),
+                    "usable": len(usable), "added_to_index": added,
+                    "filtered_by_source_check": len(usable) - len(safe_usable)
+                        if 'safe_usable' in dir() else 0,
+                    "finished_at": _now(),
+                }
+                status_path.write_text(json.dumps(status, ensure_ascii=False),
+                                       encoding="utf-8")
+            except Exception:
+                pass
             elapsed = _monotonic() - started
             logger.info(
                 f"[import][deferred-vision] {job_id}: 完成 {elapsed:.0f}s，"
