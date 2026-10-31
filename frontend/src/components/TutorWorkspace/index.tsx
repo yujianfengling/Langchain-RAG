@@ -8,7 +8,7 @@ import {
   AudioOutlined, BookOutlined, BulbOutlined, CheckCircleOutlined, CheckSquareOutlined, CloseOutlined, DatabaseOutlined,
   DeleteOutlined, DownOutlined, FileTextOutlined, FormOutlined, HighlightOutlined, HistoryOutlined,
   MenuOutlined, MoreOutlined,
-  PartitionOutlined, ReloadOutlined, RightOutlined, RobotOutlined, SendOutlined,
+  PartitionOutlined, ReloadOutlined, RightOutlined, SendOutlined,
   StopOutlined,
 } from '@ant-design/icons';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
@@ -862,9 +862,11 @@ const includeNodeSources = useCallback(() => {
         <div className="tutor-main-head">
           <div className="tutor-main-title">
             <div className="tutor-main-title-main">AI 伴学</div>
-            <div className="tutor-main-title-sub">
-              {nodeDetail?.label || '资料问答 · 引导学习'}
-            </div>
+            {/* 2026-10-31 减法：固定副标题"资料问答 · 引导学习"与页面标题重复；
+                只有选中知识点时才显示节点名（顶部唯一不重复的信息）。 */}
+            {nodeDetail?.label && (
+              <div className="tutor-main-title-sub">{nodeDetail.label}</div>
+            )}
           </div>
           {/* 2026-10-03：原「资料问答 / 引导讲解 / 练习检测 / 知识地图 / 学习整理」模式栏已移除。
               它和底部「快捷命令：开始学习 / 做练习 / 检测」功能重叠，两处都能切能力只会让人犹豫；
@@ -933,13 +935,11 @@ const includeNodeSources = useCallback(() => {
                           animate={{ opacity: 1, y: 0 }}
                           exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
                           transition={{ duration: reduceMotion ? 0 : 0.18 }}>
-                <div className="tutor-welcome-icon"><RobotOutlined /></div>
+                {/* 2026-10-31 减法：去大图标底色块；学科名与顶部选择器重复，删除。
+                    空态 = 一句问候 + 最多两个有实际用途的操作；
+                    有学习进度时"继续"升级为主操作（唯一显眼入口）。 */}
                 <div className="tutor-welcome-title">
                   {greeting || (role === 'teacher' ? '今天想先备哪一部分？' : '今天想学什么？')}
-                </div>
-                <div className="tutor-welcome-context">
-                  {subjects.find((item) => item.value === subjectId)?.label || '当前学科'}
-                  {nodeDetail?.label ? ` · ${nodeDetail.label}` : ''}
                 </div>
                 {/* 引导模式必须说明"不直接给答案"，否则学生会以为系统坏了；
                     直接模式下这句只是重复口号（下面按钮已经说明能做什么），去掉。 */}
@@ -949,6 +949,8 @@ const includeNodeSources = useCallback(() => {
                   </div>
                 )}
                 <Space wrap size={8} className="tutor-welcome-actions">
+                  {/* 2026-10-31 减法：每个空态最多两个操作；已有学习进度时
+                      "继续"是唯一主按钮，其余操作降为次要或收进路线侧栏。 */}
                   {readyMaterials.length === 0 ? (
                     <Button type="primary" icon={<DatabaseOutlined />}
                             onClick={() => navigate(role === 'teacher' ? '/teacher?section=prep' : '/student/materials?create=1')}>
@@ -956,24 +958,28 @@ const includeNodeSources = useCallback(() => {
                     </Button>
                   ) : nodeDetail ? (
                     <>
-                      <Button onClick={() => startNodeActivity('learn')}>讲懂这个知识点</Button>
+                      <Button type="primary" onClick={() => startNodeActivity('learn')}>讲懂这个知识点</Button>
                       <Button onClick={() => startNodeActivity('practice')}>做一道练习</Button>
                     </>
-                  ) : (
+                  ) : map?.next_node ? (
                     <>
+                      <Button type="primary" onClick={() => {
+                        stickToBottomRef.current = true;
+                        setCurrentNode(map.next_node!.node_id);
+                        updateTutorSession({ subject_id: subjectId, node_id: map.next_node!.node_id, ability: 'explain' });
+                      }}>继续：{map.next_node.label}</Button>
                       <Button onClick={() => send(role === 'teacher'
                         ? '请概括当前资料的教学重点，并给出适合备课的结构。'
                         : '请概括当前资料的重点，并标出资料出处。')}>概括资料重点</Button>
-                      <Button loading={mapLoading} onClick={() => void handleGenerateMap()}>生成学习路线</Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button type="primary" loading={mapLoading} onClick={() => void handleGenerateMap()}>生成学习路线</Button>
+                      <Button onClick={() => send(role === 'teacher'
+                        ? '请概括当前资料的教学重点，并给出适合备课的结构。'
+                        : '请概括当前资料的重点，并标出资料出处。')}>概括资料重点</Button>
                       {role === 'teacher' && <Button onClick={() => send('基于当前资料生成一份教案初稿。', 'organize')}>生成教案初稿</Button>}
                     </>
-                  )}
-                  {map?.next_node && (
-                    <Button type="text" onClick={() => {
-                      stickToBottomRef.current = true;
-                      setCurrentNode(map.next_node.node_id);
-                      updateTutorSession({ subject_id: subjectId, node_id: map.next_node.node_id, ability: 'explain' });
-                    }}>继续：{map.next_node.label}</Button>
                   )}
                 </Space>
               </motion.div>

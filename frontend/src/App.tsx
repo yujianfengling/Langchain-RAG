@@ -173,12 +173,6 @@ const App: React.FC = () => {
     </>
   );
 
-  const footerNode = (
-    <div style={{ padding: '10px 20px', textAlign: 'left' }}>
-      <div style={{ fontSize: 11, color: '#737d8f' }}>资料有依据，学习有路径</div>
-    </div>
-  );
-
   return (
     <Layout style={{ minHeight: '100vh', background: '#f8fafc' }}>
       <motion.div
@@ -213,7 +207,6 @@ const App: React.FC = () => {
                       onClick={toggleNav} />
             </Tooltip>
           </div>
-          {navCollapsed ? null : footerNode}
         </Sider>
       </motion.div>
 

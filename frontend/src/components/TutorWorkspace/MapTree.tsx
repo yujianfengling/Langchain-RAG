@@ -119,9 +119,13 @@ const MapTree: React.FC<{
             >
               <span className="tutor-map-dot" style={{ background: STATUS_DOT[node.status] || '#cbd5e1' }} />
               <span className="tutor-map-label">{node.label}</span>
-              <span className="tutor-map-status">
-                {statusText(node.status, statusLabels, node.status_label)}
-              </span>
+              {/* 2026-10-31 减法：圆点已表达状态色；"未开始"逐节点重复没有信息量，
+                  只有进行中/待复习等**偏离默认**的状态才显示文字。悬停圆点仍有完整说明。 */}
+              {node.status && node.status !== 'new' && (
+                <span className={'tutor-map-status' + (node.status === 'needs_review' ? ' is-attention' : '')}>
+                  {statusText(node.status, statusLabels, node.status_label)}
+                </span>
+              )}
             </button>
           </div>
           {hasChildren && (
@@ -170,17 +174,12 @@ const MapTree: React.FC<{
       )}
       <div className="tutor-map-scroll"><ul className="tutor-map-level">{renderLevel(null, 0)}</ul></div>
       <div className="tutor-map-footer">
-        <Tooltip title="资料变化后可重新生成；能匹配上的节点会保留学习记录">
+        {/* 2026-10-31 减法：常驻状态图例移除——圆点颜色 + 悬停 tooltip 足够，
+            底部一行图例在每次打开路线时都占据视觉焦点。 */}
+        <Tooltip title="路线状态：● 未开始 / 学习中 / 待检测 / 检测通过 / ● 待复习（橙色）。资料变化后可重新生成；能匹配上的节点会保留学习记录">
           <Button size="small" type="text" icon={<ReloadOutlined />} loading={generating}
                   onClick={onGenerate}>重新生成</Button>
         </Tooltip>
-        <span className="tutor-map-legend" title="路线状态：未开始 / 学习中 / 待检测 / 检测通过 / 待复习">
-          {(Object.keys(STATUS_DOT) as string[]).map((k) => (
-            <span key={k} className="tutor-legend-item">
-              <i style={{ background: STATUS_DOT[k] }} />{statusText(k, statusLabels)}
-            </span>
-          ))}
-        </span>
       </div>
     </div>
   );

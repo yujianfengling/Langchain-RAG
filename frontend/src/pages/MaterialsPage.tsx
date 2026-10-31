@@ -152,11 +152,13 @@ const stateFromStats = (res: StatsResponse | null): KbState => {
   return 'empty';
 };
 
+/* 2026-10-31 减法：状态不再用彩色标签（绿/橙逐卡片重复），统一灰字；
+   处理中等异常状态仍需要醒目时由详情区的 Alert 承担。 */
 const KbStatusTag: React.FC<{ state: KbState }> = ({ state }) => {
-  if (state === 'ready') return <Tag color="green">知识库就绪</Tag>;
-  if (state === 'processing') return <Tag color="orange">待处理</Tag>;
-  if (state === 'empty') return <Tag>暂无资料</Tag>;
-  return <Tag>状态未知</Tag>;
+  const text = state === 'ready' ? '知识库就绪'
+    : state === 'processing' ? '待处理'
+    : state === 'empty' ? '暂无资料' : '状态未知';
+  return <span style={{ color: 'var(--color-text-secondary)' }}>{text}</span>;
 };
 
 const MaterialsPage: React.FC = () => {
@@ -700,9 +702,7 @@ const MaterialsPage: React.FC = () => {
     <div className="app-page">
       <header className="page-header">
         <div className="page-heading">
-          <div className="page-eyebrow">学习依据</div>
           <Title level={1} className="page-title">资料库</Title>
-          <Text className="page-subtitle">创建学科、上传资料，再带着明确的学习范围开始提问。</Text>
         </div>
         <Space className="page-actions" wrap>
           <Button icon={<TeamOutlined />} onClick={() => setJoinOpen(true)}>加入课程</Button>
@@ -752,12 +752,13 @@ const MaterialsPage: React.FC = () => {
                     </div>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div className="material-card-title" title={item.name}>{item.name}</div>
+                      {/* 2026-10-31 减法：类型从彩色 Tag 降为灰字，与班级/教师同行 */}
                       <Space size={4} wrap style={{ marginTop: 5 }}>
-                        <Tag color={item.source === 'course' ? 'blue' : 'default'} style={{ marginInlineEnd: 0 }}>
-                          {item.source === 'course' ? '教师课程' : '个人学科'}
-                        </Tag>
-                        {item.className && <Text type="secondary" style={{ fontSize: 12 }}>{item.className}</Text>}
-                        {item.teacherName && <Text type="secondary" style={{ fontSize: 12 }}>· {item.teacherName}</Text>}
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {item.source === 'course' ? '课程' : '个人'}
+                          {item.className ? ' · ' + item.className : ''}
+                          {item.teacherName ? ' · ' + item.teacherName : ''}
+                        </Text>
                       </Space>
                     </div>
                   </div>

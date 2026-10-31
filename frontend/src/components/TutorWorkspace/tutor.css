@@ -1058,3 +1058,10 @@
 @media (max-width: 720px) {
   .whiteboard-drag-desc { display: none; }
 }
+
+/* ==================== 2026-10-31 减法覆盖（ui-simplify 分支） ====================
+   空态标题降字号；路线节点"未开始"已不渲染（MapTree），进行中状态弱化为小字，
+   待复习用橙色强调——常驻图例已移除，圆点颜色即状态。 */
+.tutor-welcome-title { font-size: 17px; font-weight: 600; color: var(--color-text); letter-spacing: 0; }
+.tutor-map-status { font-size: 11px; color: var(--color-text-muted); font-weight: 400; }
+.tutor-map-status.is-attention { color: #d97706; font-weight: 600; }
