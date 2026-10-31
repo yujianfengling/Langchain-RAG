@@ -1136,7 +1136,17 @@ const includeNodeSources = useCallback(() => {
                                   onAnswered={() => {
                                     loadNode(subjectId, currentNode);
                                     loadMap(subjectId);
-                                  }} />
+                                  }}
+                                  onAskExplain={() => startNodeActivity('learn')}
+                                  onPracticeMore={() => startNodeActivity('practice')}
+                                  onNextNode={map?.next_node && map.next_node.node_id !== currentNode ? () => {
+                                    setCurrentNode(map.next_node!.node_id);
+                                    updateTutorSession({ subject_id: subjectId, node_id: map.next_node!.node_id, ability: 'explain' });
+                                    loadNode(subjectId, map.next_node!.node_id);
+                                    startNodeActivity('learn');
+                                  } : undefined}
+                                  nextNodeLabel={map?.next_node && map.next_node.node_id !== currentNode
+                                    ? map.next_node.label : null} />
                   )}
                   {msg.askUser && (
                     <div className="tutor-ask">

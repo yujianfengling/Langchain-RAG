@@ -34,7 +34,13 @@ const PracticeCard: React.FC<{
   subjectId: string;
   nodeId?: string | null;
   onAnswered?: (result: any) => void;
-}> = ({ questions, subjectId, nodeId, onAnswered }) => {
+  /** 2026-10-31（ui-simplify）：作答后的低干扰行动入口（复用现有能力，不新增系统） */
+  onAskExplain?: () => void;
+  onPracticeMore?: () => void;
+  onNextNode?: () => void;
+  nextNodeLabel?: string | null;
+}> = ({ questions, subjectId, nodeId, onAnswered,
+       onAskExplain, onPracticeMore, onNextNode, nextNodeLabel }) => {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [results, setResults] = useState<Record<string, any>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -147,6 +153,28 @@ const PracticeCard: React.FC<{
                         这个知识点：{result.node.status_label}
                         {result.node.mastery_level != null &&
                           '（掌握度约 ' + Math.round(result.node.mastery_level * 100) + '%）'}
+                      </div>
+                    )}
+                    {/* 2026-10-31（ui-simplify）：作答后明确下一步——答错可直接
+                        换例子讲解/再练一道；答对可继续下一知识点。学生决定何时点。 */}
+                    {!attempt.is_correct && (onAskExplain || onPracticeMore) && (
+                      <Space size={4} wrap style={{ marginTop: 8 }}>
+                        {onAskExplain && (
+                          <Button size="small" onClick={onAskExplain}>换个例子讲解</Button>
+                        )}
+                        {onPracticeMore && (
+                          <Button size="small" onClick={onPracticeMore}>再练一道</Button>
+                        )}
+                      </Space>
+                    )}
+                    {/* 只有可靠归属的答对题、且存在**不同于当前**的下一节点时才显示；
+                        "待确认"归属的题不引导继续（不计入精确掌握）。 */}
+                    {attempt.is_correct && onNextNode && nextNodeLabel
+                      && q.knowledge_point !== '待确认' && (
+                      <div style={{ marginTop: 8 }}>
+                        <Button size="small" type="primary" onClick={onNextNode}>
+                          继续：{nextNodeLabel}
+                        </Button>
                       </div>
                     )}
                   </div>
