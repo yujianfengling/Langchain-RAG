@@ -188,11 +188,14 @@ async def put_session(request: TutorSessionUpdate,
 @router.get("/tutor/turns")
 async def list_turns(subject_id: Optional[str] = None, limit: int = 30,
                      node_id: Optional[str] = None,
+                     conversation_id: Optional[str] = None,
                      user_id: str = Depends(require_current_user)):
     if subject_id:
         await require_subject_read(subject_id, user_id)
     # node_id 给定时只返回该知识点的轮次：学生点某个知识点，右侧要显示它以前讲过什么
-    turns = tutor_session.list_turns(user_id, subject_id, limit, node_id=node_id)
+    # conversation_id 给定时只返回该会话的轮次（"继续这个会话"，2026-10-31）
+    turns = tutor_session.list_turns(user_id, subject_id, limit,
+                                     node_id=node_id, conversation_id=conversation_id)
     # 题目挂在产生它的那一轮下面——历史里写着"已出 3 道题"，题就该在那条消息下，
     # 而不是另起一块（那样删了历史题还在，说不通）。
     from services import quiz_service
@@ -201,6 +204,23 @@ async def list_turns(subject_id: Optional[str] = None, limit: int = 30,
     for t in turns:
         t["questions"] = qmap.get(t.get("id"), [])
     return {"success": True, "data": {"turns": turns}}
+
+
+@router.get("/tutor/conversations")
+async def list_conversations(subject_id: str = Query(...), limit: int = 50,
+                             user_id: str = Depends(require_current_user)):
+    """历史抽屉的**会话列表**（2026-10-31）：按 conversation_id 聚合，
+    附最早一条用户消息作标题/预览。旧的无会话散轮单独返回并标只读——
+    它们可以查看但不能续聊，如实标示。"""
+    await require_subject_read(subject_id, user_id)
+    conversations, loose = await run_in_threadpool(
+        _list_conversations_and_loose, user_id, subject_id, limit)
+    return {"success": True, "data": {"conversations": conversations, "loose_turns": loose}}
+
+
+def _list_conversations_and_loose(user_id: str, subject_id: str, limit: int):
+    return (tutor_session.list_conversations(user_id, subject_id, limit),
+            tutor_session.list_loose_turns(user_id, subject_id, limit=20))
 
 
 @router.delete("/tutor/turns/{turn_id}")

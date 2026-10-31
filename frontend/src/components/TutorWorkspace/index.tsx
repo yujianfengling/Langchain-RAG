@@ -6,20 +6,21 @@ import {
 } from 'antd';
 import {
   AudioOutlined, BookOutlined, BulbOutlined, CheckCircleOutlined, CheckSquareOutlined, CloseOutlined, DatabaseOutlined,
-  DeleteOutlined, DownOutlined, FileTextOutlined, FormOutlined, HighlightOutlined, HistoryOutlined,
+  DownOutlined, FileTextOutlined, FormOutlined, HighlightOutlined, HistoryOutlined,
   MenuOutlined, MoreOutlined,
-  PartitionOutlined, ReloadOutlined, RightOutlined, SendOutlined,
+  PartitionOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SendOutlined,
   StopOutlined,
 } from '@ant-design/icons';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { useCourse } from '../../context/CourseContext';
 import { useIsNarrow } from '../../hooks/useIsNarrow';
 import {
-  ABILITY_LABELS, deleteArtifact, deleteTurn, generateKnowledgeMap, getKnowledgeMap, getMapNode,
+  deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode,
   setNodeStatus,
-  getTurn, getTutorSession, listArtifacts, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
+  getTurn, getTutorSession, listArtifacts, listTutorConversations, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
   type GuidanceMode, type TutorSource,
 } from '../../api/tutor';
+import { useAuth } from '../../context/AuthContext';
 import { MarkdownText } from './markdown';
 import MapTree, { type MapNode } from './MapTree';
 import PracticeCard, { type PracticeQuestion } from './PracticeCard';
@@ -138,6 +139,15 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [history, setHistory] = useState<any[]>([]);
+  /** 旧格式散轮（无 conversation_id）：只读可查看，不假装可续聊 */
+  const [looseTurns, setLooseTurns] = useState<any[]>([]);
+  // 2026-10-31（ui-simplify）：会话化历史。conversationId 为空 = 新对话（首次发送时生成）。
+  const { user: authUser } = useAuth();
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  /** 本次挂载是否已完成自动恢复/用户已显式操作——之后不再自动抢焦点 */
+  const resumeSettledRef = React.useRef(false);
+  /** 服务端会话上下文（含持久化的 conversation_id），供自动恢复读取 */
+  const sessionCtxRef = React.useRef<any>(null);
   /** 当前展开的历史轮次：打开白板时优先用这一轮的 sources */
   const [historyFocusId, setHistoryFocusId] = useState<string | null>(null);
   const [input, setInput] = useState('');
@@ -231,6 +241,7 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     setSessionError(null);
     try {
       const data = await getTutorSession(sid);
+      sessionCtxRef.current = data.context || null;
       setMaterials(data.materials || []);
       setScopeLabel(data.scope?.label || '');
       setScopeInvalid(data.scope?.invalid || []);
@@ -266,11 +277,86 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     }
   }, []);
 
+  /** 载入一个历史会话到主聊天区（历史抽屉点击 / 自动恢复共用）。
+      当前节点与"建议下一步"保持不变——会话原主题 ≠ 当前学习节点。 */
+  const openConversation = useCallback(async (convId: string) => {
+    if (!subjectId || !convId) return;
+    setHistoryLoading(true);
+    try {
+      const rows = await listTurns(subjectId, 60, undefined, convId);
+      setMessages(historyToMessages(Array.isArray(rows) ? rows : []));
+      setConversationId(convId);
+      setHistoryFocusId(null);
+      setHistoryOpen(false);
+      stickToBottomRef.current = true;
+      // 草稿残留清理：若草稿内容与该会话最后一条已发送消息相同，
+      // 说明它是发送前的旧拷贝（键随会话生成而迁移），不是未发送草稿。
+      const uid = authUser?.id || 'anon';
+      const dk = 'ui.tutor.draft:' + uid + ':' + subjectId + ':' + convId;
+      const nk = 'ui.tutor.draft:' + uid + ':' + subjectId + ':new';
+      const lastUser = [...(rows || [])].reverse().find((t) => t.user_message);
+      const draft = localStorage.getItem(dk) || localStorage.getItem(nk) || '';
+      if (draft && lastUser && draft.trim() === String(lastUser.user_message).trim()) {
+        localStorage.removeItem(dk);
+        localStorage.removeItem(nk);
+      }
+    } catch {
+      antdMessage.error('会话载入失败，请重试');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [subjectId, authUser]);
+
+  /** 新对话：清空主区与当前会话指针；旧记录不删除（历史里仍可选回）。 */
+  const startNewConversation = useCallback(() => {
+    resumeSettledRef.current = true;
+    setMessages([]);
+    setConversationId(null);
+    setHistoryFocusId(null);
+    setHistoryOpen(false);
+    setStages([]);
+    setPanelSources([]);
+    setPanelCitedIds([]);
+  }, []);
+
   useEffect(() => {
     if (!subjectId) return;
     loadSession(subjectId);
     loadMap(subjectId);
   }, [subjectId, loadSession, loadMap]);
+
+  // 自动恢复该学科上一次会话（仅一次；用户显式操作优先，不被覆盖）。
+  // 服务端 tutor_sessions 已持久化 conversation_id，这里只是把它接回界面。
+  useEffect(() => {
+    if (!subjectId || sessionLoading || resumeSettledRef.current) return;
+    const ctx = sessionCtxRef.current;
+    const savedConv: string = ctx?.conversation_id || '';
+    if (savedConv && !savedConv.startsWith('socratic:')) {
+      resumeSettledRef.current = true;
+      void openConversation(savedConv);
+    } else {
+      resumeSettledRef.current = true;
+    }
+  }, [subjectId, sessionLoading, openConversation]);
+
+  // 草稿隔离（2026-10-31 二版）：onChange 实时写入"用户/学科/会话"专属键
+  // （键随 conversationId 即时正确，无 effect 时序竞态）；这里只在
+  // 学科/会话变化时**读取**恢复，不代写。
+  useEffect(() => {
+    const key = 'ui.tutor.draft:' + (authUser?.id || 'anon') + ':' + subjectId + ':' + (conversationId || 'new');
+    let saved = '';
+    try { saved = localStorage.getItem(key) || ''; } catch { /* 忽略 */ }
+    setInput(saved);
+  }, [subjectId, conversationId, authUser?.id]);
+
+  const handleInputChange = useCallback((value: string) => {
+    setInput(value);
+    try {
+      const key = 'ui.tutor.draft:' + (authUser?.id || 'anon') + ':' + subjectId + ':' + (conversationId || 'new');
+      if (value) localStorage.setItem(key, value);
+      else localStorage.removeItem(key);
+    } catch { /* 忽略 */ }
+  }, [authUser?.id, subjectId, conversationId]);
 
   const loadNode = useCallback(async (sid: string, nodeId: string) => {
     if (!sid || !nodeId) { setNodeDetail(null); return; }
@@ -414,7 +500,22 @@ const includeNodeSources = useCallback(() => {
     const content = (text ?? input).trim();
     if (!content || running || !subjectId) return;
     setHistoryFocusId(null);
+    resumeSettledRef.current = true;
     const turnAbility = abilityOverride || ability;
+    // 2026-10-31：会话化——新对话在首次发送时生成会话 id（此后每轮写回同一会话）；
+    // 继续旧会话则沿用 conversationId。后端按它读历史与摘要（现有机制）。
+    let convId = conversationId;
+    if (!convId) {
+      convId = 'conv_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      setConversationId(convId);
+    }
+    // 清掉该会话的草稿（已发送）：'new' 键（发送前草稿暂存）与会话键都清
+    try {
+      const uid = authUser?.id || 'anon';
+      localStorage.removeItem('ui.tutor.draft:' + uid + ':' + subjectId + ':new');
+      localStorage.removeItem('ui.tutor.draft:' + uid + ':' + subjectId + ':' + convId);
+    } catch { /* 忽略 */ }
+    setInput('');
     stickToBottomRef.current = true;
     setInput('');
     setStages([]);
@@ -436,6 +537,7 @@ const includeNodeSources = useCallback(() => {
       guidance_mode: guidanceMode,
       doc_ids: selectedDocs,
       node_id: currentNode || null,
+      conversation_id: convId,
     }, {
       onEvent: (ev) => {
         switch (ev.type) {
@@ -543,7 +645,7 @@ const includeNodeSources = useCallback(() => {
         abortRef.current = null;
       },
     });
-  }, [input, running, subjectId, ability, guidanceMode, selectedDocs, currentNode, pushMessage, updateLast, loadMap, loadNode]);
+  }, [input, running, subjectId, ability, guidanceMode, selectedDocs, currentNode, conversationId, authUser, pushMessage, updateLast, loadMap, loadNode]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -587,8 +689,11 @@ const includeNodeSources = useCallback(() => {
     setHistoryOpen(true);
     setHistoryLoading(true);
     try {
-      const rows = await listTurns(subjectId, 50);
-      setHistory(Array.isArray(rows) ? rows : []);
+      // 2026-10-31：拉**会话列表**（按 conversation_id 聚合）+ 旧散轮（只读）
+      const { conversations: convs, loose_turns: loose } =
+        await listTutorConversations(subjectId, 50);
+      setHistory(convs);
+      setLooseTurns(loose);
     } catch {
       antdMessage.error('历史记录加载失败');
     } finally {
@@ -1108,7 +1213,7 @@ const includeNodeSources = useCallback(() => {
           <div className="tutor-composer">
             <TextArea
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => handleInputChange(e.target.value)}
               onCompositionStart={() => { composingRef.current = true; }}
               onCompositionEnd={() => { composingRef.current = false; }}
               onPressEnter={(e) => {
@@ -1154,76 +1259,104 @@ const includeNodeSources = useCallback(() => {
         subjectId={subjectId}
       />
 
-      {/* 历史记录：复用后端 /tutor/turns（此前只有接口、学生端没有入口） */}
+      {/* 历史：可继续的**会话列表**（2026-10-31）。点击载入主聊天区并写回同一会话；
+          旧格式散轮（无会话归属）单独列出、明确标只读——可查看不可续聊，不假装支持。 */}
       <Drawer
-        title="历史记录"
+        title="历史对话"
         width={440}
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
+        styles={{ body: { padding: '12px 16px' } }}
       >
+        <Button type="primary" block icon={<PlusOutlined />} style={{ marginBottom: 12 }}
+                onClick={startNewConversation}>
+          新对话
+        </Button>
         {historyLoading ? (
           <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
-        ) : history.length === 0 ? (
-          <Text type="secondary">还没有历史记录。提问、出题或做练习之后，这里会留下记录。</Text>
+        ) : history.length === 0 && looseTurns.length === 0 ? (
+          <Text type="secondary">这个学科还没有会话。提问、出题或做练习之后，这里会留下记录。</Text>
         ) : (
-          <Collapse
-            accordion
-            onChange={(key) => setHistoryFocusId(key ? String(key) : null)}
-            items={history.map((t) => ({
-              key: String(t.id),
-              label: (
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ fontWeight: 500, whiteSpace: 'normal', flex: 1, minWidth: 0 }}>
-                      {t.user_message || '（这一轮没有提问内容）'}
-                    </div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {String(t.created_at || '').replace('T', ' ').slice(0, 16)}
-                    {t.ability ? ' · ' + (ABILITY_LABELS[t.ability] || t.ability) : ''}
-                    </Text>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {history.map((c) => (
+              <button key={c.conversation_id} type="button"
+                      onClick={() => void openConversation(c.conversation_id)}
+                      style={{
+                        textAlign: 'left', cursor: 'pointer', width: '100%',
+                        border: '1px solid var(--color-border-light, #eef1f5)', borderRadius: 10,
+                        background: '#fff', padding: '10px 12px',
+                      }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                  <div style={{ fontWeight: 550, color: 'var(--color-text)', flex: 1, minWidth: 0,
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {c.title}
                   </div>
-                  <Button
-                    type="text"
-                    size="small"
-                    danger
-                    icon={<DeleteOutlined />}
-                    style={{ marginLeft: 'auto' }}
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      try {
-                        await deleteTurn(t.id);
-                        setHistory((prev) => prev.filter((x) => x.id !== t.id));
-                        antdMessage.success('已删除这条记录');
-                      } catch {
-                        antdMessage.error('删除失败');
-                      }
-                    }}
-                  >删除</Button>
+                  <Text type="secondary" style={{ fontSize: 11, flexShrink: 0 }}>
+                    {String(c.last_at || '').replace('T', ' ').slice(5, 16)}
+                  </Text>
                 </div>
-              ),
-              children: (
-                <div>
-                  {t.answer
-                    ? <MarkdownText text={t.answer} />
-                    : <Text type="secondary">这一轮没有留下回答（可能已取消或失败）。</Text>}
-                  {t.answer && (
-                    <Button
-                      size="small" type="primary" ghost icon={<HighlightOutlined />}
-                      style={{ marginTop: 12 }}
-                      onClick={() => {
-                        setHistoryFocusId(String(t.id));
-                        void openWhiteboard(String(t.id));
-                      }}
-                    >
-                      用这轮资料打开白板
-                    </Button>
-                  )}
+                <div style={{ marginTop: 3, fontSize: 12, color: 'var(--color-text-secondary)',
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {c.preview || '（无预览）'}
                 </div>
-              ),
-            }))}
-          />
+                <div style={{ marginTop: 3, fontSize: 11, color: 'var(--color-text-muted)' }}>
+                  {c.turns} 轮对话
+                </div>
+              </button>
+            ))}
+            {looseTurns.length > 0 && (
+              <>
+                <div style={{ marginTop: 8, marginBottom: 2 }}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>早期记录（旧格式 · 只读）</Text>
+                </div>
+                <Collapse
+                  ghost size="small"
+                  onChange={(key) => setHistoryFocusId(key ? String(key) : null)}
+                  items={looseTurns.map((t) => ({
+                    key: String(t.id),
+                    label: (
+                      <div style={{ minWidth: 0, display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                        <div style={{ fontWeight: 400, whiteSpace: 'normal', flex: 1, minWidth: 0, fontSize: 13 }}>
+                          {t.user_message || '（这一轮没有提问内容）'}
+                        </div>
+                        <Text type="secondary" style={{ fontSize: 11, flexShrink: 0 }}>
+                          {String(t.created_at || '').replace('T', ' ').slice(0, 16)}
+                        </Text>
+                      </div>
+                    ),
+                    children: (
+                      <div>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          早期记录：只读查看，不支持继续对话（新消息请开新对话或选择上方会话）。
+                        </Text>
+                        <div style={{ marginTop: 8 }}>
+                          {t.answer
+                            ? <MarkdownText text={t.answer} />
+                            : <Text type="secondary">这一轮没有留下回答。</Text>}
+                        </div>
+                        {t.answer && (
+                          <Button
+                            size="small" type="primary" ghost icon={<HighlightOutlined />}
+                            style={{ marginTop: 12 }}
+                            onClick={() => {
+                              setHistoryFocusId(String(t.id));
+                              void openWhiteboard(String(t.id));
+                            }}
+                          >
+                            用这轮资料打开白板
+                          </Button>
+                        )}
+                      </div>
+                    ),
+                  }))}
+                />
+              </>
+            )}
+          </div>
         )}
       </Drawer>
+
+      {/* 右栏默认收起
 
       {/* 右栏默认收起：关闭后不渲染任何占位列，主区自动占满。
           宽屏才内嵌并排；1366px 及以下改为覆盖式抽屉，避免把正文挤窄。 */}

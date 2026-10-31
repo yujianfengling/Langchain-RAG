@@ -347,11 +347,13 @@ def get_turn(turn_id: str, user_id: Optional[str] = None) -> Optional[Dict[str, 
 
 
 def list_turns(user_id: str, subject_id: Optional[str] = None,
-               limit: int = 30, node_id: Optional[str] = None) -> List[Dict[str, Any]]:
+               limit: int = 30, node_id: Optional[str] = None,
+               conversation_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """列出历史轮次。
 
     node_id 给定时只返回**该知识点**的轮次——学生点某个知识点时，右侧要显示
     它以前讲过什么，而不是整个学科的所有记录。
+    conversation_id 给定时只返回该会话的轮次（"继续这个会话"用，2026-10-31）。
     """
     fields = ("id, subject_id, conversation_id, node_id, ability, status, user_message,"
               " answer, created_at, finished_at")
@@ -363,6 +365,9 @@ def list_turns(user_id: str, subject_id: Optional[str] = None,
     if node_id:
         where.append("node_id=?")
         args.append(node_id)
+    if conversation_id:
+        where.append("conversation_id=?")
+        args.append(conversation_id)
     args.append(int(limit))
     conn = _get_db()
     try:
@@ -403,6 +408,69 @@ def is_cancelled(turn_id: str) -> bool:
     return bool(row["cancel_requested"]) or row["status"] == STATE_CANCELLED
 
 
+def list_conversations(user_id: str, subject_id: str,
+                       limit: int = 50) -> List[Dict[str, Any]]:
+    """按会话聚合历史轮次（2026-10-31，历史抽屉改为"可继续的会话列表"）。
+
+    只聚合 conversation_id 非空的轮次（新逻辑显式管理会话）；
+    旧的无会话散轮由调用方单独列出并标为只读——它们可以查看但不能续聊，
+    如实标示，不假装支持。
+
+    Returns: [{conversation_id, turns, title, preview, last_at, started_at}]，
+             按最近活跃倒序。title/preview 取会话最早一条用户消息。
+    """
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            """SELECT conversation_id, COUNT(*) AS turns,
+                      MAX(updated_at) AS last_at, MIN(created_at) AS started_at
+               FROM tutor_turns
+               WHERE user_id=? AND subject_id=?
+                 AND conversation_id IS NOT NULL AND conversation_id != ''
+               GROUP BY conversation_id
+               ORDER BY last_at DESC LIMIT ?""",
+            (user_id, subject_id, int(limit))).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            first = conn.execute(
+                """SELECT user_message, answer FROM tutor_turns
+                   WHERE user_id=? AND subject_id=? AND conversation_id=?
+                   ORDER BY created_at ASC LIMIT 1""",
+                (user_id, subject_id, r["conversation_id"])).fetchone()
+            title_src = (first["user_message"] if first else "") or (first["answer"] if first else "") or ""
+            out.append({
+                "conversation_id": r["conversation_id"],
+                "turns": int(r["turns"]),
+                "last_at": r["last_at"],
+                "started_at": r["started_at"],
+                "title": title_src.strip()[:60] or "（无标题会话）",
+                "preview": title_src.strip()[:120],
+            })
+        return out
+    finally:
+        conn.close()
+
+
+def list_loose_turns(user_id: str, subject_id: str, limit: int = 30) -> List[Dict[str, Any]]:
+    """无会话归属的散轮（旧格式：direct 模式早期记录 / 旧 chat 导入）。
+
+    它们只读可查看；列表界面要明确标示"早期记录"，不能伪装成可续聊会话。
+    """
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            """SELECT id, subject_id, node_id, ability, status, user_message,
+                      answer, created_at, finished_at
+               FROM tutor_turns
+               WHERE user_id=? AND subject_id=?
+                 AND (conversation_id IS NULL OR conversation_id = '')
+               ORDER BY created_at DESC LIMIT ?""",
+            (user_id, subject_id, int(limit))).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
 def delete_turn(turn_id: str, user_id: str) -> bool:
     """删除一条历史轮次（连同它的事件）。
 
@@ -435,5 +503,6 @@ __all__ = [
     "STATE_RUNNING", "STATE_SUCCEEDED", "STATE_FAILED", "STATE_CANCELLED",
     "TERMINAL_STATES", "default_context", "load_context", "save_context", "update_context",
     "set_material_scope", "create_turn", "delete_turn", "append_event", "list_events", "finish_turn",
-    "get_turn", "list_turns", "request_cancel", "is_cancelled", "DB_PATH",
+    "get_turn", "list_turns", "list_conversations", "list_loose_turns",
+    "request_cancel", "is_cancelled", "DB_PATH",
 ]

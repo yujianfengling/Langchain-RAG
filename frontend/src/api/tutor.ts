@@ -199,11 +199,26 @@ export const getTurn = async (turnId: string, afterSeq = 0): Promise<any> => {
   return res?.data ?? res;
 };
 
-export const listTurns = async (subjectId?: string, limit = 30, nodeId?: string): Promise<any[]> => {
+export const listTurns = async (subjectId?: string, limit = 30, nodeId?: string,
+                                conversationId?: string): Promise<any[]> => {
   const res: any = await apiClient.get('/tutor/turns', {
-    params: { subject_id: subjectId, limit, node_id: nodeId },
+    params: {
+      subject_id: subjectId, limit, node_id: nodeId,
+      conversation_id: conversationId || undefined,
+    },
   });
   return (res?.data ?? res)?.turns ?? [];
+};
+
+/** 历史抽屉的会话列表（2026-10-31）：按 conversation_id 聚合 + 旧散轮标只读 */
+export const listTutorConversations = async (
+  subjectId: string, limit = 50,
+): Promise<{ conversations: any[]; loose_turns: any[] }> => {
+  const res: any = await apiClient.get('/tutor/conversations', {
+    params: { subject_id: subjectId, limit },
+  });
+  const data = (res?.data ?? res) || {};
+  return { conversations: data.conversations || [], loose_turns: data.loose_turns || [] };
 };
 
 export const listQuestionsForPoint = async (
