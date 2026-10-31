@@ -1816,6 +1816,7 @@ def _run_job_locked(job_id: str, executor_id: str,
                     "vision_cached": int(vision_stats.get("vision_cached") or 0),
                     "vision_failed": int(vision_stats.get("vision_failed") or 0),
                     "vision_timeout": int(vision_stats.get("vision_timeout") or 0),
+                    "vision_skipped": int(vision_stats.get("vision_skipped") or 0),
                     "images_total": int(vision_stats.get("images_total") or 0),
                     "images_deduped": int(vision_stats.get("images_deduped") or 0),
                     # 本地 OCR（2026-10-28）：扫描件页数与引擎，便于解释耗时

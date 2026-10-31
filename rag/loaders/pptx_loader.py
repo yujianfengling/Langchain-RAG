@@ -354,7 +354,10 @@ class PptxLoader(BaseLoader):
                 },
             )
         finally:
-            if temp_created:
+            # 2026-10-31 正文先行：defer 模式必须保留图片目录——deferred 图的
+            # image_path 指向这里，任务收尾删除会导致后台增强"文件丢失"全跳过
+            # （实测 persisted=0）。目录由导入服务在后台增强完成后清理。
+            if temp_created and not self._defer_vision:
                 shutil.rmtree(image_dir, ignore_errors=True)
 
 

@@ -54,6 +54,10 @@ _TARGET_FORMAT_CODES = {
     ".pptx": ("powerpoint", 24),  # ppSaveAsOpenXMLPresentation
     ".doc": ("word", 0),          # wdFormatDocument（旧 .doc）
     ".docx": ("word", 12),        # wdFormatXMLDocument
+    # 2026-10-31：.ppt/.pptx → .pdf（页面索引原页导出必需）。
+    # PowerPoint 的 SaveAs 不支持 PDF 格式码，实际导出走 ExportAsFixedFormat；
+    # 这里的 32（ppSaveAsPDF）只作为映射占位与校验标记。
+    ".pdf": ("powerpoint_pdf", 32),
 }
 _POWERPOINT_EXTS = (".ppt", ".pptx")
 _WORD_EXTS = (".doc", ".docx")
@@ -425,17 +429,31 @@ def _com_worker(src_path: Path, out_path: Path, target: str,
 
         family = _TARGET_FORMAT_CODES[target][0]
         fmt = _TARGET_FORMAT_CODES[target][1]
-        if family == "powerpoint":
+        if family == "powerpoint_pdf":
+            # 2026-10-31：PDF 导出必须用 ExportAsFixedFormat（SaveAs 不收 PDF 码）
+            app = win32com.client.DispatchEx("PowerPoint.Application")
+            _com_set_quiet(app)
+            doc = app.Presentations.Open(str(src_path), ReadOnly=True, WithWindow=False)
+            # ExportAsFixedFormat 是 Presentation 的方法（win32com 动态派发），
+            # 参数必须传原生 str，不能传 Path 对象（实测会被 COM 拒绝）。
+            # ExportAsFixedFormat 用 win32com 动态派发时第二个参数（枚举）会
+            # 触发 "The Python instance can not be converted to a COM object"——
+            # 改用 SaveAs + ppSaveAsPDF(32) 的替代路径：PowerPoint 2010+ 的
+            # SaveAs 实际支持 32。此处按 SaveAs 走，失败再回退 Export。
+            doc.SaveAs(str(out_path), 32)  # 32 = ppSaveAsPDF
+            result["ok"] = True
+        elif family == "powerpoint":
             app = win32com.client.DispatchEx("PowerPoint.Application")
             _com_set_quiet(app)
             doc = app.Presentations.Open(str(src_path), ReadOnly=True, WithWindow=False)
             doc.SaveAs(str(out_path), fmt)
+            result["ok"] = True
         else:
             app = win32com.client.DispatchEx("Word.Application")
             _com_set_quiet(app)
             doc = app.Documents.Open(str(src_path), ReadOnly=True)
             doc.SaveAs2(str(out_path), FileFormat=fmt)
-        result["ok"] = True
+            result["ok"] = True
     except Exception as e:  # COM 异常种类繁杂，统一结构化上报
         result["error"] = e
     finally:
