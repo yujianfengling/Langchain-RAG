@@ -377,7 +377,11 @@ const MaterialsPage: React.FC = () => {
         const pending = (d?.today_tasks?.length || 0)
           + (d?.overdue_tasks?.length || 0)
           + (d?.pending_reviews?.length || 0);
-        progressText = kp ? '继续：' + kp : pending > 0 ? pending + ' 项待完成' : '尚未开始';
+        // 2026-10-31：只有**可靠**的学习节点才作为"继续"依据；
+        // 归属不可靠的点位（界面显示"待确认"）不泄漏到卡片上，按未开始处理。
+        progressText = kp && kp !== '待确认'
+          ? '继续：' + kp
+          : pending > 0 ? pending + ' 项待完成' : '尚未开始';
       } catch {
         // 学习进度读取失败不影响资料卡片本身
       }
@@ -734,74 +738,62 @@ const MaterialsPage: React.FC = () => {
           </Empty>
         </Card>
       ) : (
-        <List
-          className="material-grid"
-          grid={{ gutter: 16, xs: 1, sm: 2, lg: 3 }}
-          dataSource={cards}
-          renderItem={(item) => {
+        /* 2026-10-31：CSS Grid 自适应列（300px 基准，随宽度增减列数），
+           卡片等宽等高、三区结构固定——参照 Notion Gallery 的统一卡片与
+           IBM Carbon 的同组对齐原则；不新增 UI 依赖。 */
+        <div className="material-grid">
+          {cards.map((item) => {
             const active = item.subject_id === selectedId;
+            const hasProgress = item.progressText.startsWith('继续：');
             return (
-              <List.Item>
-                <Card
-                  className={'material-subject-card' + (active ? ' is-active' : '')}
-                  onClick={() => setSelectedId(item.subject_id)}
-                >
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-                    <div className="material-card-icon">
-                      {item.source === 'course' ? <TeamOutlined /> : <UserOutlined />}
-                    </div>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div className="material-card-title" title={item.name}>{item.name}</div>
-                      {/* 2026-10-31 减法：类型从彩色 Tag 降为灰字，与班级/教师同行 */}
-                      <Space size={4} wrap style={{ marginTop: 5 }}>
-                        <Text type="secondary" style={{ fontSize: 12 }}>
-                          {item.source === 'course' ? '课程' : '个人'}
-                          {item.className ? ' · ' + item.className : ''}
-                          {item.teacherName ? ' · ' + item.teacherName : ''}
-                        </Text>
-                      </Space>
-                    </div>
+              <Card
+                key={item.subject_id}
+                className={'material-subject-card' + (active ? ' is-active' : '')}
+                onClick={() => setSelectedId(item.subject_id)}
+              >
+                {/* 顶部：图标 + 名称（最多两行，悬停看全名）+ 类型标识 */}
+                <div className="material-card-head">
+                  <div className="material-card-icon">
+                    {item.source === 'course' ? <TeamOutlined /> : <UserOutlined />}
                   </div>
+                  <div className="material-card-title" title={item.name}>{item.name}</div>
+                </div>
+                <div className="material-card-type">
+                  {item.source === 'course' ? '课程' : '个人'}
+                  {item.className ? ' · ' + item.className : ''}
+                  {item.teacherName ? ' · ' + item.teacherName : ''}
+                </div>
 
-                  {/* 只展示用户自己写的描述。原先没有描述时会塞一句通用口号
-                      （"上传自己的资料，建立专属知识库"），每张卡片都一样，
-                      纯占高度不传递信息（2026-10-30 精简）。 */}
-                  {item.description && (
-                    <Paragraph type="secondary" ellipsis={{ rows: 2 }} className="material-card-description">
-                      {item.description}
-                    </Paragraph>
-                  )}
+                {/* 中部：真实数量 + 建库状态 + 可选一行最近学习 */}
+                <div className="material-card-meta">
+                  <span>{item.docCount === null ? '资料数量读取中' : '资料 ' + item.docCount + ' 份'}</span>
+                  <KbStatusTag state={item.state} />
+                </div>
+                <div className="material-card-progress" title={item.progressText}>{item.progressText}</div>
 
-                  <div className="material-card-meta">
-                    <span>{item.docCount === null ? '资料数量读取中' : '资料 ' + item.docCount + ' 份'}</span>
-                    <KbStatusTag state={item.state} />
-                  </div>
-
-                  <div className="material-card-progress" title={item.progressText}>{item.progressText}</div>
-
-                  <div className="material-card-actions">
-                    <Button
-                      type="primary"
-                      icon={<ReadOutlined />}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        navigate('/student?subject=' + encodeURIComponent(item.subject_id));
-                      }}
-                    >
-                      {item.progressText === '尚未开始' ? '开始学习' : '继续学习'}
-                    </Button>
-                    <Button
-                      type="text"
-                      onClick={(e) => { e.stopPropagation(); setSelectedId(item.subject_id); }}
-                    >
-                      管理资料
-                    </Button>
-                  </div>
-                </Card>
-              </List.Item>
+                {/* 底部：对齐的主次操作 */}
+                <div className="material-card-actions">
+                  <Button
+                    type="primary"
+                    icon={<ReadOutlined />}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate('/student?subject=' + encodeURIComponent(item.subject_id));
+                    }}
+                  >
+                    {hasProgress ? '继续学习' : '开始学习'}
+                  </Button>
+                  <Button
+                    type="text"
+                    onClick={(e) => { e.stopPropagation(); setSelectedId(item.subject_id); }}
+                  >
+                    管理资料
+                  </Button>
+                </div>
+              </Card>
             );
-          }}
-        />
+          })}
+        </div>
       )}
 
       {selectedId && selectedCard && (
@@ -815,6 +807,12 @@ const MaterialsPage: React.FC = () => {
           )}
           extra={<Button type="text" icon={<ReloadOutlined />} onClick={() => loadDetail(selectedId)}>刷新</Button>}
         >
+          {/* 学科描述移入详情（卡片不再因描述长短错位） */}
+          {selectedCard.description && (
+            <Paragraph type="secondary" style={{ margin: '0 0 10px' }} className="material-detail-description">
+              {selectedCard.description}
+            </Paragraph>
+          )}
           {detailError && (
             <Alert
               type="error" showIcon style={{ marginBottom: 10 }}

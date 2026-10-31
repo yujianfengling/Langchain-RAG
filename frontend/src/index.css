@@ -269,17 +269,36 @@ button, input, textarea, select { font: inherit; }
 .ant-dropdown-menu-title-content { font-size: 13px; }
 
 /* 资料卡片 */
-.material-grid .ant-list-item { display: flex; margin: 0 !important; padding: 0 !important; }
-.material-subject-card { position: relative; width: 100%; min-height: 236px; }
-.material-subject-card::before { display: none; }
-.material-subject-card.is-active { border-color: var(--color-primary-lighter) !important; box-shadow: 0 0 0 2px var(--color-border-focus) !important; }
-.material-subject-card .ant-card-body { display: flex; flex-direction: column; gap: 12px; height: 100%; }
-.material-card-icon { width: 34px; height: 34px; flex-shrink: 0; display: grid; place-items: center; color: var(--color-text-muted); font-size: 17px; }
-.material-card-title { overflow: hidden; color: var(--color-text); font-size: 16px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.material-card-description { margin: 0 !important; color: var(--color-text-secondary) !important; font-size: 13px !important; }
+/* ==================== 资料库学科卡片（2026-10-31 网格化） ====================
+   CSS Grid 自适应列（300px 基准），同行等高（grid-auto-rows: 1fr）；
+   卡片内部三区固定：head（图标+两行标题）/ 中部（数量+状态+最近学习）/
+   actions（margin-top:auto 对齐底部）。结构对齐参照 Notion Gallery 的
+   统一卡片与 IBM Carbon 的同组对齐原则。 */
+.material-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+  grid-auto-rows: 1fr;
+}
+.material-grid .material-subject-card { height: 100%; }
+.material-subject-card { position: relative; }
+.material-subject-card > .ant-card-body {
+  display: flex; flex-direction: column; gap: 10px;
+  height: 100%; padding: 16px 16px 14px;
+}
+.material-subject-card.is-active { border-color: var(--color-primary) !important; box-shadow: 0 0 0 1px var(--color-primary) !important; }
+.material-card-head { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.material-card-icon { width: 30px; height: 30px; flex-shrink: 0; display: grid; place-items: center; color: var(--color-text-muted); font-size: 16px; }
+.material-card-title {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden; color: var(--color-text); font-size: 15px; font-weight: 600;
+  line-height: 1.35; word-break: break-word; min-height: 2.7em;
+}
+.material-card-type { color: var(--color-text-secondary); font-size: 12px; }
 .material-card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--color-text-secondary); font-size: 12px; }
 .material-card-progress { overflow: hidden; color: var(--color-text-secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.material-card-actions { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 4px; }
+.material-card-actions { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 6px; }
+.material-detail-description { color: var(--color-text-secondary); font-size: 13px; }
 .material-detail { margin-top: 24px !important; }
 .material-doc-name { min-width: 0; max-width: min(360px, 34vw) !important; }
 
