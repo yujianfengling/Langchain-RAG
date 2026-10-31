@@ -951,6 +951,11 @@ def _jsonable(value: Any) -> Any:
 def _save_docs_cache(content_sha: str, parse_config: str, docs: List[Any]) -> None:
     if not content_sha or not docs:
         return
+    # 2026-10-31 正文先行：含 deferred 图片的文档集不进解析缓存——
+    # 图片内容由后台增强后增量补入；缓存了会导致重复导入复用"缺图片"的版本。
+    if any((getattr(d, "metadata", {}) or {}).get("vision_status") == "deferred"
+           for d in docs):
+        return
     try:
         payload = [{"page_content": getattr(d, "page_content", "") or "",
                     "metadata": _jsonable(getattr(d, "metadata", {}) or {})}
@@ -1509,6 +1514,8 @@ def _run_job_locked(job_id: str, executor_id: str,
     archive_summaries: List[Dict[str, Any]] = []
     tmp_job_dir = _import_tmp_root() / job_id
     tmp_job_dir.mkdir(parents=True, exist_ok=True)
+    # 2026-10-31 正文先行：deferred 图片文档（建库发布成功后统一增强补入）
+    deferred_vision_docs: List[Any] = []
     stage_timings: Dict[str, Any] = {"extract_ms": 0, "parse_ms": 0,
                                      "build_ms": 0, "vision_ms": 0, "total_ms": 0}
     _mem_start()
@@ -1769,6 +1776,16 @@ def _run_job_locked(job_id: str, executor_id: str,
                 stage_timings["vision_ms"] += int(vision_stats.get("vision_ms") or 0)
                 stage_timings["ocr_ms"] = int(stage_timings.get("ocr_ms") or 0) + int(
                     ocr_stats.get("elapsed_ms") or 0)
+                # 2026-10-31 正文先行：deferred 图片文档移出正文流（不进切分/建库），
+                # 收集（含 image_path）待建库发布成功后统一增强并增量补入索引。
+                _still_deferred = [
+                    _d for _d in (docs or [])
+                    if (getattr(_d, "metadata", {}) or {}).get("vision_status") == "deferred"]
+                had_deferred_this_item = bool(_still_deferred)
+                if _still_deferred:
+                    deferred_vision_docs.extend(_still_deferred)
+                    docs = [_d for _d in docs
+                            if (getattr(_d, "metadata", {}) or {}).get("vision_status") != "deferred"]
                 timings = {
                     "parse_ms": int(meta.get("parse_ms") or 0),
                     "vision_ms": int(vision_stats.get("vision_ms") or 0),
@@ -1825,7 +1842,9 @@ def _run_job_locked(job_id: str, executor_id: str,
                     _rewrite_metadata(docs, decision["name"], final_path)
                     parsed_docs.extend(docs)
                     ready_names.add(decision["name"])
-                    if src_sha:
+                    if src_sha and not had_deferred_this_item:
+                        # 正文先行：deferred 批不进解析缓存（图片内容由后台补齐后
+                        # 会写入视觉缓存；下次导入图片经缓存快扫可完整入库）
                         _save_docs_cache(src_sha, parse_cfg, docs)
                     _fence_guard()
                     doc_id, _mid = _register_material(subject_id, decision["name"],
@@ -1954,6 +1973,12 @@ def _run_job_locked(job_id: str, executor_id: str,
                     # 只有本批恰好一份资料时，才能把总 chunk 数如实归到该条目
                     if len(new_indexing) == 1 and isinstance(chunk_count, int):
                         _merge_item_timings(new_indexing[0], {"chunks": chunk_count})
+                    # 2026-10-31 正文先行：本批含 deferred 图片时，建库完成后
+                    # 立即调度后台增强与增量补入（每批一次，不重复调度）。
+                    if deferred_vision_docs:
+                        _schedule_deferred_vision(job_id, subject_id,
+                                                  list(deferred_vision_docs), warnings)
+                        deferred_vision_docs.clear()
                 else:
                     stage_timings["build_ms"] += int((time.monotonic() - t_build) * 1000)
                 del all_docs, parsed_docs
@@ -2010,6 +2035,54 @@ def _invalidate_replaced_pages(subject_id: str, file_name: str) -> None:
         page_index.delete_document_pages(subject_id, file_name=file_name)
     except Exception as e:
         logger.debug(f"替换资料时清理页面索引失败（不影响替换）: {e}")
+
+
+def _schedule_deferred_vision(job_id: str, subject_id: str,
+                              docs: List[Any], warnings: List[str]) -> None:
+    """正文先行（2026-10-31）：后台统一增强 deferred 图片并增量补入索引。
+
+    - 建库发布成功后调度：此时正文已可检索；图片增强与 Embedding 已结束，
+      不再争抢本地 CPU，主要受远程视觉 API 限流约束（VISION_MAX_CONCURRENCY）。
+    - 完成后用 add_documents_to_store 增量补入（BM25/FAISS 同步失效与追加），
+      只补入有内容的图片文档（skipped/失败的不入库，与同步链路口径一致）。
+    - 任何失败只记日志与任务告警，绝不影响已可学习的正文。
+    """
+    if not docs:
+        return
+    count = len(docs)
+    warnings.append(
+        f"{count} 张图片待后台视觉增强（正文已可学习；增强完成后自动补入）")
+    logger.info(f"[import][deferred-vision] {job_id}: {count} 张图片后台增强开始")
+
+    def _worker() -> None:
+        started = _monotonic()
+        enriched: List[Any] = []
+        try:
+            from rag.enrichment.multimodal_enricher import MultimodalEnricher
+            enricher = MultimodalEnricher()
+            enriched = enricher.enrich_images(docs)
+            stats = dict(getattr(enricher, "last_stats", {}) or {})
+            usable = [d for d in enriched
+                      if (getattr(d, "page_content", "") or "").strip()
+                      and (getattr(d, "metadata", {}) or {}).get("is_content") is not False]
+            added = 0
+            if usable:
+                from rag.vector_store import add_documents_to_store
+                result = add_documents_to_store(usable, subject_id)
+                added = int(result.get("added") or 0)
+            elapsed = _monotonic() - started
+            logger.info(
+                f"[import][deferred-vision] {job_id}: 完成 {elapsed:.0f}s，"
+                f"total={stats.get('images_total')} calls={stats.get('vision_calls')} "
+                f"failed={stats.get('vision_failed')} skipped={stats.get('vision_skipped')} "
+                f"补入索引={added}")
+        except Exception as e:
+            logger.error(
+                f"[import][deferred-vision] {job_id}: 后台图片增强失败"
+                f"（正文不受影响，重传/重建可补齐）: {e}", exc_info=True)
+
+    threading.Thread(target=_worker, name=f"deferred-vision-{job_id}",
+                     daemon=True).start()
 
 
 def _schedule_page_index_after_import(job_id: str, subject_id: str) -> None:

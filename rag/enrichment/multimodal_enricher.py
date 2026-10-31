@@ -392,6 +392,44 @@ class MultimodalEnricher:
             f"concurrency={_vision_max_concurrency()}")
         return [results.get(i, image_docs[i]) for i in range(len(image_docs))]
 
+    def fill_images_from_cache(self, image_docs: List[Any]) -> List[Any]:
+        """只查持久化缓存、绝不调用视觉 API（2026-10-31 导入提速）。
+
+        用途：导入"正文先行"链路——缓存命中的图片立即带内容入库（0 API 成本），
+        未命中的保持 deferred 交由后台增强后增量补入。
+        命中且判定非内容的图照旧标 skipped（不入库）。
+        """
+        for doc in image_docs:
+            image_path = self._extract_image_path(doc)
+            doc.metadata["vision_status"] = "deferred"
+            if not image_path:
+                continue
+            path_obj = Path(image_path)
+            try:
+                if path_obj.exists() and path_obj.stat().st_size < _min_content_image_bytes():
+                    doc.metadata["vision_status"] = "skipped"
+                    doc.metadata["vision_skip_reason"] = "tiny_image"
+                    doc.metadata["is_content"] = False
+                    continue
+            except OSError:
+                continue
+            cached = self._load_from_cache(self._compute_cache_key(path_obj), path_obj)
+            if not cached:
+                continue
+            meta = cached.get("metadata", {}) or {}
+            if meta.get("is_content") is False:
+                doc.metadata["vision_status"] = "skipped"
+                doc.metadata["vision_skip_reason"] = "not_content"
+                doc.metadata["is_content"] = False
+                continue
+            doc.page_content = cached.get("page_content", "") or ""
+            doc.metadata["description"] = meta.get("description", "")
+            doc.metadata["ocr_text"] = meta.get("ocr_text", "")
+            doc.metadata["provider_used"] = meta.get("provider_used") or "qwen-vision"
+            doc.metadata["model_used"] = meta.get("model_used") or "qwen-vl-plus"
+            doc.metadata["vision_status"] = "cached"
+        return image_docs
+
     def enrich_images(self, documents: List[Any]) -> List[Any]:
         """公共入口：对**图片文档**批量增强（去重+并发+单张超时）；非图片原样返回。"""
         if not documents:

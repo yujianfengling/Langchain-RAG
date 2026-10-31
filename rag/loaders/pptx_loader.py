@@ -82,10 +82,19 @@ class PptxLoader(BaseLoader):
     """PowerPoint (.pptx) 加载器"""
 
     def __init__(self, enricher: Any = None, image_output_dir: Optional[str] = None,
-                 enrich_images: bool = True):
+                 enrich_images: bool = True, defer_vision: bool = False):
         self._enricher = enricher
         self._image_output_dir = image_output_dir
         self._enrich_images = enrich_images
+        # 2026-10-31 导入提速：defer_vision=正文先行——文本页立即返回，
+        # 图片只做"缓存快扫"（命中的带内容入库），未命中的标 deferred
+        # 交给导入服务在建库后统一增强并增量补入。不开启时维持旧行为。
+        # 默认由 IMPORT_VISION_DEFER 控制（默认开启；设 0/false 关闭回旧行为）。
+        if not defer_vision:
+            import os as _os
+            defer_vision = _os.getenv("IMPORT_VISION_DEFER", "1").strip().lower() not in (
+                "0", "false", "off")
+        self._defer_vision = defer_vision
 
     def supports(self, file_path: Union[str, Path]) -> bool:
         return Path(file_path).suffix.lower() == ".pptx"
@@ -290,7 +299,29 @@ class PptxLoader(BaseLoader):
             # VISION_IMAGE_TIMEOUT_SECONDS，默认 30s）。此前逐张串行，
             # 单张 40s+ 的调用会把整份课件拖到分钟级。
             vision_stats: dict = {}
-            if self._enrich_images and image_docs:
+            if self._defer_vision and image_docs:
+                # 正文先行：缓存快扫（0 API），未命中的标 deferred 留给后台增强
+                enricher = self._get_enricher()
+                if enricher is not None:
+                    try:
+                        image_docs = enricher.fill_images_from_cache(image_docs)
+                        deferred = sum(1 for d in image_docs
+                                       if (d.metadata or {}).get("vision_status") == "deferred")
+                        vision_stats = {
+                            "images_total": len(image_docs),
+                            "vision_deferred": deferred,
+                            "vision_cached": len(image_docs) - deferred,
+                        }
+                        logger.info(
+                            f"[PptxLoader] 正文先行: {len(image_docs)} 张图片，"
+                            f"缓存命中 {len(image_docs) - deferred}，待后台增强 {deferred}")
+                    except Exception as e:
+                        logger.warning(f"PPTX 缓存快扫失败，图片全部延后: {e}")
+                        for d in image_docs:
+                            d.metadata["vision_status"] = "deferred"
+                        vision_stats = {"images_total": len(image_docs),
+                                        "vision_deferred": len(image_docs)}
+            elif self._enrich_images and image_docs:
                 enricher = self._get_enricher()
                 if enricher is not None:
                     try:
