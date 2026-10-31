@@ -1516,6 +1516,7 @@ def _run_job_locked(job_id: str, executor_id: str,
     tmp_job_dir.mkdir(parents=True, exist_ok=True)
     # 2026-10-31 正文先行：deferred 图片文档（建库发布成功后统一增强补入）
     deferred_vision_docs: List[Any] = []
+    deferred_vision_dirs: set = set()
     stage_timings: Dict[str, Any] = {"extract_ms": 0, "parse_ms": 0,
                                      "build_ms": 0, "vision_ms": 0, "total_ms": 0}
     _mem_start()
@@ -1783,7 +1784,29 @@ def _run_job_locked(job_id: str, executor_id: str,
                     if (getattr(_d, "metadata", {}) or {}).get("vision_status") == "deferred"]
                 had_deferred_this_item = bool(_still_deferred)
                 if _still_deferred:
-                    deferred_vision_docs.extend(_still_deferred)
+                    deferred_vision_dirs.update(
+                        str(Path((_d.metadata or {}).get("image_path") or "").parent)
+                        for _d in _still_deferred
+                        if (_d.metadata or {}).get("image_path"))
+                    # 图片文件在 import_tmp 会被任务收尾清理——deferred 前先
+                    # 持久化到 get_data_dir()/deferred_vision/<job_id>/，并更新
+                    # image_path，否则后台增强时文件已丢失（2026-10-31 实测）。
+                    persist_dir = Path(get_data_dir()) / "deferred_vision" / job_id
+                    persist_dir.mkdir(parents=True, exist_ok=True)
+                    for _d in _still_deferred:
+                        deferred_vision_docs.append(_d)
+                        src_img = (_d.metadata or {}).get("image_path")
+                        if src_img and Path(src_img).exists():
+                            dst_img = persist_dir / (
+                                f"{len(deferred_vision_docs):04d}_"
+                                + Path(src_img).name)
+                            try:
+                                shutil.copy2(src_img, dst_img)
+                                _d.metadata["image_path"] = str(dst_img)
+                            except OSError as e:
+                                logger.warning(
+                                    f"deferred 图片持久化失败，该图将跳过增强: {e}")
+                                _d.metadata["image_path"] = ""
                     docs = [_d for _d in docs
                             if (getattr(_d, "metadata", {}) or {}).get("vision_status") != "deferred"]
                 timings = {
@@ -1976,9 +1999,11 @@ def _run_job_locked(job_id: str, executor_id: str,
                     # 2026-10-31 正文先行：本批含 deferred 图片时，建库完成后
                     # 立即调度后台增强与增量补入（每批一次，不重复调度）。
                     if deferred_vision_docs:
-                        _schedule_deferred_vision(job_id, subject_id,
-                                                  list(deferred_vision_docs), warnings)
+                        _schedule_deferred_vision(
+                            job_id, subject_id, list(deferred_vision_docs),
+                            warnings, dirs=list(deferred_vision_dirs))
                         deferred_vision_docs.clear()
+                        deferred_vision_dirs.clear()
                 else:
                     stage_timings["build_ms"] += int((time.monotonic() - t_build) * 1000)
                 del all_docs, parsed_docs
@@ -2038,7 +2063,8 @@ def _invalidate_replaced_pages(subject_id: str, file_name: str) -> None:
 
 
 def _schedule_deferred_vision(job_id: str, subject_id: str,
-                              docs: List[Any], warnings: List[str]) -> None:
+                              docs: List[Any], warnings: List[str],
+                              dirs: Optional[set] = None) -> None:
     """正文先行（2026-10-31）：后台统一增强 deferred 图片并增量补入索引。
 
     - 建库发布成功后调度：此时正文已可检索；图片增强与 Embedding 已结束，
@@ -2080,6 +2106,15 @@ def _schedule_deferred_vision(job_id: str, subject_id: str,
             logger.error(
                 f"[import][deferred-vision] {job_id}: 后台图片增强失败"
                 f"（正文不受影响，重传/重建可补齐）: {e}", exc_info=True)
+        finally:
+            # 暂存清理（无论成败，防堆积）：持久化副本 + loader 保留的临时图片目录
+            try:
+                shutil.rmtree(Path(get_data_dir()) / "deferred_vision" / job_id,
+                              ignore_errors=True)
+                for d in (dirs or set()):
+                    shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
 
     threading.Thread(target=_worker, name=f"deferred-vision-{job_id}",
                      daemon=True).start()
