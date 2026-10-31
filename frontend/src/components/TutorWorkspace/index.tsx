@@ -329,6 +329,11 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   // 服务端 tutor_sessions 已持久化 conversation_id，这里只是把它接回界面。
   useEffect(() => {
     if (!subjectId || sessionLoading || resumeSettledRef.current) return;
+    // 任务深链（带 node/doc 参数）时用户意图明确，不自动恢复会话
+    if (initialNodeId || (initialDocIds && initialDocIds.length)) {
+      resumeSettledRef.current = true;
+      return;
+    }
     const ctx = sessionCtxRef.current;
     const savedConv: string = ctx?.conversation_id || '';
     if (savedConv && !savedConv.startsWith('socratic:')) {
@@ -337,7 +342,7 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     } else {
       resumeSettledRef.current = true;
     }
-  }, [subjectId, sessionLoading, openConversation]);
+  }, [subjectId, sessionLoading, openConversation, initialNodeId, initialDocIds]);
 
   // 草稿隔离（2026-10-31 二版）：onChange 实时写入"用户/学科/会话"专属键
   // （键随 conversationId 即时正确，无 effect 时序竞态）；这里只在
