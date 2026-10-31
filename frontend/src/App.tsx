@@ -107,6 +107,11 @@ const App: React.FC = () => {
 
   React.useEffect(() => { setDrawerOpen(false); }, [location.pathname, location.search]);
 
+  // 2026-10-31（ui-simplify）：未登录时渲染**简洁布局**——无工作区菜单、无侧栏、
+  // 无重复的登录按钮；只有小品牌条 + 居中的登录界面（LoginRequired 内联表单）。
+  // 登录状态校验/失效逻辑仍由 AuthProvider 与 Protected 处理，这里只改呈现。
+  const authed = !!user;
+
   const role = user?.role || 'student';
   const isTeacher = role === 'teacher' || role === 'admin';
   const items = isTeacher ? TEACHER_ITEMS : STUDENT_ITEMS;
@@ -172,6 +177,33 @@ const App: React.FC = () => {
       />
     </>
   );
+
+  // 未登录 / 登录校验中：简洁布局（小品牌条 + 居中内容），不渲染工作区菜单与侧栏
+  if (!authed) {
+    return (
+      <Layout style={{ minHeight: '100vh', background: '#f8fafc' }}>
+        <header style={{
+          height: 56, display: 'flex', alignItems: 'center', gap: 11,
+          padding: '0 20px', background: '#fff', borderBottom: '1px solid #eef1f5',
+        }}>
+          <div className="app-brand-mark" style={{
+            width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#fff', fontWeight: 750, fontSize: 14, flexShrink: 0,
+          }}>知</div>
+          <div style={{ fontWeight: 700, color: '#182033' }}>知学</div>
+          <div className="app-brand-subtitle" style={{ fontSize: 11, color: '#737d8f' }}>RAG 智慧学习</div>
+        </header>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <SystemStatusBanner />
+          <Suspense fallback={<PageFallback />}>
+            <Routes location={location}>
+              <Route path="*" element={<Protected><StudentLearningPage /></Protected>} />
+            </Routes>
+          </Suspense>
+        </div>
+      </Layout>
+    );
+  }
 
   return (
     <Layout style={{ minHeight: '100vh', background: '#f8fafc' }}>

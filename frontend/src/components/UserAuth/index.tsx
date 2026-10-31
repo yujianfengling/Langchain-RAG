@@ -12,7 +12,7 @@ import { useAuth, notifyAuthChanged } from '../../context/AuthContext';
  * 失效提示与状态清理由 AuthProvider（全站唯一实例）统一处理，
  * 否则侧栏 / 顶栏 / 抽屉里的多个实例会把同一次失效提示刷成十几条。
  */
-const UserAuth: React.FC<{ block?: boolean }> = ({ block }) => {
+const UserAuth: React.FC<{ block?: boolean; inline?: boolean }> = ({ block, inline }) => {
   const { login, register } = useAuth();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<'login' | 'register'>('login');
@@ -45,6 +45,53 @@ const UserAuth: React.FC<{ block?: boolean }> = ({ block }) => {
       setSubmitting(false);
     }
   };
+
+  /* 2026-10-31（ui-simplify）：未登录入口的**内联表单**。
+     与 Modal 共用同一套 state/提交/防重复逻辑，只是换了壳——
+     不复制第二套登录逻辑。错误显示在表单上方；说明只在字段 extra 里。 */
+  if (inline) {
+    return (
+      <div>
+        {error && <Alert type="error" showIcon style={{ marginBottom: 12 }} message={error} />}
+        <Form form={form} layout="vertical" requiredMark={false} onFinish={handleSubmit}>
+          <Form.Item
+            name="username"
+            label="账号"
+            extra="学生填学号，教师填工号"
+            rules={[{ required: true, message: '请输入账号（学号 / 工号）' }]}
+          >
+            <Input autoComplete="username" placeholder="例如 20250101 或 demo_student" />
+          </Form.Item>
+          {mode === 'register' && (
+            <Form.Item name="display_name" label="姓名（可选）">
+              <Input placeholder="显示名称，例如 张三" />
+            </Form.Item>
+          )}
+          <Form.Item
+            name="password"
+            label="密码"
+            rules={[
+              { required: true, message: '请输入密码' },
+              { min: 6, message: '密码至少 6 位' },
+            ]}
+          >
+            <Input.Password
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              placeholder={mode === 'login' ? '登录密码' : '至少 6 位'}
+            />
+          </Form.Item>
+          <Button type="primary" htmlType="submit" block
+                  loading={submitting}>
+            {mode === 'login' ? '登录' : '注册'}
+          </Button>
+        </Form>
+        <Button type="link" size="small" style={{ paddingLeft: 0, marginTop: 4 }}
+                onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(null); }}>
+          {mode === 'login' ? '还没有账号？去注册' : '已有账号？去登录'}
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <>
