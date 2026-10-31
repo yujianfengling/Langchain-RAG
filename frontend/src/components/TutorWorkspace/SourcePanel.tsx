@@ -4,6 +4,7 @@ import {
   DeleteOutlined, EditOutlined, FileImageOutlined, FileTextOutlined, SaveOutlined,
 } from '@ant-design/icons';
 import apiClient from '../../api/axios';
+import NoteView, { noteToMarkdownText } from './NoteView';
 
 const { Text } = Typography;
 
@@ -102,14 +103,16 @@ const SourcePanel: React.FC<{
     };
   };
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
 
+  // 2026-10-31：学生界面移除「执行详情」（工具日志对学生没有行动价值）；
+  // trace/stages props 保留（服务端诊断与加载阶段仍需要），仅不再展示 tab。
   const tabs: { key: typeof tab; label: string; count?: number }[] = [
     ...(showSources
       ? [{ key: 'sources' as const, label: '引用原文', count: sources.length }]
       : []),
     { key: 'artifacts', label: '学习成果', count: artifacts.length },
-    { key: 'trace', label: '执行详情', count: trace.length },
   ];
 
   return (
@@ -192,26 +195,43 @@ const SourcePanel: React.FC<{
                   <div className="tutor-artifact-actions">
                     <Button size="small" type="link" icon={<EditOutlined />}
                             onClick={() => {
+                              if (openId === a.id) { setOpenId(null); return; }
+                              setOpenId(a.id);
+                              setEditingId(null);
                               onOpenArtifact?.(a);
+                            }}>{openId === a.id ? '收起' : '打开'}</Button>
+                    <Button size="small" type="link" icon={<EditOutlined />}
+                            onClick={() => {
+                              if (editingId === a.id) { setEditingId(null); return; }
                               setEditingId(a.id);
-                              setDraft(JSON.stringify(a.content || {}, null, 2));
-                            }}>打开</Button>
+                              setOpenId(null);
+                              setDraft(noteToMarkdownText(a.content || {}));
+                            }}>编辑</Button>
                     <Popconfirm title="删除这个成果？" onConfirm={() => onDeleteArtifact?.(a)}>
                       <Button size="small" type="link" danger icon={<DeleteOutlined />}>删除</Button>
                     </Popconfirm>
                   </div>
+                  {openId === a.id && (
+                    <div className="tutor-note-read" style={{
+                      marginTop: 6, padding: '8px 10px', borderRadius: 8,
+                      background: '#fafbfc', border: '1px solid var(--color-border-light, #eef1f5)',
+                    }}>
+                      <NoteView content={a.content} />
+                    </div>
+                  )}
                   {editingId === a.id && (
                     <div className="tutor-artifact-editor">
-                      <textarea value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />
+                      <textarea value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false}
+                                style={{ minHeight: 160 }} />
                       <div style={{ marginTop: 6 }}>
                         <Button size="small" type="primary" icon={<SaveOutlined />}
                                 onClick={() => {
-                                  try {
-                                    onUpdateArtifact?.(a, JSON.parse(draft));
-                                    setEditingId(null);
-                                  } catch {
-                                    message.error('内容不是合法 JSON');
-                                  }
+                                  // 编辑保存：把 Markdown 文本写回 note 各节的首选字段，
+                                  // 保留原结构（后端仍存结构化 JSON，前端不再展示 schema）
+                                  const src = (a.content && typeof a.content === 'object')
+                                    ? a.content : {};
+                                  onUpdateArtifact?.(a, { ...src, markdown: draft });
+                                  setEditingId(null);
                                 }}>保存修改</Button>
                         <Button size="small" type="text" onClick={() => setEditingId(null)}>取消</Button>
                       </div>

@@ -121,7 +121,7 @@ async def generate_whiteboard(request: WhiteboardRequest,
     try:
         data = await run_in_threadpool(
             whiteboard_service.generate_scene, request.topic, "", request.model,
-            request.template)
+            request.template, request.subject_id, user_id)
     except whiteboard_service.WhiteboardError as e:
         raise HTTPException(status_code=400, detail=e.message)
     return {"success": True, "data": data, "message": "白板已生成"}

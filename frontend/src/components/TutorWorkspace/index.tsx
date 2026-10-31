@@ -5,7 +5,7 @@ import {
   Tag, Tooltip, Typography, message as antdMessage,
 } from 'antd';
 import {
-  AudioOutlined, BookOutlined, BulbOutlined, CheckCircleOutlined, CheckSquareOutlined, CloseOutlined, DatabaseOutlined,
+  AudioOutlined, BookOutlined, BulbOutlined, CheckCircleOutlined, CloseOutlined, DatabaseOutlined,
   DownOutlined, FileTextOutlined, FormOutlined, HighlightOutlined, HistoryOutlined,
   MenuOutlined, MoreOutlined,
   PartitionOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SendOutlined,
@@ -663,13 +663,39 @@ const includeNodeSources = useCallback(() => {
     updateLast({ streaming: false });
   }, [updateLast]);
 
-  const startNodeActivity = useCallback((kind: 'learn' | 'practice' | 'quiz' | 'note') => {
+  const startNodeActivity = useCallback((kind: 'learn' | 'practice' | 'note') => {
     if (!nodeDetail) return;
+    // 2026-10-31：章级节点不做"整章详解"（学生要的是按知识点学）。
+    // 章被点击时自动落到它的第一个子知识点；没有子节点才按章名讲解概览。
+    if (nodeDetail.level === 'chapter') {
+      const children = (map?.nodes || []).filter(
+        (n: any) => n.parent_id === nodeDetail.node_id && n.level !== 'chapter');
+      const firstChild = children.find((n: any) => n.status !== 'passed') || children[0];
+      if (firstChild) {
+        setCurrentNode(firstChild.node_id);
+        updateTutorSession({ subject_id: subjectId, node_id: firstChild.node_id, ability: kind === 'note' ? 'organize' : kind === 'practice' ? 'practice' : 'explain' });
+        // 以子知识点重新执行本活动（label 换成子节点）
+        const childLabel = firstChild.label;
+        const childPresets: Record<string, { ability: string; text: string }> = {
+          learn: { ability: 'explain', text: `请讲解知识点「${childLabel}」，给出概括、重点、例子与易错点，并标出资料依据。` },
+          practice: { ability: 'practice', text: `围绕知识点「${childLabel}」出 3 道练习题，我作答后由系统判分。` },
+          note: { ability: 'organize', text: `把知识点「${childLabel}」整理成一份可保存的复习笔记。` },
+        };
+        const cp = childPresets[kind];
+        setAbility(cp.ability);
+        send(cp.text, cp.ability);
+        return;
+      }
+      // 章下没有可学的子节点：生成简短章概览（明确说明是概览，不是详解）
+      const overviewText = `请用不超过 200 字概括「${nodeDetail.label}」讲了什么、包含哪几个部分，并标出资料依据。不要逐节详解。`;
+      setAbility('explain');
+      send(overviewText, 'explain');
+      return;
+    }
     const label = nodeDetail.label;
     const presets: Record<string, { ability: string; text: string }> = {
       learn: { ability: 'explain', text: `请讲解知识点「${label}」，给出概括、重点、例子与易错点，并标出资料依据。` },
-      practice: { ability: 'practice', text: `围绕知识点「${label}」出 3 道练习题。` },
-      quiz: { ability: 'practice', text: `围绕知识点「${label}」给我一次检测（3 道题，不要给答案）。` },
+      practice: { ability: 'practice', text: `围绕知识点「${label}」出 3 道练习题，我作答后由系统判分。` },
       note: { ability: 'organize', text: `把知识点「${label}」整理成一份可保存的复习笔记。` },
     };
     const preset = presets[kind];
@@ -677,7 +703,7 @@ const includeNodeSources = useCallback(() => {
     setAbility(preset.ability);
     updateTutorSession({ subject_id: subjectId, ability: preset.ability, node_id: currentNode });
     send(preset.text, preset.ability);
-  }, [nodeDetail, send, subjectId, currentNode]);
+  }, [nodeDetail, send, subjectId, currentNode, map]);
 
   const handleGenerateMap = useCallback(async () => {
     if (!subjectId) return;
@@ -1260,19 +1286,18 @@ const includeNodeSources = useCallback(() => {
             {/* 同一动作只保留一个主要入口：学习/练习/检测是主操作，
                 「记笔记」等次级能力收进"更多"，避免与顶部模式栏功能重叠、按钮成排。 */}
             <Space size={6} wrap className="tutor-node-actions">
-              <Text type="secondary" className="tutor-quick-label">快捷命令：</Text>
+              {/* 2026-10-31：练习与检测合并——二者实际同一能力（出3题+系统判分），
+                  仅文案不同；保留一个「做练习」。 */}
               <Button size="small" type="primary" icon={<BulbOutlined />}
                       onClick={() => startNodeActivity('learn')}>开始学习</Button>
               <Button size="small" icon={<FormOutlined />}
                       onClick={() => startNodeActivity('practice')}>做练习</Button>
-              <Button size="small" icon={<CheckSquareOutlined />}
-                      onClick={() => startNodeActivity('quiz')}>检测</Button>
               <Dropdown
                 trigger={['click']}
                 menu={{
                   items: [
-                    { key: 'note', icon: <FileTextOutlined />, label: '记笔记' },
-                    { key: 'trace', icon: <RightOutlined />, label: '引用与执行详情' },
+                    { key: 'note', icon: <FileTextOutlined />, label: '整理笔记' },
+                    { key: 'openPanel', icon: <RightOutlined />, label: '引用与成果' },
                     { type: 'divider' as const },
                     // 自学场景：自己上传的资料可以自己确认"已通过"。
                     // 老师提供的课程资料会被后端拒绝（成绩必须以检测为准）。
@@ -1280,7 +1305,7 @@ const includeNodeSources = useCallback(() => {
                   ],
                   onClick: ({ key }) => {
                     if (key === 'note') startNodeActivity('note');
-                    if (key === 'trace') toggleRightPanel(true);
+                    if (key === 'openPanel') toggleRightPanel(true);
                     if (key === 'passed') markPassed();
                   },
                 }}

@@ -529,34 +529,45 @@ const TasksPage: React.FC = () => {
           {pendingAdjustments.length > 0 && (
             <Card
               size="small"
-              style={{ marginBottom: 12, borderColor: 'var(--color-primary-200)' }}
+              style={{ marginBottom: 12 }}
               title={(
                 <Space wrap>
+                  {/* 2026-10-31：草案/过期提案降到次级位置——首屏属于"现在要做"，
+                      待确认的调整默认折叠，点开才展示（不删除，仍可逐条处理）。 */}
                   <Tag color="orange">草案未生效</Tag>
-                  <Text strong>学习计划调整待确认（{pendingAdjustments.length}）</Text>
+                  <Text strong>学习计划调整（{pendingAdjustments.length} 条，默认已折叠）</Text>
                 </Space>
               )}
             >
-              <List
-                size="small"
-                dataSource={pendingAdjustments}
-                renderItem={(adj) => (
-                  <List.Item actions={[
-                    <Button key="apply" type="primary" size="small" onClick={() => onApply(adj)}>确认应用</Button>,
-                    <Button key="reject" size="small" onClick={() => onReject(adj)}>忽略</Button>,
-                  ]}>
-                    <List.Item.Meta
-                      title={<Text strong>{adj.summary || adj.reason || '学习计划调整建议'}</Text>}
-                      description={(
-                        <div>
-                          {changesToText(adj).map((line, idx) => (
-                            <div key={idx} style={{ fontSize: 12 }}>· {line}</div>
-                          ))}
-                        </div>
+              <Collapse
+                ghost
+                items={[{
+                  key: 'adjustments',
+                  label: <Text type="secondary" style={{ fontSize: 13 }}>展开查看与确认（{pendingAdjustments.length} 条）</Text>,
+                  children: (
+                    <List
+                      size="small"
+                      dataSource={pendingAdjustments}
+                      renderItem={(adj) => (
+                        <List.Item actions={[
+                          <Button key="apply" type="primary" size="small" onClick={() => onApply(adj)}>确认应用</Button>,
+                          <Button key="reject" size="small" onClick={() => onReject(adj)}>忽略</Button>,
+                        ]}>
+                          <List.Item.Meta
+                            title={<Text strong>{adj.summary || adj.reason || '学习计划调整建议'}</Text>}
+                            description={(
+                              <div>
+                                {changesToText(adj).map((line, idx) => (
+                                  <div key={idx} style={{ fontSize: 12 }}>· {line}</div>
+                                ))}
+                              </div>
+                            )}
+                          />
+                        </List.Item>
                       )}
                     />
-                  </List.Item>
-                )}
+                  ),
+                }]}
               />
             </Card>
           )}

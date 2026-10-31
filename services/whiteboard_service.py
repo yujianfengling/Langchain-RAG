@@ -232,13 +232,41 @@ def _extract_json(text: str) -> Optional[Dict[str, Any]]:
 
 def generate_scene(topic: str, subject_name: str = "",
                    model: Optional[str] = None,
-                   template: Optional[str] = None) -> Dict[str, Any]:
+                   template: Optional[str] = None,
+                   subject_id: Optional[str] = None,
+                   user_id: Optional[str] = None) -> Dict[str, Any]:
     topic = (topic or "").strip()
+    # 2026-10-31 白板落地修正：此前只拿自由文本 topic 直接调模型，
+    # 课件内容完全不参与——"软件工程+第1章"被模型凭常识画成"有理数"。
+    # 现在先检索当前学科课件真实片段作为绘图依据；检索不到就明确
+    # 输出"课件未覆盖"，不再编造。
+    course_evidence = ""
+    if subject_id and topic:
+        try:
+            from services import ai_service
+            _ctx = ai_service.retrieve_and_build_context(
+                question=topic, subject_id=subject_id,
+                viewer_user_id=user_id)
+            course_evidence = (_ctx.get("context") or "").strip()
+        except Exception as e:
+            logger.warning(f"白板课件依据检索失败（继续，但会标注无依据）: {e}")
+            course_evidence = ""
     if template == "concept":
         if not topic:
             raise WhiteboardError("概念图需要主题", "invalid_request")
         try:
-            answer = call_llm(_CONCEPT_PROMPT.format(topic=topic[:200]),
+            concept_prompt = _CONCEPT_PROMPT.format(topic=topic[:200])
+            if course_evidence:
+                concept_prompt += (
+                    "\n\n## 当前学科课件中的真实依据（绘图中涉及的定义/例子/易错点"
+                    "**必须出自这里**，不得使用课件之外的学科内容）\n"
+                    + course_evidence[:6000])
+            else:
+                concept_prompt += (
+                    "\n\n## 注意：当前学科课件中没有检索到与该主题相关的依据。"
+                    "输出一个 title 为「课件未覆盖该主题」的画布"
+                    "（elements 只含一条居中提示文本），不要凭通用知识编造。")
+            answer = call_llm(concept_prompt,
                               system_message="你是教学白板绘图助手，只输出 JSON。",
                               model=model)
         except Exception as e:
@@ -257,6 +285,15 @@ def generate_scene(topic: str, subject_name: str = "",
     prompt = _PROMPT.format(topic=topic[:200])
     if subject_name:
         prompt = f"学科：{subject_name[:40]}\n" + prompt
+    if course_evidence:
+        prompt += (
+            "\n\n## 当前学科课件中的真实依据（内容必须出自这里，不得编造）\n"
+            + course_evidence[:6000])
+    else:
+        prompt += (
+            "\n\n## 注意：当前学科课件中没有检索到与该主题相关的依据。"
+            "title 必须为「课件未覆盖该主题」，elements 只放一条居中提示文本，"
+            "不要凭通用知识编造任何学科内容。")
     try:
         answer = call_llm(prompt, system_message="你是教学白板绘图助手，只输出 JSON。",
                           model=model)

@@ -432,7 +432,7 @@ const WhiteboardModal: React.FC<{
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
             onPressEnter={() => void generate(undefined, true)}
-            placeholder="例如：二叉树的前中后序遍历、勾股定理、受力分析"
+            placeholder="默认围绕当前知识点，也可输入课件内的其他主题"
             disabled={loading}
           />
           <Button type="primary" icon={<BulbOutlined />} loading={loading}
