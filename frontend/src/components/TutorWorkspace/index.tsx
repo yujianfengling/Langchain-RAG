@@ -10,6 +10,7 @@ import {
   MenuOutlined, MoreOutlined,
   PartitionOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SendOutlined,
   StopOutlined,
+  ReadOutlined, AimOutlined,
 } from '@ant-design/icons';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { useCourse } from '../../context/CourseContext';
@@ -165,6 +166,8 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const rightPanelRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const stickToBottomRef = useRef(true);
+  /** 用户是否停在底部：不在底部时显示"回到底部"浮钮 */
+  const [atBottom, setAtBottom] = useState(true);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1032,7 +1035,9 @@ const includeNodeSources = useCallback(() => {
 
         <div className="tutor-messages" ref={listRef} onScroll={(event) => {
           const element = event.currentTarget;
-          stickToBottomRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 72;
+          const near = element.scrollHeight - element.scrollTop - element.clientHeight < 72;
+          stickToBottomRef.current = near;
+          setAtBottom(near);
         }}>
           {sessionError && (
             <Alert type="error" showIcon message="会话加载失败" description={sessionError}
@@ -1045,53 +1050,116 @@ const includeNodeSources = useCallback(() => {
                           animate={{ opacity: 1, y: 0 }}
                           exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
                           transition={{ duration: reduceMotion ? 0 : 0.18 }}>
-                {/* 2026-10-31 减法：去大图标底色块；学科名与顶部选择器重复，删除。
-                    空态 = 一句问候 + 最多两个有实际用途的操作；
-                    有学习进度时"继续"升级为主操作（唯一显眼入口）。 */}
-                <div className="tutor-welcome-title">
-                  {greeting || (role === 'teacher' ? '今天想先备哪一部分？' : '今天想学什么？')}
-                </div>
-                {/* 引导模式必须说明"不直接给答案"，否则学生会以为系统坏了；
-                    直接模式下这句只是重复口号（下面按钮已经说明能做什么），去掉。 */}
-                {guidanceMode === 'socratic' && (
-                  <div className="tutor-welcome-sub">
-                    当前是引导模式：先说说你的思路，我会一层层提示，不直接给答案。
-                  </div>
-                )}
-                <Space wrap size={8} className="tutor-welcome-actions">
-                  {/* 2026-10-31 减法：每个空态最多两个操作；已有学习进度时
-                      "继续"是唯一主按钮，其余操作降为次要或收进路线侧栏。 */}
-                  {readyMaterials.length === 0 ? (
-                    <Button type="primary" icon={<DatabaseOutlined />}
-                            onClick={() => navigate(role === 'teacher' ? '/teacher?section=prep' : '/student/materials?create=1')}>
-                      去上传资料
-                    </Button>
-                  ) : nodeDetail ? (
+                {/* 2026-10-31 学习桌面：按真实状态呈现起点（面包屑/短提示/一个主动作），
+                    不再是"今天想学什么"+按钮组的居中卡片。 */}
+                {(() => {
+                  const subjectLabel = subjects.find((item) => item.value === subjectId)?.label
+                    || (role === 'teacher' ? '当前课程' : '当前学科');
+                  const crumbNode = nodeDetail?.label || (currentNode
+                    ? (map?.nodes || []).find((n: any) => n.node_id === currentNode)?.label : '');
+                  const firstMaterial = readyMaterials[0];
+                  const hasMap = (map?.nodes || []).length > 0;
+                  const startLearning = () => {
+                    stickToBottomRef.current = true;
+                    if (map?.next_node) {
+                      setCurrentNode(map.next_node.node_id);
+                      updateTutorSession({ subject_id: subjectId, node_id: map.next_node.node_id, ability: 'explain' });
+                    }
+                    startNodeActivity('learn');
+                  };
+                  return (
                     <>
-                      <Button type="primary" onClick={() => startNodeActivity('learn')}>讲懂这个知识点</Button>
-                      <Button onClick={() => startNodeActivity('practice')}>做一道练习</Button>
+                      <div className="tutor-welcome-crumb">
+                        {subjectLabel}{crumbNode ? ' / ' + crumbNode : ' / 课件学习'}
+                      </div>
+                      {readyMaterials.length === 0 ? (
+                        <>
+                          <div className="tutor-welcome-eyebrow">还没有资料</div>
+                          <div className="tutor-welcome-heading">{greeting || "先上传一份课件"}</div>
+                          <div className="tutor-welcome-sub">上传老师的 PPT 或资料包后，这里会给出学习路线。</div>
+                        </>
+                      ) : !hasMap ? (
+                        <>
+                          <div className="tutor-welcome-eyebrow">资料已就绪</div>
+                          <div className="tutor-welcome-heading">从这份课件开始。</div>
+                          <div className="tutor-welcome-sub">按知识点学习，也可以直接在下方提问。</div>
+                        </>
+                      ) : nodeDetail ? (
+                        <>
+                          <div className="tutor-welcome-eyebrow">正在学习</div>
+                          <div className="tutor-welcome-heading">{nodeDetail.label}</div>
+                          {nodeDetail.objective && (
+                            <div className="tutor-welcome-sub">{nodeDetail.objective}</div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <div className="tutor-welcome-eyebrow">学习路线已就绪</div>
+                          <div className="tutor-welcome-heading">选一个知识点开始。</div>
+                          <div className="tutor-welcome-sub">也可以直接在下方提问，不强制按顺序学。</div>
+                        </>
+                      )}
+                      <div className="tutor-welcome-rule" />
+                      {readyMaterials.length === 0 ? (
+                        <div className="tutor-welcome-row">
+                          <div className="tutor-welcome-row-icon"><DatabaseOutlined /></div>
+                          <div className="tutor-welcome-row-main">
+                            <div className="tutor-welcome-row-title">去上传课件</div>
+                            <div className="tutor-welcome-row-sub">个人资料仅自己可见</div>
+                          </div>
+                          <Button type="primary" icon={<DatabaseOutlined />}
+                                  onClick={() => navigate(role === 'teacher' ? '/teacher?section=prep' : '/student/materials?create=1')}>
+                            去上传
+                          </Button>
+                        </div>
+                      ) : !hasMap ? (
+                        <div className="tutor-welcome-row">
+                          <div className="tutor-welcome-row-icon"><FileTextOutlined /></div>
+                          <div className="tutor-welcome-row-main">
+                            <div className="tutor-welcome-row-title">
+                              {firstMaterial?.file_name || '课件'}
+                            </div>
+                            <div className="tutor-welcome-row-sub">
+                              已可检索 · 学习路线待生成
+                            </div>
+                          </div>
+                          <Button type="primary" loading={mapLoading}
+                                  onClick={() => void handleGenerateMap()}>
+                            开始学习
+                          </Button>
+                        </div>
+                      ) : nodeDetail ? (
+                        <div className="tutor-welcome-row">
+                          <div className="tutor-welcome-row-icon"><ReadOutlined /></div>
+                          <div className="tutor-welcome-row-main">
+                            <div className="tutor-welcome-row-title">{nodeDetail.label}</div>
+                            <div className="tutor-welcome-row-sub">结合课件讲解，可随时追问</div>
+                          </div>
+                          <Space size={6}>
+                            <Button type="primary" onClick={() => startNodeActivity('learn')}>开始学习</Button>
+                            <Button onClick={() => startNodeActivity('practice')}>做一道练习</Button>
+                          </Space>
+                        </div>
+                      ) : (
+                        <div className="tutor-welcome-row">
+                          <div className="tutor-welcome-row-icon"><AimOutlined /></div>
+                          <div className="tutor-welcome-row-main">
+                            <div className="tutor-welcome-row-title">
+                              {(map?.next_node || (map?.nodes || [])[0])?.label || '第一个知识点'}
+                            </div>
+                            <div className="tutor-welcome-row-sub">建议从这里开始</div>
+                          </div>
+                          <Button type="primary" onClick={startLearning}>开始学习</Button>
+                        </div>
+                      )}
+                      {guidanceMode === 'socratic' && (
+                        <div className="tutor-welcome-sub" style={{ marginTop: 10 }}>
+                          引导模式：先说说你的思路，我会一层层提示，不直接给答案。
+                        </div>
+                      )}
                     </>
-                  ) : map?.next_node ? (
-                    <>
-                      <Button type="primary" onClick={() => {
-                        stickToBottomRef.current = true;
-                        setCurrentNode(map.next_node!.node_id);
-                        updateTutorSession({ subject_id: subjectId, node_id: map.next_node!.node_id, ability: 'explain' });
-                      }}>继续：{map.next_node.label}</Button>
-                      <Button onClick={() => send(role === 'teacher'
-                        ? '请概括当前资料的教学重点，并给出适合备课的结构。'
-                        : '请概括当前资料的重点，并标出资料出处。')}>概括资料重点</Button>
-                    </>
-                  ) : (
-                    <>
-                      <Button type="primary" loading={mapLoading} onClick={() => void handleGenerateMap()}>生成学习路线</Button>
-                      <Button onClick={() => send(role === 'teacher'
-                        ? '请概括当前资料的教学重点，并给出适合备课的结构。'
-                        : '请概括当前资料的重点，并标出资料出处。')}>概括资料重点</Button>
-                      {role === 'teacher' && <Button onClick={() => send('基于当前资料生成一份教案初稿。', 'organize')}>生成教案初稿</Button>}
-                    </>
-                  )}
-                </Space>
+                  );
+                })()}
               </motion.div>
             )}
           </AnimatePresence>
@@ -1240,7 +1308,7 @@ const includeNodeSources = useCallback(() => {
               autoSize={{ minRows: 1, maxRows: 5 }}
               placeholder={role === 'teacher'
                 ? '例如：基于资料生成这节课的教案初稿'
-                : '输入问题，或粘贴一道不会的题（Shift + Enter 换行）'}
+                : '问课件里的问题，或说说哪里没懂…（Shift + Enter 换行）'}
               disabled={running}
             />
             {guidanceMode === 'socratic' && !running && (
@@ -1257,7 +1325,24 @@ const includeNodeSources = useCallback(() => {
                       disabled={!input.trim()}>发送</Button>
             )}
           </div>
+          <div className="tutor-composer-foot">
+            <span>
+              {nodeDetail?.label
+                ? '围绕「' + nodeDetail.label + '」提问'
+                : (scopeLabel ? '基于当前课件' : '基于当前资料')}
+            </span>
+            <span>Shift + Enter 换行</span>
+          </div>
         </motion.div>
+        {!atBottom && messages.length > 0 && (
+          <button type="button" className="tutor-jump-bottom" aria-label="回到最新消息"
+                  onClick={() => {
+                    stickToBottomRef.current = true;
+                    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: reduceMotion ? 'auto' : 'smooth' });
+                  }}>
+            <DownOutlined />
+          </button>
+        )}
       </main>
 
       <WhiteboardModal

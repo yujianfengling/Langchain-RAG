@@ -154,7 +154,8 @@ const MapTree: React.FC<{
           image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={<span>还没有学习路线<br /><Text type="secondary" style={{ fontSize: 12 }}>基于当前资料生成，约需十几秒</Text></span>}
         />
-        <Button type="primary" icon={<PartitionOutlined />} loading={generating} onClick={onGenerate}>
+        {/* 主区已提供"开始学习"主入口；这里降为引导入口，避免左右同时突出同一操作 */}
+        <Button icon={<PartitionOutlined />} loading={generating} onClick={onGenerate}>
           生成学习路线
         </Button>
       </div>
