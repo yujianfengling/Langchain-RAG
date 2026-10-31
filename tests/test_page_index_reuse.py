@@ -277,3 +277,20 @@ def test_cancelled_build_reports_honest_coverage():
     assert detail[0]["indexed_pages"] == 0
     assert detail[0]["covered_to"] == 0
     assert detail[0]["truncated"] is False
+
+
+def test_clear_cancel_request_clears_subject_wildcard():
+    """删除最后一份资料记学科级通配账 → 新导入的单文档清账必须连它一起清
+    （否则清库后再上传，自动建页被通配账取消——2026-10-31 二次实测）。"""
+    subject = _subject()
+    pdf = _make_text_pdf(subject)
+    # 模拟"清库"动作：学科级取消（不带 doc_id）
+    page_index.cancel_document_tasks(subject)
+    blocked = page_index.build_document_page_index(subject, pdf)
+    assert blocked["cancelled"] is True and blocked["indexed"] == 0
+
+    # 新导入调度：按 doc_id 清账
+    page_index.clear_cancel_request(subject, "f:" + pdf.name)
+    out = page_index.build_document_page_index(subject, pdf)
+    assert out["ok"] is True and out["indexed"] == 1
+    assert page_index.search_pages(subject, "relational algebra")

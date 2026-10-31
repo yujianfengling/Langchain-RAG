@@ -175,8 +175,10 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
           trigger: 'item',
           formatter: (params: any) => {
             if (params.dataType === 'node') {
-              const n = params.data;
-              return `<b>${n.label}</b><br/>类型: ${n.type || '概念'}<br/>权重: ${(n.weight || 1).toFixed(1)}`;
+              // 节点业务数据存在 value 里；data.label 是 echarts 的标签样式对象，
+              // 直接取会渲染成 "[object Object]"（2026-10-31 实测修复）。
+              const n = (params.data?.value || params.data) as GraphNode;
+              return `<b>${n?.label ?? ''}</b><br/>类型: ${n?.type || '概念'}<br/>权重: ${Number(n?.weight || 1).toFixed(1)}`;
             }
             if (params.dataType === 'edge') {
               const e = params.data;

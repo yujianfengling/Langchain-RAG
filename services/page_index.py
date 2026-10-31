@@ -195,10 +195,15 @@ def clear_cancel_request(subject_id: str, doc_id: Optional[str] = None) -> None:
     但同一次导入的后续动作（替换成功后调度重建）**key 相同**，注册时读到旧账
     就被误杀——实测替换后 pages=0 而 doc_state 却显示已覆盖。
     导入方在调度**新版**建页前必须显式清账：新任务读的是新文件，不属于被拦对象。
+
+    2026-10-31 二次修复：删除**最后一份**资料会走清库分支，记的是**学科级通配账**
+    （`subject::*`）；随后新导入的任何文档注册都会命中它。所以按 doc_id 清账时
+    必须连同通配账一起清——调度某个具体文档的新建页就是新生命周期的开始。
     """
     with _ACTIVE_LOCK:
         if doc_id:
             _CANCEL_REQUESTS.pop(_task_key(subject_id, str(doc_id)), None)
+            _CANCEL_REQUESTS.pop(f"{subject_id}::*", None)
         else:
             prefix = f"{subject_id}::"
             for key in [k for k in _CANCEL_REQUESTS if k.startswith(prefix)]:
