@@ -2087,8 +2087,20 @@ def _schedule_deferred_vision(job_id: str, subject_id: str,
         try:
             from rag.enrichment.multimodal_enricher import MultimodalEnricher
             enricher = MultimodalEnricher()
-            enriched = enricher.enrich_images(docs)
-            stats = dict(getattr(enricher, "last_stats", {}) or {})
+            # 2026-10-31 分块增强：每块之间检查任务取消/暂停——命中即停止
+            # 后续远程调用与补入，未处理图片保留在暂存目录供重跑（不冒充完成）。
+            CHUNK = 24
+            for ci in range(0, len(docs), CHUNK):
+                if _is_cancelled(job_id):
+                    logger.info(f"[import][deferred-vision] {job_id}: 任务已取消，"
+                                f"停止增强（{ci}/{len(docs)} 已处理，余量保留暂存）")
+                    return
+                if _is_pause_requested(job_id):
+                    logger.info(f"[import][deferred-vision] {job_id}: 任务已暂停，"
+                                f"停止增强（{ci}/{len(docs)} 已处理，余量保留暂存）")
+                    return
+                enriched.extend(enricher.enrich_images(docs[ci:ci + CHUNK]))
+            stats_total = len(enriched)
             usable = [d for d in enriched
                       if (getattr(d, "page_content", "") or "").strip()
                       and (getattr(d, "metadata", {}) or {}).get("is_content") is not False]
@@ -2100,22 +2112,22 @@ def _schedule_deferred_vision(job_id: str, subject_id: str,
             elapsed = _monotonic() - started
             logger.info(
                 f"[import][deferred-vision] {job_id}: 完成 {elapsed:.0f}s，"
-                f"total={stats.get('images_total')} calls={stats.get('vision_calls')} "
-                f"failed={stats.get('vision_failed')} skipped={stats.get('vision_skipped')} "
+                f"total={stats_total} calls/缓存/跳过见各块日志 "
                 f"补入索引={added}")
         except Exception as e:
             logger.error(
                 f"[import][deferred-vision] {job_id}: 后台图片增强失败"
-                f"（正文不受影响，重传/重建可补齐）: {e}", exc_info=True)
-        finally:
-            # 暂存清理（无论成败，防堆积）：持久化副本 + loader 保留的临时图片目录
-            try:
-                shutil.rmtree(Path(get_data_dir()) / "deferred_vision" / job_id,
-                              ignore_errors=True)
-                for d in (dirs or set()):
-                    shutil.rmtree(d, ignore_errors=True)
-            except Exception:
-                pass
+                f"（正文不受影响，暂存保留可重跑）: {e}", exc_info=True)
+            return  # 不走 finally 的清理：暂存保留供重跑
+        # 成功路径的暂存清理（取消/暂停/异常时保留，供重跑）：
+        # 持久化副本 + loader 保留的临时图片目录
+        try:
+            shutil.rmtree(Path(get_data_dir()) / "deferred_vision" / job_id,
+                          ignore_errors=True)
+            for d in (dirs or set()):
+                shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
 
     threading.Thread(target=_worker, name=f"deferred-vision-{job_id}",
                      daemon=True).start()
