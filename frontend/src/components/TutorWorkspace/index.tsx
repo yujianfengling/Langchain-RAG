@@ -284,15 +284,20 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       setScopeLabel(data.scope?.label || '');
       setScopeInvalid(data.scope?.invalid || []);
       const stored = (data.context?.material_scope?.selected_doc_ids || []) as string[];
-      if (initialDocIds && initialDocIds.length) {
+      if (!manualSubjectRef.current && initialDocIds && initialDocIds.length) {
         setSelectedDocs(initialDocIds);
         await updateTutorSession({ subject_id: sid, doc_ids: initialDocIds });
       } else {
         setSelectedDocs(stored);
       }
+      if (sid !== activeSubject.current || epoch !== selectionEpoch.current) return;
       if (data.context?.ability) setAbility(data.context.ability);
       setGuidanceMode(data.context?.guidance_mode === 'socratic' ? 'socratic' : 'direct');
-      if (!initialNodeId && !resumeSettledRef.current) setCurrentNode(data.context?.current_node_id || '');
+      if (initialNodeId && !manualSubjectRef.current) {
+        // 深链是明确选择；只保存节点位置，不把旧会话重新归到此节点。
+        await updateTutorSession({ subject_id: sid, node_id: initialNodeId });
+      } else if (!resumeSettledRef.current) setCurrentNode(data.context?.current_node_id || '');
+      if (sid !== activeSubject.current || epoch !== selectionEpoch.current) return;
       const items = await listArtifacts(sid).catch(() => []);
       if (sid === activeSubject.current && epoch === selectionEpoch.current) setArtifacts(items);
     } catch (e: any) {
@@ -382,7 +387,7 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   useEffect(() => {
     if (!subjectId || sessionReady !== subjectId || sessionLoading || sessionError || resumeSettledRef.current) return;
     // 任务深链（带 node/doc 参数）时用户意图明确，不自动恢复会话
-    if (initialNodeId || (initialDocIds && initialDocIds.length)) {
+    if (!manualSubjectRef.current && (initialNodeId || (initialDocIds && initialDocIds.length))) {
       resumeSettledRef.current = true;
       return;
     }
