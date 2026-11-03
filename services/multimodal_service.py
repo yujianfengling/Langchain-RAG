@@ -283,8 +283,13 @@ class MultimodalService:
         # 调用视觉模型。单次调用超时可配置（VISION_IMAGE_TIMEOUT_SECONDS，默认 30s），
         # 由 provider 的 requests timeout 强制执行，避免"一张图无限等"。
         try:
+            vision_kwargs = {"timeout": _vision_image_timeout()}
+            if getattr(self.vision_provider, "model_name", "") == "deepseek":
+                # 图片描述/文字提取需要正式 content；不改变 chat/Agent 的思考策略。
+                # requests 兼容客户端通过 extra_payload 合并到最终 JSON 请求体。
+                vision_kwargs["extra_payload"] = {"thinking": {"type": "disabled"}}
             result = self.vision_provider.vision(
-                messages, timeout=_vision_image_timeout())
+                messages, **vision_kwargs)
         except Exception as e:
             capability_status.safe_report(
                 capability_status.CAP_VISION, False,
