@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import TutorWorkspace from '../components/TutorWorkspace';
+import { useAuth } from '../context/AuthContext';
 
 /**
  * AI 伴学（学生默认入口，2026-10-07）
@@ -12,6 +13,7 @@ import TutorWorkspace from '../components/TutorWorkspace';
  */
 const StudentLearningPage: React.FC = () => {
   const [params] = useSearchParams();
+  const { user } = useAuth();
   const subjectId = params.get('subject') || undefined;
   const nodeId = params.get('node') || undefined;
   const docIds = useMemo(() => {
@@ -22,7 +24,7 @@ const StudentLearningPage: React.FC = () => {
 
   return (
     <TutorWorkspace
-        key={(subjectId || '') + '|' + (docIds || []).join(',') + '|' + (nodeId || '')}
+        key={(user?.id || '') + '|' + (subjectId || '') + '|' + (docIds || []).join(',') + '|' + (nodeId || '')}
         initialSubjectId={subjectId}
         initialDocIds={docIds}
         initialNodeId={nodeId}

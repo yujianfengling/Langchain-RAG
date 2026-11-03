@@ -36,6 +36,7 @@ export interface TutorMaterial {
 }
 
 export interface TutorSessionData {
+  notice?: string | null;
   context: Record<string, any>;
   scope: TutorScope;
   materials: TutorMaterial[];
@@ -114,6 +115,11 @@ export const generateWhiteboard = async (payload: {
 
 export const getTutorSession = async (subjectId: string): Promise<TutorSessionData> => {
   const res: any = await apiClient.get('/tutor/session', { params: { subject_id: subjectId } });
+  return res?.data ?? res;
+};
+
+export const getTutorResume = async (): Promise<{ subject_id: string | null; notice?: string | null }> => {
+  const res: any = await apiClient.get('/tutor/resume');
   return res?.data ?? res;
 };
 

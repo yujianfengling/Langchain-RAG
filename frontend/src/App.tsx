@@ -272,7 +272,7 @@ const App: React.FC = () => {
             <motion.div key={location.pathname} initial={reduceMotion ? { opacity: 1 } : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: reduceMotion ? 0 : 0.12 }}>
               <Suspense fallback={<PageFallback />}>
                 <Routes location={location}>
-                  <Route path="/" element={<Navigate to="/student" replace />} />
+                  <Route path="/" element={<Navigate to={{ pathname: '/student', search: location.search }} replace />} />
                   <Route path="/student" element={<Protected><StudentLearningPage /></Protected>} />
                   <Route path="/student/materials" element={<Protected><MaterialsPage /></Protected>} />
                   <Route path="/student/tasks" element={<Protected><TasksPage /></Protected>} />

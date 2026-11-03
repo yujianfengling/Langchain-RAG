@@ -18,7 +18,7 @@ import { useIsNarrow } from '../../hooks/useIsNarrow';
 import {
   deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode,
   setNodeStatus, cancelTurn,
-  getTurn, getTutorSession, listArtifacts, listTutorConversations, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
+  getTurn, getTutorSession, getTutorResume, listArtifacts, listTutorConversations, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
   type GuidanceMode, type TutorSource,
 } from '../../api/tutor';
 import { useAuth } from '../../context/AuthContext';
@@ -118,6 +118,12 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const isNarrowForPanel = useIsNarrow('(max-width: 1559px)');
   const [subjectId, setSubjectId] = useState<string>(initialSubjectId || '');
   const [sessionLoading, setSessionLoading] = useState(false);
+  const [sessionReady, setSessionReady] = useState('');
+  const [resumeLoading, setResumeLoading] = useState(!initialSubjectId);
+  const [resumeNotice, setResumeNotice] = useState<string | null>(null);
+  const manualSubjectRef = useRef(false);
+  const conversationRequest = useRef(0);
+  const nodeHistoryRequested = useRef(Boolean(initialNodeId));
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [materials, setMaterials] = useState<any[]>([]);
   const [selectedDocs, setSelectedDocs] = useState<string[]>(initialDocIds || []);
@@ -237,11 +243,27 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const lastCitedRef = useRef<number[]>([]);
   const lastTraceRef = useRef<any[]>([]);
 
-  /** 学科：URL 指定优先，否则用全局课程上下文 */
+  /** 首页和登录共用服务端学习记录；深链从不等待/采用最近位置。 */
   useEffect(() => {
-    if (initialSubjectId) { setSubjectId(initialSubjectId); return; }
-    if (!subjectId && ctx.currentSubjectId) setSubjectId(ctx.currentSubjectId);
-  }, [initialSubjectId, ctx.currentSubjectId, subjectId]);
+    if (initialSubjectId || !authUser?.id || role !== 'student') {
+      setResumeLoading(false);
+      return;
+    }
+    let alive = true;
+    setResumeLoading(true);
+    void getTutorResume().then((data) => {
+      if (!alive || manualSubjectRef.current) return;
+      setResumeNotice(data.notice || null);
+      if (data.subject_id) setSubjectId(data.subject_id);
+    }).catch(() => {
+      if (alive) setResumeNotice('暂时无法恢复上次位置，请手动选择学科。');
+    }).finally(() => { if (alive) setResumeLoading(false); });
+    return () => { alive = false; };
+  }, [initialSubjectId, authUser?.id, role]);
+
+  useEffect(() => {
+    if (role !== 'student' && !subjectId && ctx.currentSubjectId) setSubjectId(ctx.currentSubjectId);
+  }, [role, subjectId, ctx.currentSubjectId]);
 
   const selectionEpoch = useRef(0);
   const activeSubject = useRef(subjectId);
@@ -251,11 +273,13 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     if (!sid) return;
     const epoch = selectionEpoch.current;
     setSessionLoading(true);
+    setSessionReady('');
     setSessionError(null);
     try {
       const data = await getTutorSession(sid);
       if (sid !== activeSubject.current || epoch !== selectionEpoch.current) return;
       sessionCtxRef.current = data.context || null;
+      if (data.notice) setResumeNotice(data.notice);
       setMaterials(data.materials || []);
       setScopeLabel(data.scope?.label || '');
       setScopeInvalid(data.scope?.invalid || []);
@@ -268,14 +292,17 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       }
       if (data.context?.ability) setAbility(data.context.ability);
       setGuidanceMode(data.context?.guidance_mode === 'socratic' ? 'socratic' : 'direct');
-      if (data.context?.current_node_id && !initialNodeId) setCurrentNode(data.context.current_node_id);
+      if (!initialNodeId && !resumeSettledRef.current) setCurrentNode(data.context?.current_node_id || '');
       const items = await listArtifacts(sid).catch(() => []);
       if (sid === activeSubject.current && epoch === selectionEpoch.current) setArtifacts(items);
     } catch (e: any) {
       const detail = e?.response?.data?.detail || '会话加载失败';
-      if (sid === activeSubject.current) setSessionError(detail);
+      if (sid === activeSubject.current && epoch === selectionEpoch.current) setSessionError(detail);
     } finally {
-      if (sid === activeSubject.current) setSessionLoading(false);
+      if (sid === activeSubject.current && epoch === selectionEpoch.current) {
+        setSessionLoading(false);
+        setSessionReady(sid);
+      }
     }
   }, [initialDocIds, initialNodeId]);
 
@@ -295,13 +322,16 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
 
   /** 载入一个历史会话到主聊天区（历史抽屉点击 / 自动恢复共用）。
       当前节点与"建议下一步"保持不变——会话原主题 ≠ 当前学习节点。 */
-  const openConversation = useCallback(async (convId: string) => {
+  const openConversation = useCallback(async (convId: string, persist = true) => {
     if (!subjectId || !convId) return;
+    resumeSettledRef.current = true;
+    const request = ++conversationRequest.current;
     const epoch = selectionEpoch.current;
     setHistoryLoading(true);
     try {
       const rows = await listTurns(subjectId, 60, undefined, convId);
-      if (subjectId !== activeSubject.current || epoch !== selectionEpoch.current) return;
+      if (subjectId !== activeSubject.current || epoch !== selectionEpoch.current || request !== conversationRequest.current) return;
+      if (persist) void updateTutorSession({ subject_id: subjectId, conversation_id: convId }).catch(() => antdMessage.warning('会话位置保存失败'));
       setMessages(historyToMessages(Array.isArray(rows) ? rows : []));
       setConversationId(convId);
       setHistoryFocusId(null);
@@ -319,15 +349,19 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
         localStorage.removeItem(nk);
       }
     } catch {
-      antdMessage.error('会话载入失败，请重试');
+      if (request === conversationRequest.current && epoch === selectionEpoch.current) antdMessage.error('会话载入失败，请重试');
     } finally {
-      setHistoryLoading(false);
+      if (request === conversationRequest.current) setHistoryLoading(false);
     }
   }, [subjectId, authUser]);
 
   /** 新对话：清空主区与当前会话指针；旧记录不删除（历史里仍可选回）。 */
   const startNewConversation = useCallback(() => {
     resumeSettledRef.current = true;
+    conversationRequest.current++;
+    nodeRequest.current++;
+    setHistoryLoading(false);
+    void updateTutorSession({ subject_id: subjectId, conversation_id: null }).catch(() => antdMessage.warning('新对话位置保存失败'));
     setMessages([]);
     setConversationId(null);
     setHistoryFocusId(null);
@@ -335,7 +369,7 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     setStages([]);
     setPanelSources([]);
     setPanelCitedIds([]);
-  }, []);
+  }, [subjectId]);
 
   useEffect(() => {
     if (!subjectId) return;
@@ -346,7 +380,7 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   // 自动恢复该学科上一次会话（仅一次；用户显式操作优先，不被覆盖）。
   // 服务端 tutor_sessions 已持久化 conversation_id，这里只是把它接回界面。
   useEffect(() => {
-    if (!subjectId || sessionLoading || resumeSettledRef.current) return;
+    if (!subjectId || sessionReady !== subjectId || sessionLoading || sessionError || resumeSettledRef.current) return;
     // 任务深链（带 node/doc 参数）时用户意图明确，不自动恢复会话
     if (initialNodeId || (initialDocIds && initialDocIds.length)) {
       resumeSettledRef.current = true;
@@ -356,11 +390,11 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     const savedConv: string = ctx?.conversation_id || '';
     if (savedConv && !savedConv.startsWith('socratic:')) {
       resumeSettledRef.current = true;
-      void openConversation(savedConv);
+      void openConversation(savedConv, false);
     } else {
       resumeSettledRef.current = true;
     }
-  }, [subjectId, sessionLoading, openConversation, initialNodeId, initialDocIds]);
+  }, [subjectId, sessionReady, sessionLoading, sessionError, openConversation, initialNodeId, initialDocIds]);
 
   // 草稿隔离（2026-10-31 二版）：onChange 实时写入"用户/学科/会话"专属键
   // （键随 conversationId 即时正确，无 effect 时序竞态）；这里只在
@@ -381,21 +415,24 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     } catch { /* 忽略 */ }
   }, [authUser?.id, subjectId, conversationId]);
 
-  const loadNode = useCallback(async (sid: string, nodeId: string) => {
+  const loadNode = useCallback(async (sid: string, nodeId: string, history = false) => {
     const request = ++nodeRequest.current;
+    const epoch = selectionEpoch.current;
+    const convRequest = conversationRequest.current;
     if (!sid || !nodeId) { setNodeDetail(null); return; }
     try {
       const data = await getMapNode(sid, nodeId);
-      if (request !== nodeRequest.current || sid !== activeSubject.current) return;
+      if (request !== nodeRequest.current || sid !== activeSubject.current || epoch !== selectionEpoch.current) return;
       setNodeDetail(data.node);
     } catch {
       setNodeDetail(null);
     }
+    if (!history) return; // 自动恢复节点详情不覆盖已恢复的整段会话和作答。
     // 顺带把这个知识点最近两轮摆出来：学生点知识点，就是想看它以前讲过什么。
     // 取不到历史不影响节点详情展示，所以失败只吞掉不报错。
     try {
       const rows = await listTurns(sid, 2, nodeId);
-      if (request === nodeRequest.current && sid === activeSubject.current)
+      if (request === nodeRequest.current && sid === activeSubject.current && epoch === selectionEpoch.current && convRequest === conversationRequest.current)
         setMessages(historyToMessages(Array.isArray(rows) ? rows : []));
     } catch {
       /* ignore */
@@ -450,8 +487,11 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   }, [subjectId, currentNode, loadNode, loadMap]);
 
   useEffect(() => {
-    if (subjectId && currentNode) loadNode(subjectId, currentNode);
-    else setNodeDetail(null);
+    if (subjectId && currentNode) {
+      const history = nodeHistoryRequested.current;
+      nodeHistoryRequested.current = false;
+      void loadNode(subjectId, currentNode, history);
+    } else setNodeDetail(null);
   }, [subjectId, currentNode, loadNode]);
 
   useEffect(() => {
@@ -792,9 +832,27 @@ const includeNodeSources = useCallback(() => {
     return list;
   }, [ctx.courses, ctx.personalSubjects]);
 
+  const selectSubject = (sid: string) => {
+    manualSubjectRef.current = true;
+    selectionEpoch.current++;
+    nodeRequest.current++;
+    conversationRequest.current++;
+    resumeSettledRef.current = false;
+    sessionCtxRef.current = null;
+    setSessionReady('');
+    setSessionError(null);
+    setConversationId(null);
+    setSubjectId(sid);
+    setMessages([]);
+    setCurrentNode('');
+    const course = ctx.courses.find((c) => c.subject_id === sid);
+    if (course) ctx.select(course.course_id); else ctx.selectSubject(sid);
+    void updateTutorSession({ subject_id: sid }).catch(() => antdMessage.warning('学习位置保存失败'));
+  };
+
   // ---------- 未选择学科 ----------
   if (!subjectId) {
-    if (ctx.status === 'loading') {
+    if (ctx.status === 'loading' || resumeLoading) {
       return <div className="tutor-loading"><Spin tip="正在加载课程…" /></div>;
     }
     if (ctx.status === 'error') {
@@ -808,19 +866,20 @@ const includeNodeSources = useCallback(() => {
     }
     return (
       <div className="tutor-center-card">
+        {resumeNotice && <Alert type="warning" showIcon message={resumeNotice} />}
         <Title level={4} style={{ marginTop: 0 }}>选择要学习的内容</Title>
         <Text type="secondary">选定后即可在同一工作区里问答、讲解、练习与整理，不需要反复切换页面。</Text>
         <Space direction="vertical" style={{ width: '100%', marginTop: 12 }} size={8}>
           {ctx.courses.map((c) => (
             <Button key={c.course_id} block size="large" className="tutor-choose-btn"
-                    onClick={() => ctx.select(c.course_id)}>
+                    onClick={() => selectSubject(c.subject_id)}>
               <BookOutlined /> {c.title}
               <span className="tutor-choose-sub">{c.class_name || '我的班级'} · {c.teacher_name || '—'}</span>
             </Button>
           ))}
           {ctx.personalSubjects.map((s) => (
             <Button key={s.subject_id} block size="large" className="tutor-choose-btn"
-                    onClick={() => ctx.selectSubject(s.subject_id)}>
+                    onClick={() => selectSubject(s.subject_id)}>
               <DatabaseOutlined /> {s.name}
               <span className="tutor-choose-sub">个人资料</span>
             </Button>
@@ -859,17 +918,7 @@ const includeNodeSources = useCallback(() => {
           style={{ width: '100%' }}
           value={subjectId}
           options={subjects.length ? subjects : [{ value: subjectId, label: subjectId }]}
-          onChange={(v) => {
-            const course = ctx.courses.find((c) => c.subject_id === v);
-            if (course) ctx.select(course.course_id); else ctx.selectSubject(String(v));
-            selectionEpoch.current++;
-            nodeRequest.current++;
-            resumeSettledRef.current = false;
-            sessionCtxRef.current = null;
-            setSubjectId(String(v));
-            setMessages([]);
-            setCurrentNode('');
-          }}
+          onChange={(v) => selectSubject(String(v))}
         />
       </div>
 
@@ -942,6 +991,8 @@ const includeNodeSources = useCallback(() => {
             setFocusSource(null);
             selectionEpoch.current++;
             resumeSettledRef.current = true;
+            conversationRequest.current++;
+            nodeHistoryRequested.current = true;
             setCurrentNode(nodeId);
             updateTutorSession({ subject_id: subjectId, node_id: nodeId, ability: 'explain' });
             setLeftOpen(false);
@@ -1096,6 +1147,7 @@ const includeNodeSources = useCallback(() => {
           stickToBottomRef.current = near;
           setAtBottom(near);
         }}>
+          {resumeNotice && <Alert type="warning" showIcon message={resumeNotice} closable onClose={() => setResumeNotice(null)} />}
           {sessionError && (
             <Alert type="error" showIcon message="会话加载失败" description={sessionError}
                    style={{ marginBottom: 12 }} />

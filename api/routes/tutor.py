@@ -185,11 +185,40 @@ async def generate_whiteboard(request: WhiteboardRequest,
 # 统一上下文与会话
 # =====================================================================
 
+@router.get("/tutor/resume")
+async def get_resume(user_id: str = Depends(require_current_user)):
+    """首页/登录共用的只读位置入口；不触发模型或生成任务。"""
+    notice = None
+    for subject_id in tutor_session.recent_subjects(user_id):
+        try:
+            from services.subject_service import get_subject, SubjectServiceError
+            try:
+                get_subject(subject_id)
+            except SubjectServiceError:
+                notice = "上次学习的学科已删除，已返回可访问的学习位置。"
+                continue
+            await require_subject_read(subject_id, user_id)
+        except HTTPException as exc:
+            if exc.status_code not in (403, 404):
+                raise
+            notice = "上次学习的学科已删除或无访问权限，已返回可访问的学习位置。"
+            continue
+        return {"success": True, "data": {"subject_id": subject_id, "notice": notice}}
+    return {"success": True, "data": {"subject_id": None, "notice": notice}}
+
+
 @router.get("/tutor/session")
 async def get_session(subject_id: str = Query(...),
                       user_id: str = Depends(require_current_user)):
     await require_subject_read(subject_id, user_id)
     context = tutor_session.load_context(user_id, subject_id)
+    notice = None
+    try:
+        context['current_node_id'] = tutor_session.resolve_node(
+            user_id, subject_id, context.get('current_node_id'))
+    except ValueError:
+        context['current_node_id'] = None
+        notice = "上次知识点已失效，已回到当前学科；历史消息仍保留。"
     scope = material_scope.build_scope(
         user_id, subject_id, (context.get("material_scope") or {}).get("selected_doc_ids"))
     materials = material_scope.list_scope_materials(user_id, subject_id)
@@ -197,6 +226,7 @@ async def get_session(subject_id: str = Query(...),
         "success": True,
         "data": {
             "context": context,
+            "notice": notice,
             "scope": material_scope.scope_to_public(scope),
             "materials": [
                 {"doc_id": m["doc_id"], "file_name": m["file_name"], "status": m.get("status"),
@@ -228,6 +258,9 @@ async def put_session(request: TutorSessionUpdate,
         value = getattr(request, field)
         if value is not None:
             patch[field] = value
+    # 未提供保留；显式 null 表示用户新建空对话，不能恢复旧会话。
+    if "conversation_id" in request.model_fields_set:
+        patch["conversation_id"] = request.conversation_id
     if "node_id" in request.model_fields_set:
         try:
             patch["current_node_id"] = tutor_session.resolve_node(
@@ -237,8 +270,8 @@ async def put_session(request: TutorSessionUpdate,
     patch.pop("node_id", None)
     if request.doc_ids is not None:
         tutor_session.set_material_scope(user_id, request.subject_id, request.doc_ids)
-    if patch:
-        tutor_session.update_context(user_id, request.subject_id, **patch)
+    # 空 patch 也是明确进入该学科；GET 恢复路径不调用此写入口。
+    tutor_session.update_context(user_id, request.subject_id, **patch)
     context = tutor_session.load_context(user_id, request.subject_id)
     scope = material_scope.build_scope(
         user_id, request.subject_id, (context.get("material_scope") or {}).get("selected_doc_ids"))

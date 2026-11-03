@@ -207,11 +207,26 @@ def load_context(user_id: str, subject_id: str) -> Dict[str, Any]:
     return ctx
 
 
+def recent_subjects(user_id: str) -> List[str]:
+    """读取已有学习位置；读取不更新水位，显式新对话的 null 指针也保留。"""
+    conn = _get_db()
+    try:
+        rows = conn.execute(
+            "SELECT subject_id, updated_at AS touched FROM tutor_sessions WHERE user_id=? "
+            "UNION ALL SELECT subject_id, created_at AS touched FROM tutor_turns "
+            "WHERE user_id=? AND subject_id IS NOT NULL "
+            "ORDER BY touched DESC", (user_id, user_id)).fetchall()
+    finally:
+        conn.close()
+    return list(dict.fromkeys(row['subject_id'] for row in rows if row['subject_id']))
+
+
 def save_context(user_id: str, subject_id: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(ctx or {})
     data["user_id"] = user_id
     data["subject_id"] = subject_id
-    data["updated_at"] = _now()
+    # 快速切换学科也能按最后一次显式选择排序，无需另一张位置表。
+    data["updated_at"] = datetime.now().isoformat(timespec="microseconds")
     conn = _get_db()
     try:
         conn.execute(
