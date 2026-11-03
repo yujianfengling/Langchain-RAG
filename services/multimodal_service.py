@@ -142,11 +142,14 @@ class MultimodalService:
         if self.vision_provider is not None:
             return
         
-        # 1. 优先尝试 qwen-vision（专用视觉模型）
+        # Respect the existing DeepSeek-first policy. A leftover DashScope key
+        # must not override the configured DeepSeek vision target.
         try:
-            from config.models import get_model_api_key
+            from config.models import get_model_api_key, get_model_config
             api_key = get_model_api_key("qwen-vision")
-            if api_key:
+            deepseek_configured = bool(get_model_api_key("deepseek") and
+                                  get_model_config("deepseek").get("vision_model_name"))
+            if api_key and not deepseek_configured:
                 self.vision_provider = get_model_provider("qwen-vision")
                 self.vision_unavailable_reason = ""
                 logger.info("[Multimodal] 使用 qwen-vision 视觉模型")
@@ -159,7 +162,7 @@ class MultimodalService:
         #
         # 2026-09-25：默认文本模型曾是 DeepSeek（当时视为纯文本），因此只认 MiMo。
         # 2026-10-02 实测更正：DeepSeek 的对话模型同样接受 OpenAI 兼容的 image_url
-        # 输入（deepseek-chat/flash/reasoner 均可识图），因此纳入视觉候选。
+        # 输入；实际支持的模型以官方视觉文档与专用配置为准。
         #
         # 顺序 = deepseek(已验证可用) > mimo(会员到期，key 常在但 401) > qwen-vision。
         # 关键：**"key 存在"不等于"key 可用"**。实测 MiMo 的 MIMO_API_KEY 仍在 .env 里

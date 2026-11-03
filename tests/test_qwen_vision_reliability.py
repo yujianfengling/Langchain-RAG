@@ -78,6 +78,14 @@ def _reset_multimodal_singleton(test_case) -> None:
     from services import multimodal_service as mms
 
     old = getattr(mms, "_multimodal_service", None)
+    # Qwen protocol fixtures expose only Qwen credentials. Automatic selection
+    # with both providers is tested separately in test_vision_route_priority.py.
+    from config import models
+    real_key = models.get_model_api_key
+    only_qwen = mock.patch.object(models, 'get_model_api_key',
+        side_effect=lambda name=None: '' if name == 'deepseek' else real_key(name))
+    only_qwen.start()
+    test_case.addCleanup(only_qwen.stop)
     mms._multimodal_service = None
     test_case.addCleanup(setattr, mms, "_multimodal_service", old)
 
@@ -119,6 +127,7 @@ class TestVisionRequestFormat(unittest.TestCase):
     """请求格式：Base64 Data URL / MIME / 本地路径不发送"""
 
     def setUp(self):
+        _reset_multimodal_singleton(self)
         self._tmp = TemporaryDirectory()
         self._img_path = os.path.join(self._tmp.name, "test.png")
         Image.new("RGB", (20, 20), "white").save(self._img_path)
