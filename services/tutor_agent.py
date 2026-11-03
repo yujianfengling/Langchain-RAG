@@ -320,7 +320,7 @@ def _message_type_from_trace(trace: List[Dict[str, Any]]) -> Dict[str, Any]:
 def stream_turn(user_id: str, subject_id: str, message: str, *,
                 ability: str = tutor_session.ABILITY_CHAT,
                 selected_doc_ids: Optional[List[str]] = None,
-                node_id: Optional[str] = None,
+                node_id: Optional[str] = tutor_session.NODE_UNSET,
                 conversation_id: Optional[str] = None,
                 model: Optional[str] = None,
                 role: str = "student",
@@ -342,8 +342,8 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
         guidance_mode if guidance_mode is not None else context_state.get("guidance_mode"))
     context_state.update({"ability": ability, "role": role,
                           "guidance_mode": effective_mode})
-    if node_id:
-        context_state["current_node_id"] = node_id
+    node_id = tutor_session.resolve_node(user_id, subject_id, node_id)
+    context_state["current_node_id"] = node_id
     # 引导模式需要跨轮记忆：前端没有显式传会话时，用按学科稳定的会话串起来。
     # 只作用于 socratic，direct 的既有行为不受影响。
     if not conversation_id and effective_mode == tutor_session.GUIDANCE_SOCRATIC:

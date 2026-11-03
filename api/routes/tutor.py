@@ -58,7 +58,8 @@ async def _tutor_stream_async(request: TutorStreamRequest, user_id: str, role: s
                 ability=request.ability or tutor_session.ABILITY_CHAT,
                 guidance_mode=request.guidance_mode,
                 selected_doc_ids=request.doc_ids,
-                node_id=request.node_id,
+                node_id=(request.node_id if "node_id" in request.model_fields_set
+                         else tutor_session.NODE_UNSET),
                 conversation_id=request.conversation_id,
                 model=request.model,
                 role=role,
@@ -103,6 +104,11 @@ async def tutor_stream(request: TutorStreamRequest,
     if not (request.message or "").strip():
         raise HTTPException(status_code=400, detail="请输入内容")
     await require_subject_read(request.subject_id, user_id)
+    try:
+        tutor_session.resolve_node(user_id, request.subject_id,
+            request.node_id if "node_id" in request.model_fields_set else tutor_session.NODE_UNSET)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     role = auth_service.get_role(user_id)
     return StreamingResponse(
         _tutor_stream_async(request, user_id, role),
@@ -119,9 +125,17 @@ async def generate_whiteboard(request: WhiteboardRequest,
     await require_subject_read(request.subject_id, user_id)
     from services import whiteboard_service
     try:
+        node_id = tutor_session.resolve_node(user_id, request.subject_id,
+            request.node_id if "node_id" in request.model_fields_set else tutor_session.NODE_UNSET)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    node = knowledge_map.get_node(request.subject_id, node_id) if node_id else None
+    scope = material_scope.build_scope(user_id, request.subject_id, request.doc_ids)
+    try:
         data = await run_in_threadpool(
             whiteboard_service.generate_scene, request.topic, "", request.model,
-            request.template, request.subject_id, user_id)
+            request.template, request.subject_id, user_id, scope,
+            (node or {}).get("label"))
     except whiteboard_service.WhiteboardError as e:
         raise HTTPException(status_code=400, detail=e.message)
     return {"success": True, "data": data, "message": "白板已生成"}
@@ -174,6 +188,13 @@ async def put_session(request: TutorSessionUpdate,
         value = getattr(request, field)
         if value is not None:
             patch[field] = value
+    if "node_id" in request.model_fields_set:
+        try:
+            patch["current_node_id"] = tutor_session.resolve_node(
+                user_id, request.subject_id, request.node_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    patch.pop("node_id", None)
     if request.doc_ids is not None:
         tutor_session.set_material_scope(user_id, request.subject_id, request.doc_ids)
     if patch:

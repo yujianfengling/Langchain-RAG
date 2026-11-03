@@ -41,10 +41,12 @@ const WhiteboardModal: React.FC<{
   open: boolean;
   onClose: () => void;
   subjectId: string;
+  nodeId?: string;
+  docIds?: string[];
   defaultTopic?: string;
   sources?: TutorSource[];
   citedIds?: number[];
-}> = ({ open, onClose, subjectId, defaultTopic, sources = [], citedIds = [] }) => {
+}> = ({ open, onClose, subjectId, nodeId, docIds, defaultTopic, sources = [], citedIds = [] }) => {
   const [topic, setTopic] = useState(defaultTopic || '');
   const [template, setTemplate] = useState('concept');
   const [scene, setScene] = useState<WhiteboardScene | null>(null);
@@ -76,7 +78,7 @@ const WhiteboardModal: React.FC<{
     const nextTopic = topic || defaultTopic || '';
     if (!topic && defaultTopic) setTopic(defaultTopic);
     // 同一学科 + 模板 + 主题直接恢复上次结果，不再重复调用模型
-    setScene(readSceneCache(subjectId, template, nextTopic));
+    setScene(readSceneCache(subjectId + JSON.stringify([nodeId, docIds]), template, nextTopic));
     setError(null);
     const width = Math.min(1040, window.innerWidth - 24);
     setPos({ x: Math.max(12, (window.innerWidth - width) / 2), y: 64 });
@@ -86,7 +88,7 @@ const WhiteboardModal: React.FC<{
     }));
     // 只在打开/切学科时恢复，不覆盖用户正在编辑的输入
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, subjectId]);
+  }, [open, subjectId, nodeId, JSON.stringify(docIds)]);
 
   useEffect(() => {
     let cancelled = false;
@@ -214,7 +216,7 @@ const WhiteboardModal: React.FC<{
     const value = topic.trim();
     if ((!value && (effectiveTemplate === 'ai' || effectiveTemplate === 'concept')) || !subjectId) return;
     if (!force) {
-      const cached = readSceneCache(subjectId, effectiveTemplate, value);
+      const cached = readSceneCache(subjectId + JSON.stringify([nodeId, docIds]), effectiveTemplate, value);
       if (cached) {
         setScene(cached);
         setError(null);
@@ -225,11 +227,11 @@ const WhiteboardModal: React.FC<{
     setError(null);
     try {
       const data = await generateWhiteboard({
-        subject_id: subjectId, topic: value,
+        subject_id: subjectId, topic: value, node_id: nodeId || null, doc_ids: docIds,
         template: effectiveTemplate === 'ai' ? undefined : effectiveTemplate,
       });
       setScene(data);
-      writeSceneCache(subjectId, effectiveTemplate, value, data);
+      writeSceneCache(subjectId + JSON.stringify([nodeId, docIds]), effectiveTemplate, value, data);
     } catch (e: any) {
       setError(e?.response?.data?.detail || '白板生成失败，请稍后重试');
     } finally {
@@ -238,7 +240,7 @@ const WhiteboardModal: React.FC<{
   };
 
   const clearScene = () => {
-    try { localStorage.removeItem(cacheKeyOf(subjectId, template, topic)); } catch { /* 忽略 */ }
+    try { localStorage.removeItem(cacheKeyOf(subjectId + JSON.stringify([nodeId, docIds]), template, topic)); } catch { /* 忽略 */ }
     setScene(null);
     setError(null);
   };

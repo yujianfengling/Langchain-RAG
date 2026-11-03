@@ -106,7 +106,7 @@ export interface WhiteboardScene {
 }
 
 export const generateWhiteboard = async (payload: {
-  subject_id: string; topic: string; template?: string | null; model?: string | null;
+  subject_id: string; topic: string; template?: string | null; model?: string | null; node_id?: string | null; doc_ids?: string[];
 }): Promise<WhiteboardScene> => {
   const res: any = await apiClient.post('/tutor/whiteboard', payload);
   return (res?.data ?? res) as WhiteboardScene;

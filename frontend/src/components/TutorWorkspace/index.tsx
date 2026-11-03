@@ -238,12 +238,18 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     if (!subjectId && ctx.currentSubjectId) setSubjectId(ctx.currentSubjectId);
   }, [initialSubjectId, ctx.currentSubjectId, subjectId]);
 
+  const selectionEpoch = useRef(0);
+  const activeSubject = useRef(subjectId);
+  activeSubject.current = subjectId;
+  const nodeRequest = useRef(0);
   const loadSession = useCallback(async (sid: string) => {
     if (!sid) return;
+    const epoch = selectionEpoch.current;
     setSessionLoading(true);
     setSessionError(null);
     try {
       const data = await getTutorSession(sid);
+      if (sid !== activeSubject.current || epoch !== selectionEpoch.current) return;
       sessionCtxRef.current = data.context || null;
       setMaterials(data.materials || []);
       setScopeLabel(data.scope?.label || '');
@@ -258,12 +264,13 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       if (data.context?.ability) setAbility(data.context.ability);
       setGuidanceMode(data.context?.guidance_mode === 'socratic' ? 'socratic' : 'direct');
       if (data.context?.current_node_id && !initialNodeId) setCurrentNode(data.context.current_node_id);
-      setArtifacts(await listArtifacts(sid).catch(() => []));
+      const items = await listArtifacts(sid).catch(() => []);
+      if (sid === activeSubject.current && epoch === selectionEpoch.current) setArtifacts(items);
     } catch (e: any) {
       const detail = e?.response?.data?.detail || '会话加载失败';
-      setSessionError(detail);
+      if (sid === activeSubject.current) setSessionError(detail);
     } finally {
-      setSessionLoading(false);
+      if (sid === activeSubject.current) setSessionLoading(false);
     }
   }, [initialDocIds, initialNodeId]);
 
@@ -272,11 +279,12 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     setMapLoading(true);
     try {
       const data = await getKnowledgeMap(sid);
+      if (sid !== activeSubject.current) return;
       setMap(data.map || null);
     } catch {
-      setMap(null);
+      if (sid === activeSubject.current) setMap(null);
     } finally {
-      setMapLoading(false);
+      if (sid === activeSubject.current) setMapLoading(false);
     }
   }, []);
 
@@ -284,9 +292,11 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       当前节点与"建议下一步"保持不变——会话原主题 ≠ 当前学习节点。 */
   const openConversation = useCallback(async (convId: string) => {
     if (!subjectId || !convId) return;
+    const epoch = selectionEpoch.current;
     setHistoryLoading(true);
     try {
       const rows = await listTurns(subjectId, 60, undefined, convId);
+      if (subjectId !== activeSubject.current || epoch !== selectionEpoch.current) return;
       setMessages(historyToMessages(Array.isArray(rows) ? rows : []));
       setConversationId(convId);
       setHistoryFocusId(null);
@@ -367,9 +377,11 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   }, [authUser?.id, subjectId, conversationId]);
 
   const loadNode = useCallback(async (sid: string, nodeId: string) => {
+    const request = ++nodeRequest.current;
     if (!sid || !nodeId) { setNodeDetail(null); return; }
     try {
       const data = await getMapNode(sid, nodeId);
+      if (request !== nodeRequest.current || sid !== activeSubject.current) return;
       setNodeDetail(data.node);
     } catch {
       setNodeDetail(null);
@@ -378,7 +390,8 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     // 取不到历史不影响节点详情展示，所以失败只吞掉不报错。
     try {
       const rows = await listTurns(sid, 2, nodeId);
-      setMessages(historyToMessages(Array.isArray(rows) ? rows : []));
+      if (request === nodeRequest.current && sid === activeSubject.current)
+        setMessages(historyToMessages(Array.isArray(rows) ? rows : []));
     } catch {
       /* ignore */
     }
@@ -548,6 +561,7 @@ const includeNodeSources = useCallback(() => {
       conversation_id: convId,
     }, {
       onEvent: (ev) => {
+        if (subjectId !== activeSubject.current) return;
         switch (ev.type) {
           case 'start':
           case 'context':
@@ -837,6 +851,10 @@ const includeNodeSources = useCallback(() => {
           onChange={(v) => {
             const course = ctx.courses.find((c) => c.subject_id === v);
             if (course) ctx.select(course.course_id); else ctx.selectSubject(String(v));
+            selectionEpoch.current++;
+            nodeRequest.current++;
+            resumeSettledRef.current = false;
+            sessionCtxRef.current = null;
             setSubjectId(String(v));
             setMessages([]);
             setCurrentNode('');
@@ -911,6 +929,8 @@ const includeNodeSources = useCallback(() => {
             setPanelSources([]);
             setPanelCitedIds([]);
             setFocusSource(null);
+            selectionEpoch.current++;
+            resumeSettledRef.current = true;
             setCurrentNode(nodeId);
             updateTutorSession({ subject_id: subjectId, node_id: nodeId, ability: 'explain' });
             setLeftOpen(false);
@@ -1374,6 +1394,8 @@ const includeNodeSources = useCallback(() => {
         open={boardOpen}
         onClose={() => setBoardOpen(false)}
         subjectId={subjectId}
+        nodeId={currentNode}
+        docIds={selectedDocs}
         defaultTopic={nodeDetail?.label || ''}
         sources={boardSources}
         citedIds={boardCitedIds}

@@ -506,3 +506,18 @@ __all__ = [
     "get_turn", "list_turns", "list_conversations", "list_loose_turns",
     "request_cancel", "is_cancelled", "DB_PATH",
 ]
+
+
+NODE_UNSET = object()
+
+
+def resolve_node(user_id, subject_id, node_id=NODE_UNSET):
+    """Omission retains subject-local state; null explicitly clears it."""
+    from services import knowledge_map
+    explicit = node_id is not NODE_UNSET
+    value = node_id if explicit else load_context(user_id, subject_id).get("current_node_id")
+    if value and not knowledge_map.get_node(subject_id, value):
+        if explicit:
+            raise ValueError("知识点不属于当前学科")
+        value = None  # stale historical state is not an authorization source
+    return value or None

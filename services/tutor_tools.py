@@ -769,6 +769,10 @@ def execute_tool(name: str, args: Dict[str, Any],
         return {"ok": False, "error": f"当前能力不允许调用 {name}", "error_type": "forbidden_tool"}
     clean = {k: v for k, v in (args or {}).items()
              if k not in ("user_id", "subject_id", "scope", "role")}
+    import inspect
+    if "node_id" in inspect.signature(spec.handler).parameters:
+        # User selection is authoritative, including an explicit empty selection.
+        clean["node_id"] = ctx.node_id
     started = time.time()
     try:
         out = spec.handler(ctx, **clean)

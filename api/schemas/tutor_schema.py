@@ -32,6 +32,8 @@ class TutorSessionUpdate(BaseModel):
 
 
 class WhiteboardRequest(BaseModel):
+    node_id: Optional[str] = None
+    doc_ids: Optional[List[str]] = None
     subject_id: str
     topic: str
     template: Optional[str] = None

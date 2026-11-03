@@ -234,8 +234,8 @@ def generate_scene(topic: str, subject_name: str = "",
                    model: Optional[str] = None,
                    template: Optional[str] = None,
                    subject_id: Optional[str] = None,
-                   user_id: Optional[str] = None) -> Dict[str, Any]:
-    topic = (topic or "").strip()
+                   user_id: Optional[str] = None, scope=None, node_label=None) -> Dict[str, Any]:
+    topic = ((node_label + "：" + topic) if node_label else (topic or "")).strip()
     # 2026-10-31 白板落地修正：此前只拿自由文本 topic 直接调模型，
     # 课件内容完全不参与——"软件工程+第1章"被模型凭常识画成"有理数"。
     # 现在先检索当前学科课件真实片段作为绘图依据；检索不到就明确
@@ -244,9 +244,9 @@ def generate_scene(topic: str, subject_name: str = "",
     if subject_id and topic:
         try:
             from services import ai_service
-            _ctx = ai_service.retrieve_and_build_context(
+            _ctx = ai_service.retrieve_and_build_context_scoped(
                 question=topic, subject_id=subject_id,
-                viewer_user_id=user_id)
+                viewer_user_id=user_id, scope=scope)
             course_evidence = (_ctx.get("context") or "").strip()
         except Exception as e:
             logger.warning(f"白板课件依据检索失败（继续，但会标注无依据）: {e}")
