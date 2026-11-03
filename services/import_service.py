@@ -34,7 +34,7 @@ from config.path_config import get_data_dir
 
 logger = logging.getLogger(__name__)
 
-_DB_LOCK = threading.Lock()
+_DB_LOCK = threading.RLock()
 
 # 同一学科同时只允许一个任务在建库，避免两个任务并发"备份→构建→回滚"
 # 互相覆盖对方的索引目录（可能出现"回滚把新索引删掉"的窗口）。
@@ -1794,6 +1794,8 @@ def _run_job_locked(job_id: str, executor_id: str,
                     persist_dir = Path(get_data_dir()) / "deferred_vision" / job_id
                     persist_dir.mkdir(parents=True, exist_ok=True)
                     for _d in _still_deferred:
+                        _d.metadata["source_content_sha"] = src_sha
+
                         deferred_vision_docs.append(_d)
                         src_img = (_d.metadata or {}).get("image_path")
                         if src_img and Path(src_img).exists():
@@ -1864,6 +1866,7 @@ def _run_job_locked(job_id: str, executor_id: str,
                 if decision["skip"]:
                     # 同名同内容：不重复落盘、不重复索引，但内容确实可学习 → ready
                     _rewrite_metadata(docs, decision["name"], final_path)
+                    _rewrite_metadata(_still_deferred, decision["name"], final_path)
                     parsed_docs.extend(docs)
                     ready_names.add(decision["name"])
                     if src_sha and not had_deferred_this_item:
@@ -1881,26 +1884,28 @@ def _run_job_locked(job_id: str, executor_id: str,
                     continue
 
                 _fence_guard()
-                existed_before = final_path.exists()
-                # 修改（同名不同内容）：把旧版本移入 _superseded/ 留档，再写入新版本。
-                # 这样旧分块随之从下一次建库中消失（文件已不在根目录），新分块生效。
-                if existed_before and decision.get("replace"):
-                    try:
-                        sup_dir = subject_dir / "_superseded"
-                        sup_dir.mkdir(parents=True, exist_ok=True)
-                        old_sha12 = str(decision.get("old_sha") or "old")[:12]
-                        sup_path = sup_dir / f"{final_path.name}.{old_sha12}"
-                        if sup_path.exists():
-                            final_path.unlink()
-                        else:
-                            shutil.move(str(final_path), str(sup_path))
-                        replaced_all.append((str(sup_path), str(final_path)))
-                        # 内容被同名替换：旧页面图与页面文本必须立刻失效，否则
-                        # "看原页"和页面检索还会指向上一版内容（新页由导入后的建页任务重建）。
-                        _invalidate_replaced_pages(subject_id, decision["name"])
-                    except Exception as e:
-                        logger.warning(f"旧版本留档失败（继续替换，不影响新版本生效）: {e}")
-                final_path.write_bytes(content)
+                from services.subject_mutation import subject_mutation
+                with subject_mutation(subject_id):
+                    existed_before = final_path.exists()
+                    # 修改（同名不同内容）：把旧版本移入 _superseded/ 留档，再写入新版本。
+                    # 这样旧分块随之从下一次建库中消失（文件已不在根目录），新分块生效。
+                    if existed_before and decision.get("replace"):
+                        try:
+                            sup_dir = subject_dir / "_superseded"
+                            sup_dir.mkdir(parents=True, exist_ok=True)
+                            old_sha12 = str(decision.get("old_sha") or "old")[:12]
+                            sup_path = sup_dir / f"{final_path.name}.{old_sha12}"
+                            if sup_path.exists():
+                                final_path.unlink()
+                            else:
+                                shutil.move(str(final_path), str(sup_path))
+                            replaced_all.append((str(sup_path), str(final_path)))
+                            # 内容被同名替换：旧页面图与页面文本必须立刻失效，否则
+                            # "看原页"和页面检索还会指向上一版内容（新页由导入后的建页任务重建）。
+                            _invalidate_replaced_pages(subject_id, decision["name"])
+                        except Exception as e:
+                            logger.warning(f"旧版本留档失败（继续替换，不影响新版本生效）: {e}")
+                    final_path.write_bytes(content)
                 if not existed_before:
                     copied_new_name = decision["name"]
                     copied_all.append(copied_new_name)
@@ -1908,6 +1913,7 @@ def _run_job_locked(job_id: str, executor_id: str,
                 del content
 
                 _rewrite_metadata(docs, decision["name"], final_path)
+                _rewrite_metadata(_still_deferred, decision["name"], final_path)
                 parsed_docs.extend(docs)
                 ready_names.add(decision["name"])
                 if src_sha:
@@ -2066,100 +2072,9 @@ def _invalidate_replaced_pages(subject_id: str, file_name: str) -> None:
 def _schedule_deferred_vision(job_id: str, subject_id: str,
                               docs: List[Any], warnings: List[str],
                               dirs: Optional[set] = None) -> None:
-    """正文先行（2026-10-31）：后台统一增强 deferred 图片并增量补入索引。
-
-    - 建库发布成功后调度：此时正文已可检索；图片增强与 Embedding 已结束，
-      不再争抢本地 CPU，主要受远程视觉 API 限流约束（VISION_MAX_CONCURRENCY）。
-    - 完成后用 add_documents_to_store 增量补入（BM25/FAISS 同步失效与追加），
-      只补入有内容的图片文档（skipped/失败的不入库，与同步链路口径一致）。
-    - 任何失败只记日志与任务告警，绝不影响已可学习的正文。
-    """
-    if not docs:
-        return
-    count = len(docs)
-    warnings.append(
-        f"{count} 张图片待后台视觉增强（正文已可学习；增强完成后自动补入）")
-    logger.info(f"[import][deferred-vision] {job_id}: {count} 张图片后台增强开始")
-
-    def _worker() -> None:
-        started = _monotonic()
-        enriched: List[Any] = []
-        try:
-            from rag.enrichment.multimodal_enricher import MultimodalEnricher
-            enricher = MultimodalEnricher()
-            # 2026-10-31 分块增强：每块之间检查任务取消/暂停——命中即停止
-            # 后续远程调用与补入，未处理图片保留在暂存目录供重跑（不冒充完成）。
-            CHUNK = 24
-            for ci in range(0, len(docs), CHUNK):
-                if _is_cancelled(job_id):
-                    logger.info(f"[import][deferred-vision] {job_id}: 任务已取消，"
-                                f"停止增强（{ci}/{len(docs)} 已处理，余量保留暂存）")
-                    return
-                if _is_pause_requested(job_id):
-                    logger.info(f"[import][deferred-vision] {job_id}: 任务已暂停，"
-                                f"停止增强（{ci}/{len(docs)} 已处理，余量保留暂存）")
-                    return
-                enriched.extend(enricher.enrich_images(docs[ci:ci + CHUNK]))
-            stats_total = len(enriched)
-            usable = [d for d in enriched
-                      if (getattr(d, "page_content", "") or "").strip()
-                      and (getattr(d, "metadata", {}) or {}).get("is_content") is not False]
-            # 2026-10-31 安全层：补入前核对来源资料仍存在且内容版本未变——
-            # 防止删除/替换后旧图补入新索引（同名替换场景）。
-            from config.path_config import get_subjects_dir
-            subject_dir = Path(get_subjects_dir()) / subject_id
-            safe_usable = []
-            for d in usable:
-                src_name = (getattr(d, "metadata", {}) or {}).get("source") or ""
-                if not src_name or (subject_dir / src_name).exists():
-                    safe_usable.append(d)
-                else:
-                    logger.info(f"[import][deferred-vision] {job_id}: "
-                                f"来源资料已删除/替换，跳过该图的补入: {src_name}")
-            usable = safe_usable
-            added = 0
-            if usable:
-                from rag.vector_store import add_documents_to_store
-                result = add_documents_to_store(usable, subject_id)
-                added = int(result.get("added") or 0)
-            # 写状态 JSON（可观测：每张图的最终归属）
-            try:
-                status_path = (Path(get_data_dir()) / "deferred_vision" / job_id
-                               / "status.json")
-                status = {
-                    "job_id": job_id, "subject_id": subject_id,
-                    "total": len(docs), "enriched": len(enriched),
-                    "usable": len(usable), "added_to_index": added,
-                    "filtered_by_source_check": len(usable) - len(safe_usable)
-                        if 'safe_usable' in dir() else 0,
-                    "finished_at": _now(),
-                }
-                status_path.write_text(json.dumps(status, ensure_ascii=False),
-                                       encoding="utf-8")
-            except Exception:
-                pass
-            elapsed = _monotonic() - started
-            logger.info(
-                f"[import][deferred-vision] {job_id}: 完成 {elapsed:.0f}s，"
-                f"total={stats_total} calls/缓存/跳过见各块日志 "
-                f"补入索引={added}")
-        except Exception as e:
-            logger.error(
-                f"[import][deferred-vision] {job_id}: 后台图片增强失败"
-                f"（正文不受影响，暂存保留可重跑）: {e}", exc_info=True)
-            return  # 不走 finally 的清理：暂存保留供重跑
-        # 成功路径的暂存清理（取消/暂停/异常时保留，供重跑）：
-        # 持久化副本 + loader 保留的临时图片目录
-        try:
-            shutil.rmtree(Path(get_data_dir()) / "deferred_vision" / job_id,
-                          ignore_errors=True)
-            for d in (dirs or set()):
-                shutil.rmtree(d, ignore_errors=True)
-        except Exception:
-            pass
-
-    threading.Thread(target=_worker, name=f"deferred-vision-{job_id}",
-                     daemon=True).start()
+    from services import import_vision
+    warnings.append(f"{len(docs)} 张图片待增强；正文已可学习，增强状态单独记录")
+    import_vision.enqueue(job_id, subject_id, docs)
 
 
 def _schedule_page_index_after_import(job_id: str, subject_id: str) -> None:
@@ -2451,7 +2366,11 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
             return None
         items = conn.execute(
             "SELECT * FROM import_items WHERE job_id=? ORDER BY seq", (job_id,)).fetchall()
-    return _job_to_public(dict(job), [dict(i) for i in items])
+    public = _job_to_public(dict(job), [dict(i) for i in items])
+    from services import import_vision
+    public["image_enhancement"] = import_vision.status(job_id)
+    public["text_status"] = public.get("status")
+    return public
 
 
 def list_jobs(subject_id: str, limit: int = 5) -> List[Dict[str, Any]]:
@@ -2798,7 +2717,10 @@ def pause_job(job_id: str) -> bool:
         if job["status"] == "cancelled":
             raise ValueError("任务已取消，不能暂停")
         if job["status"] == "succeeded":
-            raise ValueError("任务已完成，无需暂停")
+            from services.import_vision import status as vision_status
+            v = vision_status(job_id)
+            if not any(v['counts'].get(k, 0) for k in ('pending', 'running', 'retry', 'paused')):
+                raise ValueError("任务已完成，无需暂停")
         if bool(job["paused"]):
             return True
         conn.execute(
@@ -2831,13 +2753,19 @@ def resume_job(job_id: str) -> Optional[str]:
             raise ValueError("任务已取消，不能继续")
         if not bool(job["paused"]):
             raise ValueError("任务未处于暂停状态，无需继续")
-        if not job["raw_dir"]:
+        from services.import_vision import status as vision_status
+        image_only = any(vision_status(job_id)['counts'].get(k, 0) for k in ('paused','pending','running'))
+        if not job["raw_dir"] and not image_only:
             raise ValueError("原包已清理，无法继续")
         conn.execute(
             "UPDATE import_jobs SET paused=0, pause_requested=0, cancel_requested=0,"
             " status='queued', finished_at=NULL, executor_id=NULL,"
             " executor_heartbeat=NULL, updated_at=? WHERE job_id=?", (_now(), job_id))
         conn.commit()
+    if image_only:
+        from services.import_vision import recover
+        recover()
+        return job_id
     # 恢复时把“重启中断”的条目清掉，让它们重新被自动分批处理
     _clear_interrupted_items(job_id)
     threading.Thread(target=_run_job_thread, args=(job_id,),
@@ -2973,3 +2901,10 @@ def auto_resume_interrupted_jobs() -> int:
         logger.warning(
             f"[import] 启动恢复：自动继续 {started} 个被中断任务（无需人工点击）")
     return started
+
+
+from services.import_vision import coordinated_control as _vision_control
+cancel_job = _vision_control(cancel_job)
+pause_job = _vision_control(pause_job)
+resume_job = _vision_control(resume_job)
+

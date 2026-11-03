@@ -283,6 +283,8 @@ def _start_rag_warmup() -> None:
         # 重启后**自动继续自动分批**：只恢复本次收敛、且非用户暂停/取消的任务，
         # 用户不需要再点一次“继续”（任务 1/2/3）。
         auto_resume_interrupted_jobs()
+        from services import import_vision
+        import_vision.recover()
     except Exception as e:      # 恢复失败不能阻塞启动
         logger.warning(f"[import] 中断任务收敛失败（不阻塞启动）: {e}")
     # 建库被中断会留下"线上索引为空 + .bak 尚在"的残局（回滚没机会执行），

@@ -234,7 +234,9 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
 
   // 轮询：1.5s，终态或 paused 停止，卸载清理（paused 时绝不每隔几秒打服务端）
   useEffect(() => {
-    if (!job || isTerminalStatus(job.status) || isJobPaused(job)) return;
+    const imagesActive = job?.image_enhancement && ['pending', 'running', 'retry'].some(
+      (state) => (job.image_enhancement?.counts[state] || 0) > 0);
+    if (!job || (isTerminalStatus(job.status) && !imagesActive) || isJobPaused(job)) return;
     const jobId = job.job_id;
     const timer = window.setInterval(async () => {
       try {
@@ -796,6 +798,12 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
             </div>
           )}
 
+          {!!job.image_enhancement?.total && (
+            <div className="udz-warnings">
+              正文：{job.status === 'succeeded' ? '已可学习' : '见导入状态'}；图片增强：
+              {Object.entries(job.image_enhancement.counts).map(([state, count]) => `${state}: ${count}`).join('，')}
+            </div>
+          )}
           {(job.warnings || []).length > 0 && (
             <div className="udz-warnings">
               {(job.warnings || []).map((w, i) => <div key={i}>{w}</div>)}

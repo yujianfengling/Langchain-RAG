@@ -171,6 +171,7 @@ export interface ImportTotals {
 }
 
 export interface ImportJob {
+  image_enhancement?: { total: number; counts: Record<string, number>; filtered_by_source_check: number };
   job_id: string;
   subject_id: string;
   status: ImportJobStatus;

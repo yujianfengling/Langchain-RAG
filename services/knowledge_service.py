@@ -1,3 +1,4 @@
+from services.subject_mutation import coordinated
 # services/knowledge_service.py
 # 知识库业务服务层
 
@@ -223,6 +224,7 @@ class KnowledgeServiceError(Exception):
     pass
 
 
+@coordinated
 def build_subject_knowledge(subject_id: str, source_path: str) -> Dict[str, Any]:
     """
     根据目录构建指定学科知识库
@@ -274,6 +276,7 @@ def build_subject_knowledge(subject_id: str, source_path: str) -> Dict[str, Any]
         raise KnowledgeServiceError("知识库构建失败，请稍后重试")
 
 
+@coordinated
 def delete_subject_knowledge(subject_id: str) -> Dict[str, Any]:
     """
     删除指定学科知识库
@@ -457,6 +460,7 @@ def get_knowledge_base_stats(subject_id: str) -> Dict[str, Any]:
         raise KnowledgeServiceError("获取知识库统计信息失败")
 
 
+@coordinated
 def upload_file_to_subject(subject_id: str, file_content: bytes, filename: str) -> Dict[str, Any]:
     """
     上传文件到指定学科目录
@@ -610,6 +614,7 @@ def get_subject_documents(subject_id: str) -> List[Dict[str, Any]]:
         raise KnowledgeServiceError("获取文档列表失败")
 
 
+@coordinated
 def delete_subject_document(subject_id: str, filename: str) -> Dict[str, Any]:
     """
     删除学科目录下的单个文档
@@ -990,6 +995,7 @@ def _publish_index_pair(live_v: Path, staging_v: Path, old_v: Path, prev_v: Path
             _remove_tree(old)
 
 
+@coordinated
 def _build_index_with_rollback(subject_id: str, documents: List[Any]) -> Dict[str, Any]:
     """
     独立目录构建 → 校验 → 原子发布（2026-10-08 重构）。
@@ -1107,6 +1113,7 @@ def collect_subject_documents(subject_id: str) -> List[Any]:
     return load_documents(file_paths)
 
 
+@coordinated
 def rebuild_subject_knowledge(subject_id: str) -> Dict[str, Any]:
     """
     重新构建学科知识库
@@ -1138,6 +1145,7 @@ def rebuild_subject_knowledge(subject_id: str) -> Dict[str, Any]:
         raise KnowledgeServiceError("知识库重新构建失败，请稍后重试")
 
 
+@coordinated
 def rebuild_subject_knowledge_from_documents(subject_id: str,
                                              documents: List[Any]) -> Dict[str, Any]:
     """
