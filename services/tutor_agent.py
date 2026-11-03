@@ -358,7 +358,16 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
     context_state["last_turn_id"] = turn_id
     tutor_session.save_context(user_id, subject_id, context_state)
 
+    from services import turn_execution as tx
+    execution = tx.Execution(turn_id, MAX_SECONDS,
+        lambda: bool((cancel_check and cancel_check()) or tutor_session.is_cancelled(turn_id)))
+    tx.register(execution)
+    binding = tx.bind(execution)
+    binding.__enter__()
+
     def emit(event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if event_type not in ("error", "done"):
+            execution.check()
         try:
             payload = dict(payload)
             payload["turn_id"] = turn_id
@@ -513,14 +522,20 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
                     messages, tools=tools, temperature=0.3, max_tokens=2048)
                 streamed_text = ""
                 end_event: Dict[str, Any] = {}
-                for ev in stream:
+                for ev in tx.iterate(stream, execution):
                     # 先累积文本；只有本轮流结束时没有 tool_calls，这段文本才是终答。
                     # 有 tool_calls 时它通常只是"我先去查资料"的前言，不作为回答展示。
                     if ev.get("type") == "content":
                         streamed_text += ev.get("text") or ""
+                        yield emit("delta", {"content": ev.get("text") or "", "provisional": True})
                     elif ev.get("type") == "end":
                         end_event = ev
+                execution.check()
+                if not end_event:
+                    raise RuntimeError('模型流提前结束，未收到结束事件')
                 llm_calls += 1
+            except (tx.TurnCancelled, tx.TurnTimeout):
+                raise
             except NotImplementedError:
                 fallback_reason = "当前模型提供方不支持工具调用，已降级为直接检索回答"
                 break
@@ -528,10 +543,10 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
                 logger.error(f"模型调用失败: {type(e).__name__}: {e}", exc_info=True)
                 if not trace and not answer_parts:
                     tutor_session.finish_turn(turn_id, tutor_session.STATE_FAILED,
-                                              error=f"{type(e).__name__}: {e}")
+                                              error=f"{type(e).__name__}: {e}", answer=locals().get("streamed_text", ""))
                     yield emit("error", {"message": "模型暂时不可用，请稍后重试或换一个模型。"})
                     return
-                break
+                raise
 
             calls = end_event.get("tool_calls") or []
             if not calls:
@@ -559,7 +574,10 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
                 yield emit("tool_call", {"tool": name, "label": tutor_tools.tool_label(name),
                                          "args": {k: v for k, v in (args or {}).items()
                                                   if isinstance(v, (str, int, float, bool))}})
-                result = tutor_tools.execute_tool(name, args, tool_ctx)
+                execution.check()
+                execution.mark('tool:' + name)
+                result = tx.call(lambda: tutor_tools.execute_tool(name, args, tool_ctx), execution)
+                execution.check()
                 summary = _summarize_tool_result(name, result)
                 yield emit("tool_result", {"tool": name, "label": tutor_tools.tool_label(name),
                                            "ok": bool(result.get("ok", True)),
@@ -587,10 +605,12 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
                 messages.append({"role": "tool", "tool_call_id": call.get("id") or name,
                                  "content": content})
 
+        execution.check()
         if fallback_reason:
             yield emit("notice", {"level": "info", "message": fallback_reason})
-            yield from _fallback_answer(provider, messages, tool_ctx, answer_parts, emit)
+            yield from tx.iterate(_fallback_answer(provider, messages, tool_ctx, answer_parts, emit), execution)
 
+        execution.check()
         answer = "".join(answer_parts).strip()
         if not answer and not ask_user_payload:
             answer = ("我已经读取了你的学习记录和资料，但这一轮没有生成有效回答。"
@@ -602,8 +622,10 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
             yield emit("artifact", {"artifact": artifact})
 
         duration = round(time.time() - started, 2)
-        tutor_session.finish_turn(turn_id, tutor_session.STATE_SUCCEEDED, answer=answer,
+        won = tutor_session.finish_turn(turn_id, tutor_session.STATE_SUCCEEDED, answer=answer,
                                   steps=tool_calls_made, llm_calls=llm_calls)
+        if not won:
+            return
         yield emit("done", {
             "answer": answer,
             "sources": tool_ctx.sources,
@@ -621,15 +643,24 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
             "llm_calls": llm_calls,
             "tool_calls": tool_calls_made,
         })
+    except (tx.TurnCancelled, tx.TurnTimeout) as e:
+        status = tutor_session.STATE_FAILED if isinstance(e, tx.TurnTimeout) else tutor_session.STATE_CANCELLED
+        tutor_session.finish_turn(turn_id, status, answer="".join(locals().get('answer_parts', [])) or locals().get('streamed_text', ''), error=str(e))
+        yield emit("error", {"message": str(e), "cancelled": status == tutor_session.STATE_CANCELLED})
     except GeneratorExit:
+        execution.cancel()
         # 客户端断开：保留已落库的事件与轮次状态，便于刷新后重连
         tutor_session.finish_turn(turn_id, tutor_session.STATE_CANCELLED, error="连接中断")
         raise
     except Exception as e:
         logger.error(f"统一伴学运行异常: {type(e).__name__}: {e}", exc_info=True)
         tutor_session.finish_turn(turn_id, tutor_session.STATE_FAILED,
-                                  error=f"{type(e).__name__}: {e}")
+                                  error=f"{type(e).__name__}: {e}", answer=locals().get("streamed_text", ""))
         yield emit("error", {"message": f"运行失败：{type(e).__name__}"})
+
+    finally:
+        tx.release(turn_id)
+        binding.__exit__(None, None, None)
 
 
 def _count_tokens(text: Any) -> int:
@@ -704,7 +735,7 @@ def _fallback_answer(provider, messages: List[Dict[str, Any]], tool_ctx: tutor_t
             yield {"type": "delta", "content": piece}
     except Exception as e:
         logger.error(f"降级回答失败: {e}")
-        yield {"type": "error", "message": "回答生成失败，请稍后重试。"}
+        raise
         return
     answer_parts.append("".join(chunks))
 

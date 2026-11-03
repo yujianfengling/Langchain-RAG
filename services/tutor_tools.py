@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from services import tutor_session
+from services.turn_execution import TurnCancelled
 from utils.logger import logger
 
 
@@ -781,6 +782,8 @@ def execute_tool(name: str, args: Dict[str, Any],
         out["_tool"] = name
         out["_elapsed_ms"] = int((time.time() - started) * 1000)
         return out
+    except TurnCancelled:
+        raise
     except TypeError as e:
         # 参数不匹配：明确告知模型重试，不吞掉
         logger.warning(f"工具 {name} 参数错误: {e}")

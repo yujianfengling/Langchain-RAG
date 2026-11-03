@@ -43,12 +43,31 @@ async def _tutor_stream_async(request: TutorStreamRequest, user_id: str, role: s
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue(maxsize=64)
     stop_event = threading.Event()
+    holder = {"turn_id": None, "partial": "", "terminal": False}
+    from services import turn_execution as tx
 
     def _safe_put(item):
-        try:
-            loop.call_soon_threadsafe(queue.put_nowait, item)
-        except Exception:
-            pass
+        if item:
+            holder['turn_id'] = item.get('turn_id') or holder['turn_id']
+            if item.get('type') == 'delta': holder['partial'] += item.get('content') or ''
+        if stop_event.is_set():
+            end(tutor_session.STATE_CANCELLED, '客户端已断开')
+            return
+        future = asyncio.run_coroutine_threadsafe(queue.put(item), loop)
+        while not stop_event.is_set():
+            try:
+                future.result(timeout=.1)
+                return
+            except TimeoutError: continue
+            except Exception: return
+        future.cancel()
+
+    def end(status, reason):
+        turn_id = holder['turn_id']
+        if not turn_id: return
+        execution = tx.get(turn_id)
+        if execution: execution.cancel('timeout' if status == tutor_session.STATE_FAILED else 'cancelled')
+        tutor_session.finish_turn(turn_id, status, answer=holder['partial'], error=reason)
 
     def _worker():
         gen = None
@@ -88,13 +107,34 @@ async def _tutor_stream_async(request: TutorStreamRequest, user_id: str, role: s
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
+                turn_id = holder['turn_id']
+                execution = tx.get(turn_id) if turn_id else None
+                try:
+                    if execution: execution.check()
+                except (tx.TurnCancelled, tx.TurnTimeout) as e:
+                    status = tutor_session.STATE_FAILED if isinstance(e, tx.TurnTimeout) else tutor_session.STATE_CANCELLED
+                    end(status, str(e))
+                    yield _sse({'type':'error', 'message':str(e), 'cancelled':status==tutor_session.STATE_CANCELLED})
+                    holder['terminal'] = True
+                    break
                 continue
             if event is None:
+                end(tutor_session.STATE_FAILED, '响应流提前结束，未收到终态')
+                yield _sse({'type':'error','message':'响应流提前结束，未收到完整回答'})
+                holder['terminal'] = True
                 break
+            if event.get('type') == 'error':
+                end(tutor_session.STATE_CANCELLED if event.get('cancelled') else tutor_session.STATE_FAILED,
+                    event.get('message') or '生成失败')
             yield _sse(event)
+            if event.get('type') in ('done','error'):
+                holder['terminal'] = True
+                break
     finally:
+        if not holder['terminal']:
+            end(tutor_session.STATE_CANCELLED, '客户端断开，生成已中断')
         stop_event.set()
-        thread.join(timeout=2.0)
+        thread.join(timeout=0)
 
 
 @router.post("/tutor/stream")

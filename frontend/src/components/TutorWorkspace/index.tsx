@@ -17,7 +17,7 @@ import { useCourse } from '../../context/CourseContext';
 import { useIsNarrow } from '../../hooks/useIsNarrow';
 import {
   deleteArtifact, generateKnowledgeMap, getKnowledgeMap, getMapNode,
-  setNodeStatus,
+  setNodeStatus, cancelTurn,
   getTurn, getTutorSession, listArtifacts, listTutorConversations, listTurns, streamTutorTurn, updateArtifact, updateTutorSession,
   type GuidanceMode, type TutorSource,
 } from '../../api/tutor';
@@ -82,7 +82,11 @@ const historyToMessages = (rows: any[]): ChatMessage[] => {
       out.push({ id: 'hist-u-' + t.id, role: 'user', content: t.user_message });
     }
     if (t.answer) {
-      out.push({ id: 'hist-a-' + t.id, role: 'assistant', content: t.answer });
+      out.push({ id: 'hist-a-' + t.id, role: 'assistant', content: t.answer, error: t.status === 'CANCELLED' ? '本轮已中断' : t.status === 'FAILED' ? '本轮未完成' : undefined });
+    }
+    if (!t.answer && ['CANCELLED', 'FAILED'].includes(t.status)) {
+      out.push({ id: 'hist-a-' + t.id, role: 'assistant', content: '',
+        error: t.status === 'CANCELLED' ? '本轮已中断' : '本轮未完成' });
     }
     // 这一轮出的题挂在**同一条历史**下面：题目属于那次出题，
     // 删掉这条历史时它们一起消失（后端软删），不再另起一块。
@@ -221,6 +225,7 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   }, [leftOpen, rightOpen, isNarrow, isNarrowForPanel, toggleRightPanel]);
 
   const abortRef = useRef<AbortController | null>(null);
+  const activeTurnRef = useRef<string | null>(null);
   // 路由切换或页面卸载时中止未完成的流，避免旧请求继续更新已离开的页面。
   useEffect(() => () => { abortRef.current?.abort(); }, []);
   const listRef = useRef<HTMLDivElement>(null);
@@ -551,6 +556,7 @@ const includeNodeSources = useCallback(() => {
     pushMessage({ id: assistantId, role: 'assistant', content: '', streaming: true });
     setRunning(true);
 
+    activeTurnRef.current = null;
     abortRef.current = streamTutorTurn({
       message: content,
       subject_id: subjectId,
@@ -564,6 +570,9 @@ const includeNodeSources = useCallback(() => {
         if (subjectId !== activeSubject.current) return;
         switch (ev.type) {
           case 'start':
+            activeTurnRef.current = ev.turn_id || null;
+            if (ev.scope?.label) setScopeLabel(ev.scope.label);
+            break;
           case 'context':
             if (ev.scope?.label) setScopeLabel(ev.scope.label);
             break;
@@ -670,11 +679,13 @@ const includeNodeSources = useCallback(() => {
   }, [input, running, subjectId, ability, guidanceMode, selectedDocs, currentNode, conversationId, authUser, pushMessage, updateLast, loadMap, loadNode]);
 
   const stop = useCallback(() => {
+    if (activeTurnRef.current) void cancelTurn(activeTurnRef.current).catch(() => undefined);
     abortRef.current?.abort();
     abortRef.current = null;
+    activeTurnRef.current = null;
     setRunning(false);
     setStages([]);
-    updateLast({ streaming: false });
+    updateLast({ streaming: false, error: '本轮已停止；已生成内容保留' });
   }, [updateLast]);
 
   const startNodeActivity = useCallback((kind: 'learn' | 'practice' | 'note') => {

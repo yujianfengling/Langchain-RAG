@@ -262,6 +262,8 @@ def _rag_state_for_health() -> bool:
 
 @app.on_event("startup")
 def _start_rag_warmup() -> None:
+    from services import tutor_session
+    tutor_session.recover_interrupted_turns()
     """启动后**延迟**预热 rag（默认 15 秒；RAG_WARMUP_DELAY_SECONDS=0 关闭）
 
     为什么延迟而不是立即（同机 A/B 实测）：

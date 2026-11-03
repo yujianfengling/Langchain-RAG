@@ -219,7 +219,8 @@ class TestErrorClassification(unittest.TestCase):
         self.assertEqual(_classify_http_error(400), "invalid_request")
         self.assertEqual(_classify_http_error(401), "invalid_api_key")
         self.assertEqual(_classify_http_error(403), "forbidden")
-        self.assertEqual(_classify_http_error(404), "model_not_found")
+        # HTTP status alone cannot distinguish a missing route from a missing model.
+        self.assertEqual(_classify_http_error(404), "http_not_found")
         self.assertEqual(_classify_http_error(429), "rate_limited")
         self.assertEqual(_classify_http_error(500), "server_error")
 

@@ -155,7 +155,8 @@ def _ensure_base_schema(conn: sqlite3.Connection) -> bool:
 def _get_db() -> sqlite3.Connection:
     """获取数据库连接（每次新建，thread-safe）"""
     os.makedirs(_DATA_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    from services.turn_execution import connect
+    conn = connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     # V2.5.2：并发写等待（默认5s），避免 database is locked

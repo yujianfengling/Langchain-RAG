@@ -93,7 +93,8 @@ class PlanAdjustmentError(Exception):
 
 def _get_db() -> sqlite3.Connection:
     os.makedirs(_DATA_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    from services.turn_execution import connect
+    conn = connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")

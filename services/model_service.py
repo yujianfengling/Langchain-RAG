@@ -7,6 +7,7 @@ import time
 import random
 import requests
 import logging
+from services.turn_execution import TurnCancelled, TurnTimeout
 from typing import Optional, List, Dict, Any
 from config.models import get_model_config, get_model_api_key, get_default_model
 
@@ -67,13 +68,31 @@ def _classify_http_error(status_code: int) -> str:
     if status_code == 403:
         return "forbidden"
     if status_code == 404:
-        return "model_not_found"
+        return "http_not_found"
     if status_code == 429:
         return "rate_limited"
     if status_code >= 500:
         return "server_error"
     return f"http_error_{status_code}"
 
+
+
+def http_error_evidence(response):
+    import hashlib
+    import re
+    body = response.content if isinstance(response.content, (bytes, bytearray)) else b''
+    details = {'http_status': response.status_code, 'body_bytes': len(body),
+               'body_sha256': hashlib.sha256(body).hexdigest()}
+    try:
+        data = response.json()
+        error = data.get('error') or data
+        if isinstance(error, dict):
+            for key in ('code','type'):
+                value = error.get(key)
+                if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}',value):
+                    details[key] = value
+    except (ValueError, TypeError, AttributeError): pass
+    return details
 
 def _get_error_type(exc: Exception) -> str:
     """获取简化的错误类型（用于metadata和日志，不包含敏感信息）"""
@@ -206,12 +225,15 @@ class ModelProvider:
         total_latency = 0.0
         
         for attempt in range(max_retries):
+            from services.turn_execution import check as turn_check
+            turn_check()
             try:
                 start_time = time.time()
                 # 手动UTF-8编码请求体，避免requests在latin-1下编码中文报错
                 import json as _json
                 _body = _json.dumps(payload, ensure_ascii=False).encode('utf-8')
                 response = requests.post(url, headers=headers, data=_body, timeout=timeout)
+                turn_check()
                 latency = time.time() - start_time
                 total_latency += latency
                 
@@ -256,6 +278,11 @@ class ModelProvider:
                 status_code = getattr(getattr(e, "response", None), "status_code", None) \
                     if isinstance(e, requests.exceptions.HTTPError) else None
 
+                if isinstance(e, requests.exceptions.HTTPError) and e.response is not None:
+                    evidence = http_error_evidence(e.response)
+                    logger.warning("[ModelHTTP] provider=%s evidence=%s", self.model_name, evidence)
+                    if status_code == 404:
+                        error_type = ('model_not_found' if evidence.get('code') == 'model_not_found' else 'http_not_found')
                 # 检查是否可重试
                 if not _is_retryable_error(e):
                     logger.error(
@@ -287,6 +314,8 @@ class ModelProvider:
                         f"total_latency={total_latency:.2f}s"
                     )
 
+            except (TurnCancelled, TurnTimeout):
+                raise
             except ValueError as e:
                 # 业务错误（返回格式异常等）不重试
                 logger.error(f"[Vision] API响应解析失败: {str(e)}, model={self.model_name}")
@@ -330,6 +359,8 @@ class OpenAICompatibleProvider(ModelProvider):
         from services import capability_status, usage_ledger
         try:
             result = self._call_openai_compatible_api(messages, **kwargs)
+        except TurnCancelled:
+            raise
         except Exception as e:
             capability_status.safe_report(
                 capability_status.CAP_LLM, False,
@@ -365,6 +396,8 @@ class OpenAICompatibleProvider(ModelProvider):
             call_kwargs["extra_payload"] = extra
         try:
             result = self._call_openai_compatible_api(messages, **call_kwargs)
+        except TurnCancelled:
+            raise
         except Exception as e:
             capability_status.safe_report(
                 capability_status.CAP_LLM, False,
@@ -392,7 +425,14 @@ class OpenAICompatibleProvider(ModelProvider):
         from services import capability_status, usage_ledger
         if not self.api_key:
             raise ModelAPIError("模型未配置API密钥", status_code=None, error_type="invalid_api_key")
+        from services import turn_execution as tx
+        execution = tx.current()
+        tx.check()
         timeout = kwargs.get("timeout", VISION_DEFAULT_TIMEOUT)
+        if execution:
+            left = max(.1, execution.deadline - time.monotonic())
+            timeout = (min(10., left), min(15., left))
+            execution.mark('connecting')
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -411,14 +451,21 @@ class OpenAICompatibleProvider(ModelProvider):
         text_parts: List[str] = []
         tool_calls: Dict[int, Dict[str, Any]] = {}
         finish_reason = None
+        saw_done = False
         try:
             import json as _json
             _body = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
             with requests.post(url, headers=headers, data=_body,
                                timeout=timeout, stream=True) as resp:
+                if execution:
+                    execution.responses.append(resp)
+                    execution.mark('response_headers')
+                    execution.check()
                 if resp.status_code != 200:
+                    logger.warning('[ModelHTTP] provider=%s evidence=%s', self.model_name, http_error_evidence(resp))
                     resp.raise_for_status()
-                for raw in resp.iter_lines(decode_unicode=False):
+                for raw in resp.iter_lines(chunk_size=1, decode_unicode=False):
+                    tx.check()
                     if raw is None:
                         continue
                     line = raw.decode("utf-8", errors="ignore").strip()
@@ -426,6 +473,7 @@ class OpenAICompatibleProvider(ModelProvider):
                         continue
                     data_str = line[6:].strip()
                     if data_str == "[DONE]":
+                        saw_done = True
                         break
                     try:
                         data = _json.loads(data_str)
@@ -434,6 +482,7 @@ class OpenAICompatibleProvider(ModelProvider):
                             f"[TutorStream] SSE JSON 解析失败: prefix={data_str[:60]!r}")
                         raise ModelAPIError("模型流式响应格式异常(JSON解析失败)",
                                             status_code=200, error_type="response_parse_error")
+                    if execution: execution.mark('first_event')
                     choices = data.get("choices") or []
                     if not choices:
                         continue
@@ -443,9 +492,11 @@ class OpenAICompatibleProvider(ModelProvider):
                         finish_reason = choice["finish_reason"]
                     piece = delta.get("content")
                     if piece:
+                        if execution: execution.mark('first_content')
                         text_parts.append(piece)
                         yield {"type": "content", "text": piece}
                     for tc in (delta.get("tool_calls") or []):
+                        if execution: execution.mark('tool_delta')
                         idx = int(tc.get("index") or 0)
                         slot = tool_calls.setdefault(idx, {"id": None, "type": "function",
                                                            "function": {"name": None,
@@ -459,15 +510,25 @@ class OpenAICompatibleProvider(ModelProvider):
                             slot["function"]["arguments"] += fn["arguments"]
         except GeneratorExit:
             raise
+        except TurnCancelled:
+            raise
         except ModelAPIError:
             capability_status.safe_report(capability_status.CAP_LLM, False,
                                           reason="stream_with_tools 失败")
+            raise
+        except TurnCancelled:
             raise
         except Exception as e:
             capability_status.safe_report(capability_status.CAP_LLM, False,
                                           reason=f"{type(e).__name__}: {e}")
             raise
 
+        tx.check()
+        if not saw_done and not finish_reason:
+            raise ModelAPIError("模型流在结束标记前断开", status_code=200, error_type="incomplete_stream")
+        if execution:
+            elapsed = {k: round(v - execution.timings['started'], 3) for k,v in execution.timings.items()}
+            logger.info('[TutorTiming] turn=%s stages=%s', execution.turn_id, elapsed)
         capability_status.safe_report(
             capability_status.CAP_LLM, True,
             reason=f"model={(self.config or {}).get('model_name') or self.model_name}（tutor）")
@@ -494,6 +555,8 @@ class OpenAICompatibleProvider(ModelProvider):
                 yield chunk
         except GeneratorExit:
             # 客户端主动断开（用户切页/停止生成）不是模型故障，不能误报成降级
+            raise
+        except TurnCancelled:
             raise
         except Exception as e:
             capability_status.safe_report(

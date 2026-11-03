@@ -21,6 +21,8 @@ import os
 import sqlite3
 import time
 import uuid
+import socket
+from services.turn_execution import gated
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -130,6 +132,8 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     """
     try:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(tutor_turns)").fetchall()}
+        for name, kind in [('owner_pid','INTEGER'),('owner_start','TEXT'),('owner_host','TEXT')]:
+            if name not in cols: conn.execute(f"ALTER TABLE tutor_turns ADD COLUMN {name} {kind}")
         if "node_id" not in cols:
             conn.execute("ALTER TABLE tutor_turns ADD COLUMN node_id TEXT")
             logger.info("tutor_sessions: tutor_turns 已补列 node_id")
@@ -251,6 +255,8 @@ def set_material_scope(user_id: str, subject_id: str,
 def create_turn(user_id: str, subject_id: Optional[str], ability: str,
                 user_message: str, conversation_id: Optional[str] = None,
                 node_id: Optional[str] = None) -> str:
+    from services.process_identity import identity
+    _, birth = identity(os.getpid())
     turn_id = "turn_" + uuid.uuid4().hex[:12]
     now = _now()
     conn = _get_db()
@@ -260,6 +266,8 @@ def create_turn(user_id: str, subject_id: Optional[str], ability: str,
             " status, user_message, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (turn_id, user_id, subject_id, conversation_id, node_id, ability, STATE_RUNNING,
              (user_message or "")[:4000], now, now))
+        conn.execute("UPDATE tutor_turns SET owner_pid=?,owner_start=?,owner_host=? WHERE id=?",
+            (os.getpid(),birth,socket.gethostname(),turn_id))
         conn.commit()
     finally:
         conn.close()
@@ -270,6 +278,9 @@ def append_event(turn_id: str, event_type: str, payload: Dict[str, Any]) -> int:
     """写入事件并返回**单调递增的 seq**（同一 turn 内由数据库唯一约束保证）。"""
     conn = _get_db()
     try:
+        state = conn.execute("SELECT status FROM tutor_turns WHERE id=?", (turn_id,)).fetchone()
+        if state and state['status'] != STATE_RUNNING and event_type not in ('done', 'error'):
+            raise RuntimeError('轮次已结束，不再接收事件')
         # 先占位取 seq：WAL + busy_timeout 下并发安全
         for _ in range(5):
             row = conn.execute(
@@ -305,9 +316,10 @@ def list_events(turn_id: str, after_seq: int = 0) -> List[Dict[str, Any]]:
             for r in rows]
 
 
+@gated
 def finish_turn(turn_id: str, status: str, answer: Optional[str] = None,
                 error: Optional[str] = None, steps: Optional[int] = None,
-                llm_calls: Optional[int] = None) -> None:
+                llm_calls: Optional[int] = None) -> bool:
     fields = ["status=?", "updated_at=?", "finished_at=?"]
     values: List[Any] = [status, _now(), _now()]
     if answer is not None:
@@ -325,8 +337,9 @@ def finish_turn(turn_id: str, status: str, answer: Optional[str] = None,
     values.append(turn_id)
     conn = _get_db()
     try:
-        conn.execute(f"UPDATE tutor_turns SET {', '.join(fields)} WHERE id=?", tuple(values))
+        changed = conn.execute(f"UPDATE tutor_turns SET {', '.join(fields)} WHERE id=? AND status='RUNNING'", tuple(values)).rowcount
         conn.commit()
+        return bool(changed)
     finally:
         conn.close()
 
@@ -379,6 +392,7 @@ def list_turns(user_id: str, subject_id: Optional[str] = None,
     return [dict(r) for r in rows]
 
 
+@gated
 def request_cancel(turn_id: str, user_id: str) -> bool:
     conn = _get_db()
     try:
@@ -386,11 +400,17 @@ def request_cancel(turn_id: str, user_id: str) -> bool:
         if not row or row["user_id"] != user_id:
             return False
         if row["status"] in TERMINAL_STATES:
-            return False
+            return False  # No new transition: preserve the existing public return contract.
+        partial = ''.join(_loads(r['payload_json'], {}).get('content', '') for r in conn.execute(
+            "SELECT payload_json FROM tutor_turn_events WHERE turn_id=? AND type='delta' ORDER BY seq", (turn_id,)))
+        conn.execute("UPDATE tutor_turns SET answer=? WHERE id=? AND status='RUNNING'", (partial,turn_id))
         conn.execute(
-            "UPDATE tutor_turns SET cancel_requested=1, updated_at=? WHERE id=?",
-            (_now(), turn_id))
+            "UPDATE tutor_turns SET cancel_requested=1, status='CANCELLED', finished_at=?, updated_at=? WHERE id=? AND status='RUNNING'",
+            (_now(), _now(), turn_id))
         conn.commit()
+        from services import turn_execution
+        execution = turn_execution.get(turn_id)
+        if execution: execution.cancel()
         return True
     finally:
         conn.close()
@@ -521,3 +541,21 @@ def resolve_node(user_id, subject_id, node_id=NODE_UNSET):
             raise ValueError("知识点不属于当前学科")
         value = None  # stale historical state is not an authorization source
     return value or None
+
+
+def recover_interrupted_turns():
+    """Only recover a proven dead/reused local process; legacy ownership stays unknown."""
+    from services.process_identity import identity
+    conn = _get_db()
+    try:
+        rows = conn.execute("SELECT id,owner_pid,owner_start,owner_host FROM tutor_turns WHERE status='RUNNING'").fetchall()
+    finally: conn.close()
+    recovered = []
+    for row in rows:
+        if row['owner_host'] != socket.gethostname() or not row['owner_pid'] or not row['owner_start']: continue
+        state, birth = identity(row['owner_pid'])
+        if state == 'dead' or (state == 'alive' and birth != row['owner_start']):
+            partial = ''.join(e['payload'].get('content','') for e in list_events(row['id']) if e['type']=='delta')
+            if finish_turn(row['id'], STATE_FAILED, answer=partial, error='执行进程已中断；未自动重发请求'):
+                recovered.append(row['id'])
+    return recovered

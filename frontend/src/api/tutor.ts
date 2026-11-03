@@ -301,6 +301,7 @@ export const streamTutorTurn = (
           if (!dataStr) continue;
           let ev: any;
           try { ev = JSON.parse(dataStr); } catch { continue; }
+          if (controller.signal.aborted) return;
           handlers.onEvent(ev);
           if (ev.type === 'done') { handlers.onDone?.(ev); return; }
           if (ev.type === 'error') {
