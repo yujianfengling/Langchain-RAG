@@ -287,6 +287,9 @@ def _start_rag_warmup() -> None:
         auto_resume_interrupted_jobs()
         from services import import_vision
         import_vision.recover()
+        # 已完成/取消任务的 import_tmp 保留 24h 供重试，之后启动时清理
+        from services.import_service import cleanup_stale_import_tmp
+        cleanup_stale_import_tmp()
     except Exception as e:      # 恢复失败不能阻塞启动
         logger.warning(f"[import] 中断任务收敛失败（不阻塞启动）: {e}")
     # 建库被中断会留下"线上索引为空 + .bak 尚在"的残局（回滚没机会执行），
@@ -539,8 +542,13 @@ async def health_ready():
 _DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 if (_DIST_DIR / "index.html").is_file():
+    import mimetypes
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
+
+    # Windows 注册表常把 .mjs 识别为 text/plain；PDF.js worker 是 ES module，
+    # 浏览器会按严格 MIME 拒绝加载，必须在 mount 前修正。
+    mimetypes.add_type("text/javascript", ".mjs")
 
     _assets_dir = _DIST_DIR / "assets"
     if _assets_dir.is_dir():

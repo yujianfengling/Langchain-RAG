@@ -302,7 +302,10 @@ def build_document_page_index(
     source_sha = pdf_ocr._file_sha(pdf_path)
     scale = _RENDER_DPI / 72.0
     image_dir = _images_root() / _subject_key(subject_id) / _doc_key(doc_id)
-    os.makedirs(image_dir, exist_ok=True)
+    # PDF 由浏览器 PDF.js 渲染，不再预生成整本页面图；PPT 仍保留页面图兜底。
+    persist_images = pdf_path.suffix.lower() in (".pptx", ".ppt")
+    if persist_images:
+        os.makedirs(image_dir, exist_ok=True)
 
     conn = _conn()
     task_flag = _register_task(subject_id, doc_id)
@@ -340,6 +343,9 @@ def build_document_page_index(
             image_path, sha = item
             if sha and sha != source_sha:
                 return False
+            if not image_path:
+                # 新版 PDF 页面索引只存文本/坐标；没有图片也算已建好
+                return not persist_images
             try:
                 path = Path(image_path)
                 return path.is_file() and path.stat().st_size > 0
@@ -402,10 +408,17 @@ def build_document_page_index(
                 break
             try:
                 page = doc.load_page(page_no - 1)
-                pix = page.get_pixmap(dpi=_RENDER_DPI, colorspace=fitz.csRGB, alpha=False)
-                image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                image_path = image_dir / f"p{page_no}.webp"
-                image.save(str(image_path), "WEBP", quality=80, method=4)
+                if persist_images:
+                    pix = page.get_pixmap(dpi=_RENDER_DPI, colorspace=fitz.csRGB, alpha=False)
+                    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                    image_path = image_dir / f"p{page_no}.webp"
+                    image.save(str(image_path), "WEBP", quality=80, method=4)
+                    width, height, image_path_value = pix.width, pix.height, str(image_path)
+                else:
+                    # PDF.js 在浏览器渲染；这里只记录页面尺寸和文本/坐标
+                    width = int(page.rect.width * scale)
+                    height = int(page.rect.height * scale)
+                    image_path_value = ""
                 text = page_text.get(page_no, "")
                 blocks = page_blocks.get(page_no) or []
                 conn.execute(
@@ -413,8 +426,8 @@ def build_document_page_index(
                        (subject_id, doc_id, file_name, page_no, image_path,
                         width, height, text, blocks_json, created_at, source_sha)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                    (subject_id, doc_id, file_name, page_no, str(image_path),
-                     pix.width, pix.height, _safe_text(text),
+                    (subject_id, doc_id, file_name, page_no, image_path_value,
+                     width, height, _safe_text(text),
                      json.dumps(blocks, ensure_ascii=False),
                      datetime.now().isoformat(timespec="seconds"), source_sha),
                 )
@@ -637,19 +650,60 @@ def page_image_url(subject_id: str, doc_id: str, page_no: int) -> str:
     return f"/api/knowledge/{quote(str(subject_id), safe='')}/pages/image?{params}"
 
 
+def _render_pdf_page_on_demand(subject_id: str, doc_id: str, page_no: int,
+                                row: sqlite3.Row) -> Optional[str]:
+    """老接口兼容：PDF 页面图没有预生成时，第一次请求再渲染并缓存。"""
+    file_name = str(row["file_name"] or "")
+    if not file_name.lower().endswith(".pdf"):
+        return None
+    source = get_subjects_dir() / str(subject_id) / file_name
+    if not source.is_file():
+        return None
+    try:
+        import fitz
+        from PIL import Image
+        base = Path(row["image_path"]) if row["image_path"] else (
+            _images_root() / _subject_key(subject_id) / _doc_key(doc_id) / f"p{page_no}.webp")
+        base.parent.mkdir(parents=True, exist_ok=True)
+        doc = fitz.open(str(source))
+        try:
+            page = doc.load_page(int(page_no) - 1)
+            pix = page.get_pixmap(dpi=_RENDER_DPI, colorspace=fitz.csRGB, alpha=False)
+            image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            image.save(str(base), "WEBP", quality=80, method=4)
+        finally:
+            doc.close()
+        conn = _conn()
+        try:
+            conn.execute(
+                "UPDATE pages SET image_path=?, width=?, height=? "
+                "WHERE subject_id=? AND doc_id=? AND page_no=?",
+                (str(base), pix.width, pix.height, subject_id, doc_id, int(page_no)))
+            conn.commit()
+        finally:
+            conn.close()
+        return str(base)
+    except Exception as e:
+        logger.warning(f"页面图按需渲染失败 {file_name} 第{page_no}页: {e}")
+        return None
+
+
 def get_page_image(subject_id: str, doc_id: str, page_no: int) -> Optional[str]:
     conn = _conn()
     try:
         doc_id = resolve_doc_id(subject_id, doc_id)
         row = conn.execute(
-            "SELECT image_path FROM pages WHERE subject_id=? AND doc_id=? AND page_no=?",
+            "SELECT image_path, file_name FROM pages "
+            "WHERE subject_id=? AND doc_id=? AND page_no=?",
             (subject_id, doc_id, int(page_no))).fetchone()
     finally:
         conn.close()
     if not row:
         return None
-    path = Path(row["image_path"])
-    return str(path) if path.is_file() else None
+    path = Path(row["image_path"]) if row["image_path"] else None
+    if path and path.is_file():
+        return str(path)
+    return _render_pdf_page_on_demand(subject_id, doc_id, page_no, row)
 
 
 def list_document_pages(subject_id: str, doc_id: str) -> Dict[str, Any]:

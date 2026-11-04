@@ -2050,6 +2050,8 @@ def _run_job_locked(job_id: str, executor_id: str,
     finally:
         # 清理本次解包/临时内容（重试/继续所需的上传原文另外保留）
         shutil.rmtree(tmp_job_dir / "extracted", ignore_errors=True)
+        # 成功任务的 raw 工作副本不立即删：保留重试/继续与中断恢复的窗口。
+        # 旧目录由 cleanup_stale_import_tmp() 在启动时按保留时间清理。
 
 # ==================== 导入后续接页面索引（2026-10-30） ====================
 _PAGE_INDEX_SUFFIXES = (".pdf", ".pptx", ".ppt")
@@ -2492,8 +2494,11 @@ def _job_to_public(job: Dict[str, Any], items: List[Dict[str, Any]]) -> Dict[str
     # 继续会用修好的解包器重跑，不要求用户重传。
     legacy_has_failed = (not plan) and any(
         it["status"] == "failed" for it in public_items)
+    # 用户点了「取消」就是不要再导入。cancelled 即使还留着原包和未处理成员，
+    # 也不再提供「继续」——否则取消之后界面上只剩继续，没有办法丢掉这次上传。
     can_continue = (
         job.get("status") in TERMINAL_JOB_STATUSES
+        and job.get("status") != "cancelled"
         and bool(job.get("raw_dir"))
         and (unprocessed > 0 or can_retry or legacy_partial or legacy_has_failed)
     )
@@ -2773,6 +2778,36 @@ def resume_job(job_id: str) -> Optional[str]:
     return job_id
 
 
+def cleanup_stale_import_tmp(max_age_hours: float = 24.0) -> int:
+    """清理超过保留时间的已完成/已取消任务临时目录。
+
+    成功任务保留一段时间，给"重试/继续/中断恢复"留窗口；启动时再按
+    max_age_hours 清理，避免 import_tmp 无限膨胀。
+    """
+    root = _import_tmp_root()
+    if not root.is_dir():
+        return 0
+    now = time.time()
+    removed = 0
+    for entry in root.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("imp_"):
+            continue
+        try:
+            age_hours = (now - entry.stat().st_mtime) / 3600.0
+        except OSError:
+            continue
+        if age_hours < max_age_hours:
+            continue
+        job = get_job(entry.name)
+        if not job or job.get("status") not in ("succeeded", "cancelled"):
+            continue
+        cleanup_job_files(entry.name)
+        removed += 1
+    if removed:
+        logger.info(f"[import] 清理过期临时目录 {removed} 个（>{max_age_hours:g}h）")
+    return removed
+
+
 def cleanup_job_files(job_id: str) -> None:
     """删除该任务的临时目录（只在受控 import_tmp 根内）。"""
     try:
@@ -2793,7 +2828,7 @@ __all__ = [
     "TERMINAL_JOB_STATUSES",
     "auto_resume_interrupted_jobs",
     "cancel_job",
-    "cleanup_job_files",
+    "cleanup_job_files", "cleanup_stale_import_tmp",
     "continue_job",
     "create_import_job",
     "get_job",

@@ -117,3 +117,27 @@ def test_verify_attribution_marks_mismatch_pending():
         [STABILITY], ask)
     assert out[0] == STABILITY
     assert out[1] is None
+
+
+def test_verify_keeps_on_topic_stem_when_auditor_says_pending():
+    """审核把「定义」标成待确认时，题干确实在考这个知识点，就要计入。
+
+    反例仍成立：题干是时间复杂度、却自带稳定性归属，不能因为自带归属就被捞回来。
+    """
+    topic = "岩石力学定义与研究范畴"
+
+    def ask(_prompt):
+        return ('{"assignments":['
+                '{"index":1,"tests":"定义","knowledge_point":"待确认"},'
+                '{"index":2,"tests":"时间复杂度","knowledge_point":"待确认"}]}')
+
+    out = kp_attribution.verify_attribution(
+        [
+            {"question": "根据岩石力学的定义，它主要探讨的是什么？",
+             "knowledge_point": topic},
+            {"question": "快速排序的最坏时间复杂度是 O(n^2)。",
+             "knowledge_point": topic},
+        ],
+        [topic], ask)
+    assert out[0] == topic
+    assert out[1] is None

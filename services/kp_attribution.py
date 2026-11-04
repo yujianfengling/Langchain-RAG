@@ -115,14 +115,44 @@ def verify_attribution(items, allowed_kps, ask):
         key = normalize_kp_name(mapping.get(i) or "")
         kp = norm.get(key) if key in norm else None
         if kp and not tests_overlap(tests_map.get(i) or "", kp):
-            # 审核给出的"实际考查内容"与该知识点核心词没有共同点 → 待确认
+            # 审核给出的"实际考查内容"与该知识点核心词没有共同点 → 先撤回
             kp = None
-        if not kp and not mapping.get(i) and it.get("knowledge_point"):
-            # 审核完全没给出结果时，回退到自带归属（仅当在集合内）
-            fallback = normalize_kp_name(it.get("knowledge_point"))
-            kp = norm.get(fallback)
+        stem = str(it.get("question") or it.get("stem") or "")
+        if not kp:
+            # 审核写成待确认，或 tests 只用了名称末尾两个词、把"定义"这类前半段考点否掉。
+            # 题目自带归属在允许集合内，且题干含该知识点后半段的区分词时，保留自带归属。
+            # 不能无条件回退：题干对不上时仍是待确认，避免把"时间复杂度"算进"稳定性"。
+            own_key = normalize_kp_name(it.get("knowledge_point") or "")
+            own = norm.get(own_key)
+            if own and stem_supports_kp(stem, own):
+                kp = own
+            elif key in norm and stem_supports_kp(stem, norm[key]):
+                kp = norm[key]
         out.append(kp)
     return out
+
+
+def stem_supports_kp(stem: str, kp_name: str) -> bool:
+    """题干是否真在考这个知识点，而不是只共用了名称前缀。
+
+    两个词以内：任一出现即可。更长的名称只用**后半段**区分词
+    （"岩石力学定义与研究范畴" → 定义/研究/范畴；
+     "快速排序稳定性判断" → 稳定性/判断）。
+    这样"根据岩石力学的定义"能计到定义这个知识点，
+    而"快速排序的最坏时间复杂度"不会因为带了"快速排序"就被算进稳定性。
+    """
+    text = normalize_kp_name(stem)
+    if not text:
+        return False
+    toks = _terms(kp_name)
+    if not toks:
+        return False
+    core = toks if len(toks) <= 2 else toks[len(toks) // 2:]
+    for token in core:
+        nt = normalize_kp_name(token)
+        if nt and nt in text:
+            return True
+    return False
 
 
 def tests_overlap(tests: str, kp_name: str) -> bool:

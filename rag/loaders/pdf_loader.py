@@ -119,15 +119,33 @@ class PdfLoader(BaseLoader):
             if self._is_scanned_pdf(file_path):
                 return self._load_scanned_pdf(file_path)
 
-            vision_state = {"images": 0, "started": time.time()}
+            # 文本层丰富的 PDF：只挑少量图做视觉，避免 20 张图 × 1 秒把解析拖到 20s+
+            vision_limit = self._vision_image_limit(file_path)
+            text_chars_per_page = self._text_chars_per_page(file_path)
+            vision_state = {
+                "images": 0, "started": time.time(), "limit": vision_limit,
+                # 只在正文型 PDF 里跳过小图；图片型/扫描件仍保留完整视觉判断
+                "skip_small": vision_limit <= 8,
+            }
 
             def _enrich_one(doc):
                 try:
                     metadata = getattr(doc, "metadata", None) or {}
                     modality = str(metadata.get("modality") or "")
                     if modality in ("image", "table", "formula"):
-                        max_images = max(1, int(os.getenv("VISION_MAX_IMAGES_PER_DOC", "20") or "20"))
+                        max_images = int(vision_state.get("limit") or 1)
                         budget_s = float(os.getenv("VISION_DOC_BUDGET_SECONDS", "180") or "180")
+                        # 小图（图标/装饰/小公式）直接跳过视觉；页面扫描图不会命中
+                        if modality == "image" and vision_state.get("skip_small"):
+                            width = int(metadata.get("image_width") or 0)
+                            height = int(metadata.get("image_height") or 0)
+                            min_pixels = int(os.getenv("VISION_MIN_IMAGE_PIXELS", "40000") or "40000")
+                            if width and height and width * height < min_pixels:
+                                try:
+                                    doc.metadata["vision_skip_reason"] = "too_small"
+                                except Exception:
+                                    pass
+                                return doc
                         if (vision_state["images"] >= max_images
                                 or (time.time() - vision_state["started"]) >= budget_s):
                             try:
@@ -168,8 +186,11 @@ class PdfLoader(BaseLoader):
                 # 降级到旧架构
                 return self._load_with_legacy_architecture(file_path)
             
-            # 提取图片文件（如果有）
-            elements = self._extract_images_from_elements(elements, file_path)
+            # 正文型 PDF：只保留最大的少量图做视觉，其余装饰图不落盘
+            image_max = vision_limit if vision_limit <= 8 else None
+            image_min_px = int(os.getenv("VISION_MIN_IMAGE_PIXELS", "40000") or "40000") if image_max else 0
+            elements = self._extract_images_from_elements(
+                elements, file_path, max_images=image_max, min_pixels=image_min_px)
             
             # 使用 DocumentAdapter 转换为 Document
             # v2.6：生产入库路径启用小元素合并。PDF 抽取是逐元素的，
@@ -202,6 +223,8 @@ class PdfLoader(BaseLoader):
                 "pages_total": page_count or 0,
                 "pages_parsed": page_count or 0,
                 "parse_engine": "pymupdf",
+                "vision_limit": vision_limit,
+                "text_chars_per_page": round(text_chars_per_page, 1),
                 "vision_stats": getattr(self.enricher, "last_stats", {}) or {},
             }
             return self._create_success_result(documents, metadata=meta)
@@ -402,6 +425,50 @@ class PdfLoader(BaseLoader):
             logger.warning(f"读取 PDF 页数失败（回退单次解析）: {e}")
             return 0
 
+    def _text_chars_per_page(self, file_path: Path, sample_pages: int = 5) -> float:
+        """采样估算文本层密度，用于决定视觉预算；不 OCR、不渲染。"""
+        try:
+            import fitz
+            doc = fitz.open(str(file_path))
+            total = doc.page_count
+            if total <= 0:
+                doc.close()
+                return 0.0
+            indexes = {0, total - 1, total // 2}
+            if total >= 4:
+                indexes.add(total // 4)
+                indexes.add((total * 3) // 4)
+            chars = sum(len(doc[i].get_text("text") or "") for i in sorted(indexes)[:sample_pages])
+            doc.close()
+            return chars / max(1, min(sample_pages, len(indexes)))
+        except Exception as e:
+            logger.debug(f"PDF 文本层采样失败（按普通 PDF 处理）: {e}")
+            return 0.0
+
+    def _vision_image_limit(self, file_path: Path) -> int:
+        """文本层越丰富，视觉预算越小；扫描件/图片型 PDF 保持完整预算。
+
+        分档（可用环境变量覆盖）：
+        - >= 100 字符/页：最多 4 张，属于正文型 PDF，图多为公式/示意；
+        - >= 50 字符/页：最多 8 张，正文与图混合；
+        - 其余（扫描/图片型）：沿用 VISION_MAX_IMAGES_PER_DOC（默认 20）。
+        """
+        try:
+            base = max(1, int(os.getenv("VISION_MAX_IMAGES_PER_DOC", "20") or "20"))
+            text_limit = max(1, int(os.getenv("VISION_MAX_IMAGES_PER_TEXT_PDF", "4") or "4"))
+            semi_limit = max(1, int(os.getenv("VISION_MAX_IMAGES_PER_SEMI_TEXT_PDF", "8") or "8"))
+            threshold = max(1, int(os.getenv("VISION_TEXT_PDF_CHARS_PER_PAGE", "100") or "100"))
+            semi_threshold = max(1, int(os.getenv(
+                "VISION_TEXT_PDF_MID_CHARS_PER_PAGE", "50") or "50"))
+            text_density = self._text_chars_per_page(file_path)
+            if text_density >= threshold:
+                return min(base, text_limit)
+            if text_density >= semi_threshold:
+                return min(base, semi_limit)
+        except (TypeError, ValueError):
+            pass
+        return max(1, int(os.getenv("VISION_MAX_IMAGES_PER_DOC", "20") or "20"))
+
     def _range_cache_dir(self) -> Path:
         from config.path_config import get_data_dir
         d = Path(get_data_dir()) / "cache" / "pdf_ranges"
@@ -476,7 +543,11 @@ class PdfLoader(BaseLoader):
             # 检测器收到的已经是真实页码，这里不能再传 page_offset，否则页码会被加倍
             # （实测把 958 页的书算到 1757 页）。
             elements = self.analyzer.analyze(file_path, start_page=start, end_page=end)
-            elements = self._extract_images_from_elements(elements, file_path)
+            vision_limit = self._vision_image_limit(file_path)
+            image_max = vision_limit if vision_limit <= 8 else None
+            image_min_px = int(os.getenv("VISION_MIN_IMAGE_PIXELS", "40000") or "40000") if image_max else 0
+            elements = self._extract_images_from_elements(
+                elements, file_path, max_images=image_max, min_pixels=image_min_px)
             part_docs = self.adapter.adapt(elements, file_path, merge_small=True,
                                            pre_merge_hook=hook)
             self._mark_page_base(part_docs)
@@ -502,75 +573,91 @@ class PdfLoader(BaseLoader):
                                   "ranges_cached": len(ranges) - parsed}
         return docs
 
-    def _extract_images_from_elements(self, elements: list, file_path: Path) -> list:
+    def _extract_images_from_elements(self, elements: list, file_path: Path,
+                                      max_images: Optional[int] = None,
+                                      min_pixels: int = 0) -> list:
         """
-        从元素列表中提取图片文件
-        
-        Args:
-            elements: PDFElement 列表
-            file_path: PDF 文件路径
-            
-        Returns:
-            更新后的元素列表
+        从元素列表中提取图片文件。
+
+        max_images/min_pixels 用于正文型 PDF：只保留最大的少量图，
+        小图标/装饰图不再落盘。默认 None/0 保持旧行为。
         """
         from ..multimodal.pdf.models import ElementType
-        
-        # 筛选出图片元素
+
         image_elements = [e for e in elements if e.type == ElementType.IMAGE]
-        
         if not image_elements:
             return elements
-        
+
+        def _area(element) -> int:
+            content = getattr(element, "content", None)
+            if not isinstance(content, dict):
+                return 0
+            try:
+                return int(content.get("width") or 0) * int(content.get("height") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        kept_images = image_elements
+        if min_pixels > 0:
+            kept_images = [e for e in kept_images if _area(e) >= min_pixels]
+        if max_images is not None and len(kept_images) > max_images:
+            top_ids = {
+                id(e) for e in sorted(kept_images, key=_area, reverse=True)[:max_images]
+            }
+            kept_images = [e for e in kept_images if id(e) in top_ids]
+        keep_ids = {id(e) for e in kept_images}
+        kept_elements = [
+            e for e in elements
+            if e.type != ElementType.IMAGE or id(e) in keep_ids
+        ]
+        dropped = len(image_elements) - len(kept_images)
+        if not kept_images:
+            logger.info(
+                f"图片提取过滤：{file_path.name} 跳过 {dropped} 张"
+                f"（max_images={max_images}, min_pixels={min_pixels}）")
+            return kept_elements
+        if dropped:
+            logger.info(
+                f"图片提取过滤：{file_path.name} 保留 {len(kept_images)} 张，"
+                f"跳过 {dropped} 张（max_images={max_images}, min_pixels={min_pixels}）")
+
         try:
-            # 使用 ImageExtractor 提取图片
-            # 调用 extract_all 方法，参数顺序为 (pdf_path, image_elements)
-            image_paths = self.image_extractor.extract_all(file_path, image_elements)
-            
-            # 按页面分组图片元素
+            image_paths = self.image_extractor.extract_all(file_path, kept_images)
+
             page_groups = {}
-            for element in image_elements:
+            for element in kept_images:
                 page_num = element.page
-                if page_num not in page_groups:
-                    page_groups[page_num] = []
-                page_groups[page_num].append(element)
-            
-            # 按页面顺序映射路径
+                page_groups.setdefault(page_num, []).append(element)
+
             path_index = 0
             enhanced_dict = {}
             for page_num in sorted(page_groups.keys()):
-                page_elements = page_groups[page_num]
-                for element in page_elements:
+                for element in page_groups[page_num]:
                     if path_index < len(image_paths):
-                        # 为元素添加 image_path
                         element.content['image_path'] = str(image_paths[path_index])
                         element.content['extraction_method'] = 'image_extractor'
                         enhanced_dict[element.content.get('xref')] = element
                         path_index += 1
-            
-            # 更新原始元素列表
+
             result_elements = []
-            for element in elements:
+            for element in kept_elements:
                 if element.type == ElementType.IMAGE:
-                    # 获取xref
                     xref = None
                     if hasattr(element, 'content') and isinstance(element.content, dict):
                         xref = element.content.get('xref')
-                    
-                    # 如果找到增强元素，则替换
                     if xref is not None and xref in enhanced_dict:
                         result_elements.append(enhanced_dict[xref])
                     else:
                         result_elements.append(element)
                 else:
                     result_elements.append(element)
-            
+
             logger.info(f"提取了 {len(image_paths)} 个图片文件")
             return result_elements
-            
         except Exception as e:
             logger.warning(f"图片提取失败，继续处理: {str(e)}")
-            return elements
-    
+            return kept_elements
+
     def _load_with_legacy_architecture(self, file_path: Path) -> LoadResult:
         """
         使用旧架构加载 PDF（向后兼容）

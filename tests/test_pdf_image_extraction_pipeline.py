@@ -99,6 +99,29 @@ class TestPdfImageExtractionPipeline(unittest.TestCase):
         # 验证ImageExtractor被调用
         mock_extractor.extract_all.assert_called_once()
     
+    def test_extract_images_filters_small_and_limits_count(self):
+        """正文型 PDF：小图不落盘，且最多保留指定数量的大图。"""
+        large = PDFElement(
+            type=ElementType.IMAGE,
+            content={'xref': 2, 'width': 300, 'height': 300},
+            page=2, bbox=(0, 0, 300, 300), confidence=1.0)
+        small = PDFElement(
+            type=ElementType.IMAGE,
+            content={'xref': 3, 'width': 8, 'height': 8},
+            page=2, bbox=(0, 0, 8, 8), confidence=1.0)
+        elements = [self.text_element, self.image_element, small, large]
+        mock_extractor = Mock()
+        mock_extractor.extract_all.return_value = [Path('/path/to/large.png')]
+        self.loader._image_extractor = mock_extractor
+
+        result = self.loader._extract_images_from_elements(
+            elements, self.pdf_file, max_images=1, min_pixels=10000)
+
+        assert len(result) == 2  # text + 最大的一张图
+        images = [e for e in result if e.type == ElementType.IMAGE]
+        assert len(images) == 1
+        assert images[0].content['xref'] == 2
+
     def test_extract_images_from_elements_without_images(self):
         """测试没有图片元素时的处理"""
         # 准备元素列表（没有图片）

@@ -47,6 +47,27 @@ def _incoming_dir() -> Path:
     return Path(import_service._import_tmp_root()) / "incoming"
 
 
+def test_cleanup_stale_import_tmp_only_terminal_and_old(tmp_path, monkeypatch):
+    import os
+    import time
+
+    root = tmp_path / "import_tmp"
+    root.mkdir()
+    old = root / "imp_old"
+    fresh = root / "imp_fresh"
+    old.mkdir()
+    fresh.mkdir()
+    os.utime(old, (time.time() - 48 * 3600, time.time() - 48 * 3600))
+    monkeypatch.setattr(import_service, "_import_tmp_root", lambda: root)
+    monkeypatch.setattr(import_service, "get_job",
+                        lambda job_id: {"status": "succeeded" if job_id == "imp_old" else "running"})
+    cleaned = []
+    monkeypatch.setattr(import_service, "cleanup_job_files", lambda job_id: cleaned.append(job_id))
+
+    assert import_service.cleanup_stale_import_tmp(max_age_hours=24) == 1
+    assert cleaned == ["imp_old"]
+
+
 def test_successful_upload_leaves_no_temp_file(tmp_path, monkeypatch):
     monkeypatch.setattr(import_service, "create_import_job",
                         lambda sid, payload, uid: {"job_id": "j1", "accepted": 1,

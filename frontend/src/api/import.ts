@@ -326,6 +326,8 @@ export const jobNeedsContinue = (job: ImportJob | null | undefined): boolean => 
   if (!job) return false;
   // paused 的正确入口是「继续（resume）」，不是「继续处理剩余资料」
   if (isJobPaused(job)) return false;
+  // 用户已经取消的任务不再劝继续
+  if (effectiveJobStatus(job) === 'cancelled') return false;
   if (job.can_continue === true) return true;
   const t = resolveTotals(job);
   return effectiveJobStatus(job) === 'partial' && (t.unprocessed > 0 || hasRetryableFailed(job));

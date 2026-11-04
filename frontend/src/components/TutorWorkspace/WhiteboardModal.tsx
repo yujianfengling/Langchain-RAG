@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Empty, Input, Modal, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import { BulbOutlined, ReloadOutlined } from '@ant-design/icons';
 import apiClient from '../../api/axios';
+import PdfCanvasViewer from '../PdfViewer/PdfCanvasViewer';
 import {
   generateWhiteboard, type TutorSource, type WhiteboardScene,
 } from '../../api/tutor';
@@ -9,6 +10,12 @@ import {
 const { Text } = Typography;
 
 const WHITEBOARD_CACHE = 'edu.whiteboard.v1';
+
+/** 引用页码可能是 "1-2" 这样的范围；PDF.js 取第一页即可。 */
+const firstPageNumber = (value: unknown): number | null => {
+  const matched = String(value ?? '').match(/\d+/);
+  return matched ? Number(matched[0]) : null;
+};
 
 const cacheKeyOf = (subjectId: string, template: string, topic: string) =>
   `${WHITEBOARD_CACHE}.${subjectId}.${template}.${(topic.trim() || '__default__')}`;
@@ -60,8 +67,10 @@ const WhiteboardModal: React.FC<{
   const [pageImages, setPageImages] = useState<Array<{
     id: number; url: string; file_name: string; page?: number | null;
     bbox?: number[]; width?: number; height?: number; cited: boolean;
+    isPdf: boolean;
   }>>([]);
   const [activePage, setActivePage] = useState(0);
+  const [activePdf, setActivePdf] = useState<{ fileName: string; data: ArrayBuffer } | null>(null);
   const sourceKey = sources.map((s) => `${s.id}:${s.page_image_url || ''}`).join('|');
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<{ index: number; startX: number; startY: number; orig: any } | null>(null);
@@ -96,6 +105,23 @@ const WhiteboardModal: React.FC<{
     const load = async () => {
       const loaded: typeof pageImages = [];
       for (const source of sources) {
+        const isPdf = /\.pdf$/i.test(source.file_name || '');
+        if (isPdf) {
+          // PDF 交给浏览器 PDF.js 渲染，不再请求后端整页图
+          if (source.page == null) continue;
+          loaded.push({
+            id: source.id,
+            url: '',
+            file_name: source.file_name,
+            page: source.page,
+            bbox: Array.isArray(source.bbox) ? source.bbox.map(Number) : undefined,
+            width: Number(source.image_width) || undefined,
+            height: Number(source.image_height) || undefined,
+            cited: citedIds.includes(source.id),
+            isPdf: true,
+          });
+          continue;
+        }
         let sourceUrl = source.page_image_url || '';
         if (!sourceUrl && source.page != null && source.file_name) {
           // 历史回答的 sources 来自文本检索，只有页码、没有 page_image_url；
@@ -123,6 +149,7 @@ const WhiteboardModal: React.FC<{
             width: Number(source.image_width) || undefined,
             height: Number(source.image_height) || undefined,
             cited: citedIds.includes(source.id),
+            isPdf: false,
           });
         } catch {
           // 单页失败不影响其他页；列表里仍保留文字片段
@@ -142,6 +169,35 @@ const WhiteboardModal: React.FC<{
     // sourceKey 已经覆盖 sources 的 id/page 变化
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceKey, citedIds.join(','), subjectId]);
+
+  const activePdfName = pageImages[activePage]?.isPdf
+    ? pageImages[activePage].file_name : '';
+
+  useEffect(() => {
+    if (!activePdfName) return;
+    if (activePdf?.fileName === activePdfName) return;
+    let cancelled = false;
+    setActivePdf(null);
+    const load = async () => {
+      try {
+        const res = await apiClient.get(
+          `/knowledge/${encodeURIComponent(subjectId)}/documents/${encodeURIComponent(activePdfName)}/file`,
+          { responseType: 'blob' },
+        );
+        const blob = res instanceof Blob ? res : (res as any)?.data;
+        if (!(blob instanceof Blob)) throw new Error('PDF 内容为空');
+        if (!cancelled) {
+          setActivePdf({ fileName: activePdfName, data: await blob.arrayBuffer() });
+        }
+      } catch {
+        if (!cancelled) setError('PDF 课件加载失败');
+      }
+    };
+    void load();
+    return () => { cancelled = true; };
+    // activePdf 只在同文件时复用
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePdfName, subjectId]);
 
   useEffect(() => {
     const move = (event: PointerEvent) => {
@@ -490,10 +546,29 @@ const WhiteboardModal: React.FC<{
             {activeImage ? (
               <>
                 <div className="whiteboard-pdf-frame">
-                  <img src={activeImage.url} alt={activeImage.file_name}
-                       onClick={() => openPageImage(activeImage)} />
-                  {activeImage.bbox && (
-                    <div style={bboxStyleOf(activeImage.bbox, activeImage.width, activeImage.height)} />
+                  {activeImage.isPdf ? (
+                    activePdf?.fileName === activeImage.file_name && firstPageNumber(activeImage.page) != null ? (
+                      <PdfCanvasViewer
+                        data={activePdf.data}
+                        pages={[firstPageNumber(activeImage.page) as number]}
+                        highlightPage={firstPageNumber(activeImage.page) as number}
+                        highlight={{
+                          bbox: activeImage.bbox,
+                          imageWidth: activeImage.width,
+                          imageHeight: activeImage.height,
+                        }}
+                      />
+                    ) : (
+                      <div style={{ padding: 32, textAlign: 'center' }}><Spin /></div>
+                    )
+                  ) : (
+                    <>
+                      <img src={activeImage.url} alt={activeImage.file_name}
+                           onClick={() => openPageImage(activeImage)} />
+                      {activeImage.bbox && (
+                        <div style={bboxStyleOf(activeImage.bbox, activeImage.width, activeImage.height)} />
+                      )}
+                    </>
                   )}
                 </div>
                 <div className="whiteboard-pdf-meta">
@@ -517,7 +592,7 @@ const WhiteboardModal: React.FC<{
                   </div>
                 )}
                 <div className="whiteboard-sources-hint">
-                  编号对应 AI 回答里的 [x]；黄色框为引用位置，点图片可放大。
+                  编号对应 AI 回答里的 [x]；黄色框为引用位置。
                 </div>
               </>
             ) : sources.length > 0 ? (

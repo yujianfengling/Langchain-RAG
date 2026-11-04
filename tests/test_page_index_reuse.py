@@ -129,7 +129,8 @@ def test_page_breakpoint_only_rebuilds_missing(monkeypatch):
                 conn.execute(
                     "DELETE FROM pages WHERE subject_id=? AND doc_id=? AND page_no=?",
                     (subject, "f:scan2.pdf", row["page_no"]))
-                Path(row["image_path"]).unlink(missing_ok=True)
+                if row["image_path"]:
+                    Path(row["image_path"]).unlink(missing_ok=True)
         conn.commit()
     finally:
         conn.close()

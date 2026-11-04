@@ -71,6 +71,10 @@ data/subjects/
 data/knowledge_graph/
 data/cache/
 data/exports/
+# 导入临时工作区、页面渲染缓存、互斥锁：都是运行时产物，不提交
+data/import_tmp/
+data/page_images/
+data/mutation_locks/
 data/files.json
 data/subjects.json
 data/*.db

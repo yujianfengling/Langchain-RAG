@@ -56,6 +56,16 @@ def test_build_search_and_image():
     assert listing["pages"][0]["page"] == 1
     assert listing["pages"][0]["page_image_url"].startswith("/api/knowledge/")
 
+    # PDF 页面索引只存文本/坐标，不再预生成整本页面图（PDF.js 在浏览器渲染）
+    conn = page_index._conn()
+    try:
+        rows = conn.execute(
+            "SELECT image_path FROM pages WHERE subject_id=?", (subject,)).fetchall()
+    finally:
+        conn.close()
+    assert rows and all(not row["image_path"] for row in rows)
+
+    # 老接口仍兼容：第一次取图时按需渲染
     image = page_index.get_page_image(subject, hits[0]["doc_id"], 1)
     assert image and Path(image).is_file()
     assert Path(image).is_relative_to(page_index.images_root())

@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom';
 import { Alert, Button, Popconfirm, Progress, Tag, Typography, message } from 'antd';
 import {
-  DownOutlined, FileTextOutlined, InboxOutlined, PauseCircleOutlined, PlayCircleOutlined,
-  ReloadOutlined, RightOutlined,
+  DeleteOutlined, DownOutlined, FileTextOutlined, InboxOutlined, PauseCircleOutlined,
+  PlayCircleOutlined, ReloadOutlined, RightOutlined,
 } from '@ant-design/icons';
 import {
   ImportCapabilities, ImportItem, ImportItemStatus, ImportItemTimings, ImportJob, ImportJobStatus,
@@ -13,6 +13,7 @@ import {
   listImports, pauseImport, resolveLimits, resolveTotals, resumeImport, retryImport, startImport,
   validateSelection,
 } from '../../api/import';
+import { deleteDocument } from '../../api/knowledge';
 import './upload.css';
 
 const { Text } = Typography;
@@ -32,7 +33,7 @@ export interface UploadDropzoneProps {
 type RejectedNote = { filename: string; reason: string };
 type UploadError = { message: string; files: File[] };
 /** 队列主操作互斥：同一时刻只允许一个动作在途 */
-type JobAction = 'pause' | 'resume' | 'continue' | 'cancel';
+type JobAction = 'pause' | 'resume' | 'continue' | 'cancel' | 'discard';
 
 interface UploadState {
   active: boolean;
@@ -417,6 +418,34 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     }
   };
 
+  /**
+   * 丢掉这次上传：停掉还在跑的任务，删掉已经导入的文件，并收起队列。
+   * 取消之后不能只留「继续」——学生要的是把这次资料去掉。
+   */
+  const handleDiscard = async () => {
+    if (!job) return;
+    setBusy('discard');
+    const names = (job.items || [])
+      .filter((it) => it.status === 'ready')
+      .map((it) => (it.doc_id && it.doc_id.startsWith('f:') ? it.doc_id.slice(2) : it.display_name))
+      .filter((name): name is string => Boolean(name));
+    try {
+      if (!isTerminalStatus(job.status) || isJobPaused(job)) {
+        try { await cancelImport(job.job_id); } catch { /* 已经停了就继续删文件 */ }
+      }
+      for (const name of names) {
+        await deleteDocument(subjectId, name);
+      }
+      message.success(names.length > 0 ? `已删除 ${names.length} 份资料` : '已去掉这次上传');
+      setJob(null);
+      onFinishedRef.current?.(job);
+    } catch (e) {
+      message.error(describeError(e, '删除失败，请稍后重试'));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const handleOpenSubject = () => {
     if (onOpenSubject) onOpenSubject(subjectId);
     else navigate('/student?subject=' + encodeURIComponent(subjectId));
@@ -499,7 +528,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           )}
           {isUnprocessed && (
             <div className="udz-row-msg udz-row-msg--muted">
-              未处理{paused ? '（已暂停，等待继续）' : '（后台自动分批中）'}
+              未处理{paused ? '（已暂停，等待继续）' : effectiveStatus === 'cancelled' ? '（已取消）' : '（后台自动分批中）'}
               {item.message && item.message !== '未处理' ? '：' + item.message : ''}
             </div>
           )}
@@ -708,6 +737,25 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           {!totals.consistent && (
             <div className="udz-invariant">
               计数自检异常：总数 {totals.total} 与各项之和 {totals.sum} 不一致（按后端 total 展示）
+            </div>
+          )}
+
+          {/* 取消 / 暂停后可以删掉这次已经导入的资料，不能只剩「继续」 */}
+          {writable && (paused || effectiveStatus === 'cancelled' || canContinue) && (
+            <div className="udz-controls">
+              <Popconfirm
+                title={totals.ready > 0 ? '删除这次已经导入的资料？' : '去掉这次上传？'}
+                description={totals.ready > 0
+                  ? '已导入的文件会从资料库删除，还没处理的部分不再继续。'
+                  : '这次没有导入完成的文件，队列记录会收起。'}
+                okText="删除" cancelText="取消"
+                okButtonProps={{ danger: true }}
+                onConfirm={() => void handleDiscard()}
+              >
+                <Button danger icon={<DeleteOutlined />} loading={busy === 'discard'}>
+                  {totals.ready > 0 ? '删除已导入的资料' : '删除这次上传'}
+                </Button>
+              </Popconfirm>
             </div>
           )}
 

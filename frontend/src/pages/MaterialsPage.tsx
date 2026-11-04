@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Alert, Button, Card, Checkbox, Collapse, Empty, Form, Input, List, Modal, Popconfirm,
@@ -10,7 +10,7 @@ import {
   TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import { useCourse } from '../context/CourseContext';
-import { createSubject } from '../api/subjects';
+import { createSubject, deleteSubject } from '../api/subjects';
 import {
   buildPageIndex, deleteDocument, getDocuments, getPageIndexStatus, getKnowledgeStats,
   rebuildKnowledge,
@@ -20,6 +20,7 @@ import { getTutorSession } from '../api/tutor';
 import { getHome } from '../api/student';
 import { joinCourseByCode } from '../api/studentCourses';
 import UploadDropzone from '../components/UploadDropzone';
+import PdfCanvasViewer from '../components/PdfViewer/PdfCanvasViewer';
 import { SkeletonCard } from '../components/AnimateMotion';
 
 // 知识图谱依赖 echarts（较大），只在学生真正展开"概念关系分析"时才加载，
@@ -171,34 +172,23 @@ const MaterialsPage: React.FC = () => {
   const [docs, setDocs] = useState<KnowledgeDoc[]>([]);
   const [detailStats, setDetailStats] = useState<StatsResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [pdfPreview, setPdfPreview] = useState<{
-    name: string; mode: 'pages' | 'blob'; url?: string; docId?: string;
-    /** url 为空串表示这一页没有可用页面图（建页失败/被取消），前端如实占位而不是跳过 */
-    pages?: Array<{ page: number; url: string }>;
-    total?: number; loading: boolean;
+  const [pdfPreview, setPdfPreview] = useState<{ name: string; data: ArrayBuffer } | null>(null);
+  const [serverPreview, setServerPreview] = useState<{
+    name: string; pages: Array<{ page: number; url: string }>;
   } | null>(null);
-  /** 预览代际号：关掉弹窗或换一份资料后，仍在飞的取图批次要作废并释放 blob */
-  const previewSeq = useRef(0);
 
   /**
-   * 带登录态查看资料。
-   * 之前的 "查看" 是 <a href="/api/...">，浏览器直接跳转不会带 X-User-Token，
-   * 所以后端只能返回 {"detail":"请先登录"}。
-   * PDF 优先走页面索引（逐页 WebP），在应用内连续滚动，不依赖浏览器 PDF 插件。
+   * PDF 走 PDF.js（浏览器直接渲染原文件，不再依赖 page_images）；
+   * 非 PDF 优先使用服务端页面索引兜底，没有页面索引再下载。
    */
-  const revokePdfPreview = (preview: typeof pdfPreview) => {
-    if (!preview) return;
-    if (preview.url) URL.revokeObjectURL(preview.url);
-    preview.pages?.forEach((page) => { if (page.url) URL.revokeObjectURL(page.url); });
+  const closePdfPreview = () => setPdfPreview(null);
+
+  const closeServerPreview = () => {
+    serverPreview?.pages.forEach((p) => { if (p.url) URL.revokeObjectURL(p.url); });
+    setServerPreview(null);
   };
 
-  const closePdfPreview = () => {
-    previewSeq.current += 1;      // 让在飞的批次失效
-    revokePdfPreview(pdfPreview);
-    setPdfPreview(null);
-  };
-
-  const fetchPageUrl = async (docId: string, page: number) => {
+  const fetchServerPage = async (docId: string, page: number) => {
     const res = await apiClient.get(
       `/knowledge/${encodeURIComponent(selectedId)}/pages/image`,
       { params: { doc_id: docId, page }, responseType: 'blob' },
@@ -207,93 +197,60 @@ const MaterialsPage: React.FC = () => {
     return URL.createObjectURL(new Blob([blob], { type: 'image/webp' }));
   };
 
-  /**
-   * 按页预览：先开窗、再逐批取图（一批 4 页）。
-   * 一次并发几十上百个 blob 请求会同时压住浏览器和服务端，而且用户要等全部
-   * 下载完才看到第一页；教材动辄两三百页，必须先出图再补齐。
-   * 资料能不能学，取决于知识库检索，**不取决于这里是否加载完**。
-   */
-  const streamPagePreview = async (docName: string, docId: string, pageNumbers: number[]) => {
-    const seq = ++previewSeq.current;
-    revokePdfPreview(pdfPreview);
-    setPdfPreview({
-      name: docName, mode: 'pages', docId, pages: [],
-      total: pageNumbers.length, loading: true,
-    });
-    const loaded: Array<{ page: number; url: string }> = [];
-    const BATCH = 4;
-    for (let i = 0; i < pageNumbers.length; i += BATCH) {
-      if (previewSeq.current !== seq) return;
-      const batch = pageNumbers.slice(i, i + BATCH);
-      const urls = await Promise.all(
-        batch.map((p) => fetchPageUrl(docId, p).catch(() => '')));
-      if (previewSeq.current !== seq) {
-        // 弹窗已关或已切到别的资料：这批 blob 没人用了，必须释放
-        urls.forEach((u) => { if (u) URL.revokeObjectURL(u); });
-        return;
-      }
-      batch.forEach((p, k) => loaded.push({ page: p, url: urls[k] || '' }));
-      const finished = i + BATCH >= pageNumbers.length;
-      setPdfPreview((prev) => (prev && previewSeq.current === seq
-        ? { ...prev, pages: [...loaded], loading: !finished }
-        : prev));
-    }
+  const downloadBlob = (blob: Blob, docName: string) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = docName;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
   };
 
   const viewDocument = async (docName: string) => {
     if (!selectedId) return;
     const isPdf = docName.toLowerCase().endsWith('.pdf');
+
     if (!isPdf) {
+      // 非 PDF：能拿到页面索引就用服务端页面图兜底
       try {
-        const res = await apiClient.get(
-          `/knowledge/${encodeURIComponent(selectedId)}/documents/${encodeURIComponent(docName)}/file`,
-          { responseType: 'blob' },
+        const pageRes = await apiClient.get(
+          `/knowledge/${encodeURIComponent(selectedId)}/documents/${encodeURIComponent(docName)}/pages`,
         );
-        const blob = res instanceof Blob ? res : (res as any)?.data;
-        const url = URL.createObjectURL(new Blob([blob], {
-          type: (blob as Blob)?.type || 'application/octet-stream',
-        }));
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = docName;
-        link.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+        const data = pageRes?.data ?? pageRes;
+        const pages = data?.pages || [];
+        if (pages.length > 0) {
+          const urls = await Promise.all(
+            pages.map((p: any) => fetchServerPage(data.doc_id || `f:${docName}`, Number(p.page))),
+          );
+          serverPreview?.pages.forEach((p) => { if (p.url) URL.revokeObjectURL(p.url); });
+          setServerPreview({
+            name: docName,
+            pages: pages.map((p: any, i: number) => ({ page: Number(p.page), url: urls[i] })),
+          });
+          return;
+        }
       } catch (e: any) {
-        message.error(e?.response?.data?.detail || '文件下载失败，请确认登录状态');
-      }
-      return;
-    }
-
-    try {
-      const pageRes = await apiClient.get(
-        `/knowledge/${encodeURIComponent(selectedId)}/documents/${encodeURIComponent(docName)}/pages`,
-      );
-      const data = pageRes?.data ?? pageRes;
-      const pages = data?.pages || [];
-      if (pages.length > 0) {
-        void streamPagePreview(docName, data.doc_id || `f:${docName}`,
-                               pages.map((p: any) => Number(p.page)));
-        return;
-      }
-    } catch (e: any) {
-      if (e?.response?.status !== 404) {
-        message.error(e?.response?.data?.detail || 'PDF 页面读取失败');
-        return;
+        if (e?.response?.status !== 404) {
+          message.error(e?.response?.data?.detail || '页面预览失败');
+          return;
+        }
       }
     }
 
-    // 没有页面索引时回退到原文件
     try {
       const res = await apiClient.get(
         `/knowledge/${encodeURIComponent(selectedId)}/documents/${encodeURIComponent(docName)}/file`,
         { responseType: 'blob' },
       );
       const blob = res instanceof Blob ? res : (res as any)?.data;
-      const url = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
-      revokePdfPreview(pdfPreview);
-      setPdfPreview({ name: docName, mode: 'blob', url, loading: false });
+      if (!(blob instanceof Blob)) throw new Error('文件内容为空');
+      if (!isPdf) {
+        downloadBlob(blob, docName);
+        return;
+      }
+      setPdfPreview({ name: docName, data: await blob.arrayBuffer() });
     } catch (e: any) {
-      message.error(e?.response?.data?.detail || '文件打开失败，请确认登录状态');
+      message.error(e?.response?.data?.detail || (isPdf ? 'PDF 打开失败' : '文件下载失败'));
     }
   };
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -538,6 +495,17 @@ const MaterialsPage: React.FC = () => {
     }
   };
 
+  const handleDeleteSubject = async (sid: string) => {
+    try {
+      await deleteSubject(sid);
+      message.success('学科已删除');
+      if (selectedId === sid) setSelectedId('');
+      await ctx.refresh();
+    } catch (e) {
+      message.error(describeError(e, '删除失败，请重试'));
+    }
+  };
+
   const handleDelete = async (name: string) => {
     if (!selectedId) return;
     try {
@@ -547,6 +515,7 @@ const MaterialsPage: React.FC = () => {
       // 删除后服务端已同步失效该资料的页面索引与页面图；
       // 若正开着它的按页预览，必须关掉——否则看到的还是已删资料的页面图。
       if (pdfPreview && pdfPreview.name === name) closePdfPreview();
+      if (serverPreview && serverPreview.name === name) closeServerPreview();
       await Promise.all([loadDetail(selectedId), loadMeta(allIds), loadPageStatus(selectedId)]);
     } catch (e) {
       message.error(describeError(e, '删除失败，请重试'));
@@ -789,6 +758,19 @@ const MaterialsPage: React.FC = () => {
                   >
                     管理资料
                   </Button>
+                  {item.source === 'personal' && (
+                    <span onClick={(e) => e.stopPropagation()}>
+                      <Popconfirm
+                        title="删除这个学科？"
+                        description="学科、已上传的资料和知识库会一起删除。"
+                        okText="删除" cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={() => handleDeleteSubject(item.subject_id)}
+                      >
+                        <Button type="text" danger icon={<DeleteOutlined />}>删除</Button>
+                      </Popconfirm>
+                    </span>
+                  )}
                 </div>
               </Card>
             );
@@ -1046,54 +1028,41 @@ const MaterialsPage: React.FC = () => {
         styles={{ body: { padding: 0 } }}
       >
         {pdfPreview && (
-          pdfPreview.mode === 'pages' ? (
-            <div style={{
-              maxHeight: '78vh', overflowY: 'auto', padding: 10,
-              borderRadius: 8, background: '#e9eef2',
-            }}>
-              <Text type="secondary" style={{ display: 'block', fontSize: 11, marginBottom: 8 }}>
-                已载入 {(pdfPreview.pages || []).length} / 共 {pdfPreview.total ?? (pdfPreview.pages || []).length} 页
-                {pdfPreview.loading ? '（边看边载入）' : ''}
-              </Text>
-              {(pdfPreview.pages || []).map((page, index, arr) => (
-                <div key={page.page} style={{ marginBottom: index === arr.length - 1 ? 0 : 12 }}>
-                  <Text type="secondary" style={{ display: 'block', fontSize: 11, marginBottom: 4 }}>
-                    第 {page.page} 页
-                  </Text>
-                  {page.url ? (
-                    <img
-                      src={page.url}
-                      alt={`${pdfPreview.name} 第 ${page.page} 页`}
-                      loading="lazy"
-                      style={{
-                        width: '100%', display: 'block', background: '#fff',
-                        borderRadius: 6, boxShadow: '0 2px 10px rgba(15,23,42,.08)',
-                      }}
-                    />
-                  ) : (
-                    <div style={{
-                      padding: '26px 12px', textAlign: 'center', background: '#fff',
-                      borderRadius: 6, border: '1px dashed var(--color-border, #d9d9d9)',
-                    }}>
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        这一页没有可用的页面图（建页失败或被取消），可在资料列表点「重试」
-                      </Text>
-                    </div>
-                  )}
-                </div>
-              ))}
-              {pdfPreview.loading && (
-                <div style={{ padding: 18, textAlign: 'center' }}><Spin size="small" /></div>
-              )}
-            </div>
-          ) : (
-            <iframe
-              title={pdfPreview.name}
-              src={pdfPreview.url}
-              style={{ width: '100%', height: '75vh', border: 0, borderRadius: 8 }}
-            />
-          )
+          <div style={{
+            maxHeight: '78vh', overflowY: 'auto', padding: 10,
+            borderRadius: 8, background: '#e9eef2',
+          }}>
+            <PdfCanvasViewer data={pdfPreview.data} />
+          </div>
         )}
+      </Modal>
+
+      <Modal
+        title={serverPreview?.name || '资料预览'}
+        open={!!serverPreview}
+        onCancel={closeServerPreview}
+        footer={null}
+        width={1000}
+        destroyOnHidden
+        styles={{ body: { padding: 0 } }}
+      >
+        <div style={{
+          maxHeight: '78vh', overflowY: 'auto', padding: 10,
+          borderRadius: 8, background: '#e9eef2',
+        }}>
+          {(serverPreview?.pages || []).map((page) => (
+            <div key={page.page} style={{ marginBottom: 12 }}>
+              <Text type="secondary" style={{ display: 'block', fontSize: 11, marginBottom: 4 }}>
+                第 {page.page} 页
+              </Text>
+              <img
+                src={page.url}
+                alt={`${serverPreview?.name || ''} 第 ${page.page} 页`}
+                style={{ width: '100%', display: 'block', background: '#fff', borderRadius: 6 }}
+              />
+            </div>
+          ))}
+        </div>
       </Modal>
     </div>
   );

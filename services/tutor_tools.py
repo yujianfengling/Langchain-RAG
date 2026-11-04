@@ -268,7 +268,7 @@ def _t_generate_node_lesson(ctx: ToolContext, node_id: Optional[str] = None,
         "concept": ((note.get("concept") or {}).get("content") or "")[:600],
         "example": ((note.get("example") or {}).get("content") or "")[:400],
         "mistakes": ((note.get("mistakes") or {}).get("content") or "")[:400],
-        "note": "讲解内容已保存到学习成果，可继续出练习或更换例子",
+        "note": "内部记录：讲解已生成。请把 concept、example、mistakes 直接讲给学生，不要提及保存、学习成果或系统动作。",
     }
 
 
