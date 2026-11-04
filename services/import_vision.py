@@ -2,9 +2,15 @@
 
 A lease fences workers; a subject mutation lock covers source validation and
 paired index publication. Item IDs in index metadata make crash replay idempotent.
+
+2026-11-04 批处理改造：run_pending 一次领取一批（IMPORT_VISION_BATCH_SIZE，
+默认 8）待增强项，整批只提交一次 enrich_images 调用——批内内容哈希去重与
+VISION_MAX_CONCURRENCY 并发由此真正生效（此前逐条串行单张调用，二者均失效，
+384 张图 = 384 次串行 API 调用）。每行仍保留独立租约、来源校验与发布边界。
 """
 import hashlib
 import json
+import os
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -16,6 +22,14 @@ _POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix='import-vision')
 _REMOTE = ThreadPoolExecutor(max_workers=1, thread_name_prefix='import-vision-call')
 LEASE_SECONDS = 60
 MAX_ATTEMPTS = 3
+
+
+def _batch_size() -> int:
+    """单次 run_pending 合并提交视觉调用的行数（默认 8）。"""
+    try:
+        return max(1, int(os.getenv("IMPORT_VISION_BATCH_SIZE", "8")))
+    except (TypeError, ValueError):
+        return 8
 
 
 def connect():
@@ -106,8 +120,14 @@ def run_pending(job_id=None):
     from rag.enrichment.multimodal_enricher import MultimodalEnricher
     with connect() as c:
         rows=c.execute('SELECT * FROM import_vision_items WHERE state IN (\'pending\',\'running\',\'retry\',\'paused\')'+
-                       (' AND job_id=?' if job_id else ''), (job_id,) if job_id else ()).fetchall()
+                       (' AND job_id=?' if job_id else '')+
+                       ' ORDER BY updated', (job_id,) if job_id else ()).fetchall()
+
+    # 1) 分批领取：同批行合并成一次 enrich_images 调用（去重+并发生效）
+    claimed=[]
     for row in rows:
+        if len(claimed)>=_batch_size():
+            break
         state=stopped(row['job_id'])
         if state:
             with connect() as c:
@@ -124,52 +144,83 @@ def run_pending(job_id=None):
                 c.execute("UPDATE import_vision_items SET state='failed',error='retry limit reached' WHERE id=? AND attempts>=? AND (state!='running' OR heartbeat<?)",
                           (row['id'],MAX_ATTEMPTS,time.time()-LEASE_SECONDS))
                 continue
+        row=dict(row); row['_owner']=owner
+        claimed.append(row)
+
+    # 2) 崩溃重放行（已有 result）：无需视觉调用，直接收尾
+    for row in [r for r in claimed if r['result']]:
+        _finalize(row, Document(**json.loads(row['result'])), row['_owner'])
+
+    # 3) 视觉调用批：来源预检 + 派发前围栏检查，整批一次提交
+    batch=[]
+    for row in [r for r in claimed if not r['result']]:
+        owner=row['_owner']
+        # Reject obsolete source before spending money, then recheck at publication.
+        if not row['sha'] or source_sha(row['subject_id'],row['source']) != row['sha']:
+            update(row['id'],owner,state='filtered',error='source version changed or deleted')
+            continue
+        doc=Document(**json.loads(row['document']))
+        if not Path(doc.metadata.get('image_path','')).is_file():
+            update(row['id'],owner,state='failed',error='Persisted image is missing')
+            continue
+        with subject_mutation(row['subject_id']), connect() as c:
+            if not owned(c,row['id'],owner):
+                continue
+            state=stopped(row['job_id'])
+            if state:
+                update(row['id'],owner,state=state)
+                continue
+            update(row['id'],owner,remote_started=1)
+        row['_doc']=doc
+        batch.append(row)
+
+    if not batch:
+        return
+    future=_REMOTE.submit(MultimodalEnricher().enrich_images,
+                          [row['_doc'] for row in batch])
+    while True:
         try:
-            # Reject obsolete source before spending money, then recheck at publication.
-            if not row['sha'] or source_sha(row['subject_id'],row['source']) != row['sha']:
-                update(row['id'],owner,state='filtered',error='source version changed or deleted')
-                continue
-            if row['result']:
-                data=json.loads(row['result']);doc=Document(**data)
-            else:
-                doc=Document(**json.loads(row['document']))
-                if not Path(doc.metadata.get('image_path','')).is_file():
-                    raise RuntimeError('Persisted image is missing')
-                with subject_mutation(row['subject_id']), connect() as c:
-                    if not owned(c,row['id'],owner):
-                        continue
-                    if stopped(row['job_id']):
-                        update(row['id'],owner,state=stopped(row['job_id']))
-                        continue
-                    update(row['id'],owner,remote_started=1)
-                    future=_REMOTE.submit(MultimodalEnricher().enrich_images,[doc])
-                while True:
-                    try:
-                        doc=future.result(timeout=10)[0]
-                        break
-                    except TimeoutError:
-                        update(row['id'],owner,heartbeat=time.time())
-                update(row['id'],owner,remote_returned=1, result=json.dumps(
-                    {'page_content':doc.page_content,'metadata':doc.metadata},ensure_ascii=False))
-            if stopped(row['job_id']):
-                update(row['id'],owner,state=stopped(row['job_id']))
-                continue
-            if doc.metadata.get('vision_status') in ('failed','timeout'):
-                raise RuntimeError('Vision returned failure: '+json.dumps({k: val for k,val in doc.metadata.items() if k in ('vision_status','vision_error_type','vision_http_status','http_status','provider_used','model_used','vision_error')},ensure_ascii=False))
-            if not doc.page_content.strip() or doc.metadata.get('is_content') is False:
-                update(row['id'],owner,state='skipped')
-                continue
-            publish(row,doc,owner)
+            enriched=future.result(timeout=10)
+            break
+        except TimeoutError:
+            for row in batch:
+                update(row['id'],row['_owner'],heartbeat=time.time())
         except Exception as e:
-            logger.exception(f'Image enhancement item {row["id"]} failed')
-            update(row['id'],owner,state='failed',error=str(e)[:1000])
-        # Only terminal rows release their image. The database and result remain queryable.
-        with connect() as c:
-            final=c.execute('SELECT state FROM import_vision_items WHERE id=?',(row['id'],)).fetchone()
-        if final and final['state'] in ('succeeded','filtered','skipped','cancelled'):
-            p=Path(json.loads(row['document'])['metadata'].get('image_path',''))
-            from config.path_config import get_data_dir
-            if p.is_relative_to(Path(get_data_dir())/'deferred_vision') and p.is_file(): p.unlink()
+            # 批级失败：与逐条语义一致，已领取的行直接判 failed（不再重试）
+            logger.exception(f'Vision batch failed: {e}')
+            for row in batch:
+                update(row['id'],row['_owner'],state='failed',error=str(e)[:1000])
+            return
+    for row, doc in zip(batch, enriched):
+        update(row['id'],row['_owner'],remote_returned=1, result=json.dumps(
+            {'page_content':doc.page_content,'metadata':doc.metadata},ensure_ascii=False))
+    for row, doc in zip(batch, enriched):
+        _finalize(row, doc, row['_owner'])
+
+
+def _finalize(row, doc, owner):
+    """单行收尾：停止检查 → 失败判定 → 跳过判定 → 发布 → 清理已终结行的图片文件。"""
+    try:
+        state=stopped(row['job_id'])
+        if state:
+            update(row['id'],owner,state=state)
+            return
+        if doc.metadata.get('vision_status') in ('failed','timeout'):
+            raise RuntimeError('Vision returned failure: '+json.dumps({k: val for k,val in doc.metadata.items() if k in ('vision_status','vision_error_type','vision_http_status','http_status','provider_used','model_used','vision_error')},ensure_ascii=False))
+        if not doc.page_content.strip() or doc.metadata.get('is_content') is False:
+            update(row['id'],owner,state='skipped')
+            return
+        publish(row,doc,owner)
+    except Exception as e:
+        logger.exception(f'Image enhancement item {row["id"]} failed')
+        update(row['id'],owner,state='failed',error=str(e)[:1000])
+    # Only terminal rows release their image. The database and result remain queryable.
+    with connect() as c:
+        final=c.execute('SELECT state FROM import_vision_items WHERE id=?',(row['id'],)).fetchone()
+    if final and final['state'] in ('succeeded','filtered','skipped','cancelled'):
+        p=Path(json.loads(row['document'])['metadata'].get('image_path',''))
+        from config.path_config import get_data_dir
+        if p.is_relative_to(Path(get_data_dir())/'deferred_vision') and p.is_file(): p.unlink()
 
 
 def recover():

@@ -38,6 +38,59 @@ def _min_content_image_bytes() -> int:
         return 8 * 1024
 
 
+# 过小图片阈值（像素）：w*h 低于此值视为装饰图/图标，直接跳过识图与 OCR。
+# 与 PDF 加载器（pdf_loader.py 抽取侧过滤）同阈值、同源配置（VISION_MIN_IMAGE_PIXELS）。
+# 设 0 可关闭（测试环境 conftest.py 即设为 0，让合成小图仍可走增强分支）。
+def _min_content_image_pixels() -> int:
+    try:
+        return int(os.getenv("VISION_MIN_IMAGE_PIXELS", "40000"))
+    except (TypeError, ValueError):
+        return 40000
+
+
+def _image_below_min_pixels(path_obj: Path) -> bool:
+    """像素级预过滤：True 表示图太小（装饰/图标），不值得识图或 OCR。"""
+    min_pixels = _min_content_image_pixels()
+    if min_pixels <= 0 or not path_obj:
+        return False
+    try:
+        from PIL import Image
+        with Image.open(path_obj) as im:
+            return im.width * im.height < min_pixels
+    except Exception:
+        return False  # 打不开的图不在这里判死，交给后续流程报错
+
+
+def _pptx_ocr_first_enabled() -> bool:
+    """PPT 抽取图是否走"本地 OCR 优先"（2026-11-04，默认开；0/false/off 关闭）。"""
+    return os.getenv("PPTX_IMAGE_OCR_FIRST", "1").strip().lower() not in ("0", "false", "off")
+
+
+def _pptx_ocr_min_chars() -> int:
+    """OCR 文本达到该长度即认定"这张图主要是文字截图"，不再调付费视觉模型。"""
+    try:
+        return int(os.getenv("PPTX_OCR_MIN_CHARS", "20"))
+    except (TypeError, ValueError):
+        return 20
+
+
+def _local_ocr_text(image_path_obj: Path) -> str:
+    """本地 OCR 识别单图（rapidocr → liteparse → pytesseract 降级链）。
+
+    绝不调用付费视觉模型；引擎不可用或识别失败返回 ""。
+    """
+    try:
+        from PIL import Image
+        from rag.loaders.pdf_ocr import ocr_image
+        with Image.open(image_path_obj) as im:
+            if im.mode not in ("RGB", "L"):
+                im = im.convert("RGB")
+            return (ocr_image(im) or "").strip()
+    except Exception as e:
+        logger.warning(f"[Multimodal] 本地OCR失败 {image_path_obj.name}: {e}")
+        return ""
+
+
 def _vision_max_concurrency() -> int:
     """受控并发的视觉调用数（默认 6）。
 
@@ -413,6 +466,12 @@ class MultimodalEnricher:
                     doc.metadata["vision_skip_reason"] = "tiny_image"
                     doc.metadata["is_content"] = False
                     continue
+                # 像素级过滤（2026-11-04）：与增强侧同一阈值，避免小图进后台队列白占一轮租约
+                if _image_below_min_pixels(path_obj):
+                    doc.metadata["vision_status"] = "skipped"
+                    doc.metadata["vision_skip_reason"] = "tiny_image_pixels"
+                    doc.metadata["is_content"] = False
+                    continue
             except OSError:
                 continue
             cached = self._load_from_cache(self._compute_cache_key(path_obj), path_obj)
@@ -753,6 +812,45 @@ class MultimodalEnricher:
             return doc
 
         # Step 2: 缓存未命中，调用VisionProvider
+        #
+        # Step 1.5（2026-11-04）：像素预过滤 + PPT 图片本地 OCR 优先。
+        # 背景：PPTX 抽取图逐张走付费视觉，384 张图 = 384 次串行 API 调用，
+        # 其中大量是"整页文字截图"——这类图本地 OCR 即可拿到正文（DeepTutor
+        # 式"本地 OCR 兜底"），只有图表/示意图才真正需要视觉模型。
+        # 注意：已有视觉缓存的图在 Step 1 已返回，不会降级成 OCR 结果。
+        if _image_below_min_pixels(image_path_obj):
+            doc.metadata["vision_status"] = "skipped"
+            doc.metadata["vision_skip_reason"] = "tiny_image_pixels"
+            doc.metadata["is_content"] = False
+            doc.page_content = ""
+            logger.debug(f"[Multimodal] 跳过过小图片(像素不足): {image_path_obj.name}")
+            return doc
+
+        if (doc.metadata.get("origin_file_type") == "pptx"
+                and _pptx_ocr_first_enabled()):
+            ocr_text = _local_ocr_text(image_path_obj)
+            if len(ocr_text) >= _pptx_ocr_min_chars():
+                doc.page_content = ocr_text
+                doc.metadata["description"] = "本地OCR文本"
+                doc.metadata["ocr_text"] = ocr_text
+                doc.metadata["provider_used"] = "local-ocr"
+                doc.metadata["model_used"] = "local-ocr"
+                doc.metadata["vision_status"] = "ocr_local"
+                doc.metadata["vision_retries"] = 0
+                doc.metadata["is_content"] = True
+                doc.metadata["content_kind"] = "text"
+                # 结果同样进持久化缓存：同一图再次导入时 0 成本命中
+                self._save_to_cache(cache_key, image_path_obj,
+                                    doc.page_content, doc.metadata)
+                logger.info(
+                    f"[Multimodal] PPT图片本地OCR命中({len(ocr_text)}字)，"
+                    f"跳过视觉调用: {image_path_obj.name}")
+                return doc
+            if ocr_text:
+                logger.debug(
+                    f"[Multimodal] 本地OCR仅 {len(ocr_text)} 字，"
+                    f"转视觉模型: {image_path_obj.name}")
+
         if self.vision_provider:
             try:
                 vision_result = self._analyze_with_timeout(image_path)

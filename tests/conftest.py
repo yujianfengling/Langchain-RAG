@@ -77,6 +77,9 @@ def pytest_configure(config):
     # 测试用的是合成小图（远小于 8KB 的生产阈值），若沿用默认阈值会被跳过，
     # 导致识图分支完全不可测。生产默认值仍为 8KB。
     os.environ.setdefault("VISION_MIN_IMAGE_BYTES", "0")
+    # 像素级"过小图片"过滤同理关闭（2026-11-04）：合成小图远小于 4 万像素阈值，
+    # 沿用默认会让识图/OCR 分支不可测。生产默认值仍为 40000。
+    os.environ.setdefault("VISION_MIN_IMAGE_PIXELS", "0")
 
     # 外部联网在测试会话里**默认关闭**（2026-10-02）。
     #
