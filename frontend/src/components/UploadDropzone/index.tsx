@@ -292,7 +292,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
     setJob(null);
     setBackendRejected([]);
     setUploadError(null);
-    setDetailsOpen(false);
+    setDetailsOpen(true);
     finishedRef.current = null;
     setUpload({ active: true, pct: 0, count: accepted.length });
 
@@ -463,7 +463,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   const totals = resolveTotals(job);
   // 诚实状态：有未处理/失败项时即使后端误报 succeeded 也按 partial 展示
   const effectiveStatus = effectiveJobStatus(job);
-  const showItems = !terminal || detailsOpen;
+  const showItems = detailsOpen;
   // paused 覆盖 tag 文案；它是"停在批边界"而非终态完成
   const paused = isJobPaused(job);
   const running = isJobRunning(job);
@@ -638,10 +638,11 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
                 </Button>
               </Popconfirm>
             )}
-            {terminal && items.length > 0 && (
+            {items.length > 0 && (
               <Button
                 type="link" size="small" className="udz-details-toggle"
                 icon={detailsOpen ? <DownOutlined /> : <RightOutlined />}
+                aria-expanded={detailsOpen}
                 onClick={() => setDetailsOpen((v) => !v)}
               >
                 {detailsOpen ? '收起详情' : '查看详情'}
@@ -650,11 +651,11 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
           </div>
 
           {/* 真实计数：有效资料 = materials（缺失回退 total），目录/压缩包为 0 时不显示 */}
-          <div className="udz-meta">
+          {detailsOpen && <div className="udz-meta">
             <span>有效资料 {totals.materials} 份</span>
             {totals.directories > 0 && <span>目录 {totals.directories} 个</span>}
             {totals.containers > 0 && <span>压缩包 {totals.containers} 个</span>}
-          </div>
+          </div>}
 
           {/* 自动分批的真实行为说明：服务端会一直跑到终态，用户可关闭页面 */}
           {running && (
@@ -672,7 +673,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
 
           {/* 计数卡片：总数 / 可学习 / 处理中 / 失败 / 未处理 / 已跳过。
               为 0 的隐藏，但 unprocessed 与 failed 不为 0 时必须可见。 */}
-          <div className="udz-counts">
+          {detailsOpen && <div className="udz-counts">
             <div className="udz-count">
               <span className="udz-count-value">{totals.total}</span>
               <span className="udz-count-label">总数</span>
@@ -705,7 +706,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
                 <span className="udz-count-label">已跳过</span>
               </div>
             )}
-          </div>
+          </div>}
 
           {totals.total > 0 && (
             <div className="udz-progress">
@@ -843,7 +844,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
               {Object.entries(job.image_enhancement.counts).map(([state, count]) => `${state}: ${count}`).join('，')}
             </div>
           )}
-          {(job.warnings || []).length > 0 && (
+          {detailsOpen && (job.warnings || []).length > 0 && (
             <div className="udz-warnings">
               {(job.warnings || []).map((w, i) => <div key={i}>{w}</div>)}
             </div>
