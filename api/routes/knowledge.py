@@ -322,6 +322,21 @@ async def cancel_import_job(job_id: str,
     return await _cancel_import_job(job_id, user_id)
 
 
+@router.post("/knowledge/imports/{job_id}/discard", response_model=SuccessResponse)
+async def discard_import_job(job_id: str, user_id: str = Depends(require_current_user)):
+    from services import import_service
+    job = await run_in_threadpool(import_service.get_job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="导入任务不存在")
+    await require_subject_write(job["subject_id"], user_id)
+    try:
+        result = await run_in_threadpool(import_service.discard_job, job_id)
+    except Exception as e:
+        logger.warning("取消并删除上传失败: %s", e)
+        raise HTTPException(status_code=409, detail=f"删除未完成，可重试：{e}")
+    return SuccessResponse(data=result, message="本次上传已处理（同名新版本及复用资料保留）")
+
+
 
 @router.get("/knowledge", response_model=KnowledgeListResponse)
 async def list_knowledge(user_id: str = Depends(require_current_user)):

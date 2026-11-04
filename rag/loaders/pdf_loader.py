@@ -400,7 +400,7 @@ class PdfLoader(BaseLoader):
     # 分段后每段独立完成并落盘缓存：超时/中断只丢当前段，重试从缺失段继续，
     # 不会"整本教材一次超时后全部重来"。页码按 page_offset 还原为**全书真实页码**。
 
-    _RANGE_CACHE_SCHEMA = "pdfrange-v2"
+    _RANGE_CACHE_SCHEMA = "pdfrange-v3"
 
     def _range_pages(self) -> int:
         try:
@@ -488,7 +488,8 @@ class PdfLoader(BaseLoader):
             ver = str(VISION_PROMPT_VERSION)
         except Exception:
             ver = "0"
-        key = f"{sha}_{start}_{end}_{ver}_{self._RANGE_CACHE_SCHEMA}"
+        from rag.image_policy import image_policy_signature
+        key = f"{sha}_{start}_{end}_{ver}_{self._RANGE_CACHE_SCHEMA}_{image_policy_signature()}"
         return self._range_cache_dir() / f"{key}.json"
 
     @staticmethod

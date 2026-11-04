@@ -428,6 +428,12 @@ export const cancelImport = async (jobId: string): Promise<boolean> => {
   return body?.success !== false;
 };
 
+export const discardImport = async (jobId: string): Promise<{ deleted: string[]; retained: string[] }> => {
+  const res: any = await apiClient.post(`/knowledge/imports/${encodeURIComponent(jobId)}/discard`);
+  if (res?.success === false || !res?.data) throw new Error('服务端未确认删除成功');
+  return res.data;
+};
+
 // ============ 前端预校验（按 caps.accept，大小写不敏感） ============
 
 const extOf = (name: string): string => {

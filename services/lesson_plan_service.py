@@ -179,22 +179,26 @@ def generate_draft(user_id: str, course_id: str, *, topic: str, hours: float = 1
 
     # 只允许引用**本课程**的资料（防止借用其他课程/任意学科的内容）
     selected = _select_materials(course_id, material_ids)
+    if not selected:
+        raise TeachingError("所选范围没有可用资料，请先完成资料入库", "insufficient_evidence")
+    # Even all-materials mode is bounded to this course's ready, authorized records.
+    scope = {"mode": "selected", "selected": [
+        {"doc_id": f"m:{m['id']}", "file_name": m["filename"]} for m in selected]}
 
     from services import ai_service
     query = f"{topic} {objectives}".strip()
     try:
         # 同上：教师侧生成允许在严格检索为空时放宽一次
         rag = ai_service.retrieve_for_teaching(query, course["subject_id"], top_k=5,
-                                               viewer_user_id=user_id)
+                                               viewer_user_id=user_id, scope=scope)
     except Exception as e:
         raise TeachingError(f"课程资料检索失败：{e}", "retrieval_failed")
 
     sources = rag.get("sources") or []
-    if selected:
-        allowed = {m["filename"] for m in selected}
-        sources = [s for s in sources if str(s.get("file_name") or "") in allowed] or sources
     context = rag.get("context") or ""
     insufficient = not context.strip()
+    if insufficient:
+        raise TeachingError("所选资料没有检索到有效内容，请检查资料或调整主题", "insufficient_evidence")
 
     summary = _class_summary(user_id, course_id, class_id)
     minutes = int(round(hours * 45))
@@ -233,14 +237,18 @@ def generate_draft(user_id: str, course_id: str, *, topic: str, hours: float = 1
 
 def _select_materials(course_id: str, material_ids: Optional[List[str]]) -> List[Dict[str, Any]]:
     materials = td.list_materials(course_id, include_teacher_only=True)
-    if not material_ids:
+    if material_ids is None:
         return [m for m in materials if m["status"] == "ready"]
+    if not material_ids:
+        raise TeachingError("显式选择的资料范围为空", "invalid_request")
     wanted = set(material_ids)
     picked = [m for m in materials if m["id"] in wanted]
     missing = wanted - {m["id"] for m in picked}
     if missing:
         raise TeachingError(f"资料不存在或不属于本课程：{', '.join(sorted(missing))}",
                             "invalid_request")
+    if any(m["status"] != "ready" for m in picked):
+        raise TeachingError("所选资料尚未完成入库", "insufficient_evidence")
     return picked
 
 

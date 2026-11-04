@@ -3,13 +3,14 @@ import { Alert, Button, Empty, Input, Modal, Select, Space, Spin, Tag, Tooltip, 
 import { BulbOutlined, ReloadOutlined } from '@ant-design/icons';
 import apiClient from '../../api/axios';
 import PdfCanvasViewer from '../PdfViewer/PdfCanvasViewer';
+import { useAuth } from '../../context/AuthContext';
 import {
   generateWhiteboard, type TutorSource, type WhiteboardScene,
 } from '../../api/tutor';
 
 const { Text } = Typography;
 
-const WHITEBOARD_CACHE = 'edu.whiteboard.v1';
+const WHITEBOARD_CACHE = 'edu.whiteboard.v2';
 
 /** 引用页码可能是 "1-2" 这样的范围；PDF.js 取第一页即可。 */
 const firstPageNumber = (value: unknown): number | null => {
@@ -54,6 +55,9 @@ const WhiteboardModal: React.FC<{
   sources?: TutorSource[];
   citedIds?: number[];
 }> = ({ open, onClose, subjectId, nodeId, docIds, defaultTopic, sources = [], citedIds = [] }) => {
+  const { user } = useAuth();
+  const userId = user?.id || '';
+  const generation = useRef(0);
   const [topic, setTopic] = useState(defaultTopic || '');
   const [template, setTemplate] = useState('concept');
   const [scene, setScene] = useState<WhiteboardScene | null>(null);
@@ -70,8 +74,14 @@ const WhiteboardModal: React.FC<{
     isPdf: boolean;
   }>>([]);
   const [activePage, setActivePage] = useState(0);
-  const [activePdf, setActivePdf] = useState<{ fileName: string; data: ArrayBuffer } | null>(null);
-  const sourceKey = sources.map((s) => `${s.id}:${s.page_image_url || ''}`).join('|');
+  const [activePdf, setActivePdf] = useState<{
+    fileName: string; owner: string; version: string; data: ArrayBuffer;
+  } | null>(null);
+  const sourceKey = JSON.stringify(sources);
+  const owner = JSON.stringify([userId, subjectId]);
+  const sceneOwner = owner + JSON.stringify([nodeId, docIds, sourceKey]);
+  // Historical sources without a content version cannot safely reuse generated scenes.
+  const canCacheScene = sources.length > 0 && sources.every((s) => Boolean((s as any).source_content_sha));
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<{ index: number; startX: number; startY: number; orig: any } | null>(null);
   const windowDragRef = useRef<{
@@ -87,7 +97,7 @@ const WhiteboardModal: React.FC<{
     const nextTopic = topic || defaultTopic || '';
     if (!topic && defaultTopic) setTopic(defaultTopic);
     // 同一学科 + 模板 + 主题直接恢复上次结果，不再重复调用模型
-    setScene(readSceneCache(subjectId + JSON.stringify([nodeId, docIds]), template, nextTopic));
+    setScene(canCacheScene ? readSceneCache(sceneOwner, template, nextTopic) : null);
     setError(null);
     const width = Math.min(1040, window.innerWidth - 24);
     setPos({ x: Math.max(12, (window.innerWidth - width) / 2), y: 64 });
@@ -97,10 +107,20 @@ const WhiteboardModal: React.FC<{
     }));
     // 只在打开/切学科时恢复，不覆盖用户正在编辑的输入
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, subjectId, nodeId, JSON.stringify(docIds)]);
+  }, [open, sceneOwner]);
+
+  useEffect(() => {
+    generation.current += 1;
+    if (!open) setScene(null);
+    setPreview(null);
+    setActivePdf(null);
+    setLoading(false);
+  }, [sceneOwner, open]);
 
   useEffect(() => {
     let cancelled = false;
+    setPageImages([]);
+    setActivePage(0);
     const urls: string[] = [];
     const load = async () => {
       const loaded: typeof pageImages = [];
@@ -168,36 +188,38 @@ const WhiteboardModal: React.FC<{
     };
     // sourceKey 已经覆盖 sources 的 id/page 变化
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceKey, citedIds.join(','), subjectId]);
+  }, [sourceKey, citedIds.join(','), subjectId, userId, open]);
 
   const activePdfName = pageImages[activePage]?.isPdf
     ? pageImages[activePage].file_name : '';
 
   useEffect(() => {
-    if (!activePdfName) return;
-    if (activePdf?.fileName === activePdfName) return;
     let cancelled = false;
+    const controller = new AbortController();
     setActivePdf(null);
+    setError(null);
+    if (!open || !activePdfName) return;
     const load = async () => {
       try {
         const res = await apiClient.get(
           `/knowledge/${encodeURIComponent(subjectId)}/documents/${encodeURIComponent(activePdfName)}/file`,
-          { responseType: 'blob' },
+          { responseType: 'blob', signal: controller.signal },
         );
         const blob = res instanceof Blob ? res : (res as any)?.data;
         if (!(blob instanceof Blob)) throw new Error('PDF 内容为空');
+        const data = await blob.arrayBuffer();
+        const hash = await crypto.subtle.digest('SHA-256', data);
+        const version = Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, '0')).join('');
         if (!cancelled) {
-          setActivePdf({ fileName: activePdfName, data: await blob.arrayBuffer() });
+          setActivePdf({ fileName: activePdfName, owner, version, data });
         }
       } catch {
         if (!cancelled) setError('PDF 课件加载失败');
       }
     };
     void load();
-    return () => { cancelled = true; };
-    // activePdf 只在同文件时复用
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePdfName, subjectId]);
+    return () => { cancelled = true; controller.abort(); };
+  }, [activePdfName, subjectId, owner, open, sourceKey]);
 
   useEffect(() => {
     const move = (event: PointerEvent) => {
@@ -268,11 +290,12 @@ const WhiteboardModal: React.FC<{
   };
 
   const generate = async (templateOverride?: string, force = false) => {
+    const requestGeneration = ++generation.current;
     const effectiveTemplate = templateOverride || template;
     const value = topic.trim();
     if ((!value && (effectiveTemplate === 'ai' || effectiveTemplate === 'concept')) || !subjectId) return;
-    if (!force) {
-      const cached = readSceneCache(subjectId + JSON.stringify([nodeId, docIds]), effectiveTemplate, value);
+    if (!force && canCacheScene) {
+      const cached = readSceneCache(sceneOwner, effectiveTemplate, value);
       if (cached) {
         setScene(cached);
         setError(null);
@@ -286,17 +309,20 @@ const WhiteboardModal: React.FC<{
         subject_id: subjectId, topic: value, node_id: nodeId || null, doc_ids: docIds,
         template: effectiveTemplate === 'ai' ? undefined : effectiveTemplate,
       });
+      if (generation.current !== requestGeneration) return;
       setScene(data);
-      writeSceneCache(subjectId + JSON.stringify([nodeId, docIds]), effectiveTemplate, value, data);
+      if (canCacheScene) writeSceneCache(sceneOwner, effectiveTemplate, value, data);
     } catch (e: any) {
+      if (generation.current !== requestGeneration) return;
       setError(e?.response?.data?.detail || '白板生成失败，请稍后重试');
     } finally {
-      setLoading(false);
+      if (generation.current === requestGeneration) setLoading(false);
     }
   };
 
   const clearScene = () => {
-    try { localStorage.removeItem(cacheKeyOf(subjectId + JSON.stringify([nodeId, docIds]), template, topic)); } catch { /* 忽略 */ }
+    generation.current += 1;
+    try { localStorage.removeItem(cacheKeyOf(sceneOwner, template, topic)); } catch { /* 忽略 */ }
     setScene(null);
     setError(null);
   };
@@ -547,8 +573,9 @@ const WhiteboardModal: React.FC<{
               <>
                 <div className="whiteboard-pdf-frame">
                   {activeImage.isPdf ? (
-                    activePdf?.fileName === activeImage.file_name && firstPageNumber(activeImage.page) != null ? (
+                    activePdf?.owner === owner && activePdf?.fileName === activeImage.file_name && firstPageNumber(activeImage.page) != null ? (
                       <PdfCanvasViewer
+                        key={JSON.stringify([owner, activePdf.fileName, activePdf.version])}
                         data={activePdf.data}
                         pages={[firstPageNumber(activeImage.page) as number]}
                         highlightPage={firstPageNumber(activeImage.page) as number}
@@ -559,7 +586,9 @@ const WhiteboardModal: React.FC<{
                         }}
                       />
                     ) : (
-                      <div style={{ padding: 32, textAlign: 'center' }}><Spin /></div>
+                      <div style={{ padding: 32, textAlign: 'center' }}>
+                        {error ? <Text type="danger">原文加载失败，请关闭后重试</Text> : <Spin />}
+                      </div>
                     )
                   ) : (
                     <>

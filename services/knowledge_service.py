@@ -334,12 +334,22 @@ def delete_subject_knowledge(subject_id: str) -> Dict[str, Any]:
         raise KnowledgeServiceError("知识库删除失败，请稍后重试")
 
 
+@coordinated
 def cleanup_subject_data(subject_id: str) -> None:
     """
-    尽力清理学科的全部关联数据（FAISS/BM25/资料目录）。
+    清理学科的关联数据（FAISS/BM25/资料目录），失败则保留学科入口供重试。
 
-    供删除学科记录时联动调用；各目录不存在时静默跳过，不抛异常。
+    不存在的目录可跳过；真实取消/删除错误不能伪装成成功。
     """
+    from services import import_service
+    import_service._init_db()
+    with import_service._connect() as conn:
+        jobs = conn.execute("SELECT job_id FROM import_jobs WHERE subject_id=?", (subject_id,)).fetchall()
+    for job in jobs:
+        if not import_service.cancel_job(job["job_id"]):
+            raise KnowledgeServiceError("无法取消学科导入任务，未继续删除")
+    errors = []
+    _invalidate_subject_index(subject_id)
     for rel in (f"data/vector_store/{_safe_dir_name(subject_id)}",
                 f"data/bm25_index/{subject_id}",
                 f"data/subjects/{subject_id}"):
@@ -349,7 +359,8 @@ def cleanup_subject_data(subject_id: str) -> None:
                 shutil.rmtree(p)
                 logger.info(f"清理学科数据: {p}")
         except Exception as e:
-            logger.warning(f"清理学科数据失败（不阻断删除）: {rel}, {str(e)}")
+            errors.append(f"{rel}: {type(e).__name__}")
+            logger.error("清理学科数据失败: %s", e)
     _remove_index_sidecars(subject_id)
     # 2026-10-30：页面索引与页面图一并失效；同时取消该学科正在跑的建页任务，
     # 防止"删完又被旧任务写回来"。
@@ -359,7 +370,10 @@ def cleanup_subject_data(subject_id: str) -> None:
         if removed:
             logger.info(f"删除学科页面索引 {removed} 页: {subject_id}")
     except Exception as e:
-        logger.warning(f"清理页面索引失败（不阻断删除）: {e}")
+        errors.append(f"页面索引: {type(e).__name__}")
+        logger.error("清理页面索引失败: %s", e)
+    if errors:
+        raise KnowledgeServiceError("部分数据未能删除，请重试：" + "; ".join(errors))
 
 
 def get_vector_store_dir(subject_id: str) -> str:
@@ -651,7 +665,9 @@ def delete_subject_document(subject_id: str, filename: str) -> Dict[str, Any]:
         if not file_path.exists():
             raise KnowledgeServiceError(f"文件不存在: {safe_filename}")
         
-        file_path.unlink()
+        # Retain recoverable bytes until index publication succeeds.
+        backup_path = file_path.with_name(f".{file_path.name}.delete-{uuid.uuid4().hex}.tmp")
+        file_path.replace(backup_path)
         logger.info(f"文件删除成功: subject={subject_id}, file={safe_filename}")
 
         # 2026-10-30：页面索引与页面图立即失效，并取消该文档正在跑的建页任务，
@@ -660,12 +676,13 @@ def delete_subject_document(subject_id: str, filename: str) -> Dict[str, Any]:
             from services import page_index
             page_index.delete_document_pages(subject_id, file_name=safe_filename)
         except Exception as e:
-            logger.warning(f"清理该资料的页面索引失败（不阻断删除）: {e}")
+            backup_path.replace(file_path)
+            raise KnowledgeServiceError("原页索引清理失败，源文件已保留，请重试") from e
 
         # v2.6 修复：删除源文件后必须让索引失效。
         # 此前只 unlink 文件、索引岿然不动，用户删完文件立刻提问，
         # 答案仍然引用那份已删文件的内容（100% 必然触发，不依赖并发或重启）。
-        stale = _invalidate_subject_index(subject_id)
+        _invalidate_subject_index(subject_id)
 
         # 2026-10-08 修复（真实复现）：**只失效缓存是不够的**。
         # 磁盘索引里仍然带着该文件的 chunk，下一次检索重新加载后依旧会召回已删内容
@@ -684,21 +701,31 @@ def delete_subject_document(subject_id: str, filename: str) -> Dict[str, Any]:
                 rebuild_subject_knowledge(subject_id)
                 logger.info(f"删除后已重建索引（剩余 {len(remaining)} 份资料）: {subject_id}")
             else:
-                delete_subject_knowledge(subject_id)
+                # Knowledge-base deletion also removes the entire source folder.
+                # Here only the selected document may be removed (including when
+                # parsing never created an index); retain unrelated upload assets.
+                index_dir = Path(get_vector_store_dir(subject_id))
+                if index_dir.exists():
+                    delete_knowledge_base(subject_id=subject_id)
+                bm25_dir = _resolve_path(f"data/bm25_index/{subject_id}")
+                if bm25_dir.exists():
+                    shutil.rmtree(bm25_dir)
+                _remove_index_sidecars(subject_id)
                 logger.info(f"删除最后一份资料，已清理知识库: {subject_id}")
         except Exception as e:
-            # 重建失败不能把"删除"本身变成失败：文件已删、缓存已失效，
-            # 但要留下明确告警，提示需要手动重建。
-            logger.warning(f"删除后重建索引失败（文件已删除，请手动重建）: {subject_id}: {e}")
+            backup_path.replace(file_path)
+            _invalidate_subject_index(subject_id)
+            logger.error("删除后索引更新失败，已恢复源文件: %s: %s", subject_id, e)
+            raise KnowledgeServiceError("索引更新失败，源文件已保留，请重试删除") from e
 
+        backup_path.unlink()
         return {
             "success": True,
             "subject_id": subject_id,
             "filename": safe_filename,
             "status": "deleted",
-            "index_stale": stale,
-            "message": (f"文件 {safe_filename} 已删除"
-                        + ("，知识库索引已失效，请重新构建" if stale else "")),
+            "index_stale": False,
+            "message": f"文件 {safe_filename} 及对应索引已删除",
         }
         
     except KnowledgeServiceError:

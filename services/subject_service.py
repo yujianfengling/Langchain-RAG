@@ -2,6 +2,7 @@
 # 学科管理业务服务层
 
 from config.path_config import get_data_dir
+from services.subject_mutation import coordinated
 import json
 import logging
 from pathlib import Path
@@ -169,6 +170,7 @@ def create_subject(subject_id: str, name: str, description: Optional[str] = None
         raise SubjectServiceError(f"创建学科失败: {str(e)}")
 
 
+@coordinated
 def delete_subject(subject_id: str) -> Dict[str, Any]:
     """
     删除学科
@@ -188,15 +190,11 @@ def delete_subject(subject_id: str) -> Dict[str, Any]:
         # 查找并删除学科
         for i, subject in enumerate(subjects):
             if subject.get("id") == subject_id:
+                # Keep the registry entry actionable if cancellation/cleanup fails.
+                from services.knowledge_service import cleanup_subject_data
+                cleanup_subject_data(subject_id)
                 deleted_subject = subjects.pop(i)
                 _save_subjects(subjects)
-
-                # 联动清理学科关联数据（FAISS/BM25/资料目录），不阻断学科记录删除
-                try:
-                    from services.knowledge_service import cleanup_subject_data
-                    cleanup_subject_data(subject_id)
-                except Exception as e:
-                    logger.error(f"删除学科关联数据失败: {str(e)}")
 
                 return {
                     "success": True,

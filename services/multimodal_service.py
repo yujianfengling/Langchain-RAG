@@ -14,6 +14,30 @@ from services.model_service import ModelProvider, get_model_provider
 
 logger = logging.getLogger(__name__)
 
+
+class VisionResponseError(ValueError):
+    """An HTTP success is not necessarily a usable vision description."""
+    def __init__(self, message: str, error_type: str, finish_reason=None):
+        super().__init__(message)
+        self.error_type = error_type
+        self.finish_reason = finish_reason
+
+
+def _validated_vision_answer(result: Dict[str, Any]) -> Dict[str, Any]:
+    finish = result.get("finish_reason")
+    if finish == "length":
+        raise VisionResponseError("图片描述达到输出上限，结果不完整", "output_truncated", finish)
+    answer = result.get("answer")
+    if not isinstance(answer, str) or not answer.strip():
+        raise VisionResponseError("图片描述正式答案为空", "empty_content", finish)
+    data = _parse_vision_dict(answer)
+    if (not data or not isinstance(data.get("is_content"), bool)
+            or not all(isinstance(data.get(k), str) for k in ("description", "ocr_text"))):
+        raise VisionResponseError("图片描述结构不合法", "invalid_structure", finish)
+    if data["is_content"] and not (data["description"].strip() or data["ocr_text"].strip()):
+        raise VisionResponseError("教学图片没有有效描述或文字", "empty_content", finish)
+    return data
+
 # 图片安全限制（提供方**硬上限**，超过会被拒绝）
 MAX_IMAGE_DIMENSION = 4096  # 最大边长（像素）
 MAX_IMAGE_PIXELS = 2048 * 2048  # 最大像素数（约400万像素）
@@ -290,6 +314,7 @@ class MultimodalService:
                 vision_kwargs["extra_payload"] = {"thinking": {"type": "disabled"}}
             result = self.vision_provider.vision(
                 messages, **vision_kwargs)
+            _validated_vision_answer(result)
         except Exception as e:
             capability_status.safe_report(
                 capability_status.CAP_VISION, False,
@@ -445,18 +470,20 @@ class MultimodalService:
             latency = time.time() - start_time
 
             # 解析结构化JSON响应（description + ocr_text + is_content）
-            model_desc, model_ocr = parse_vision_json_response(vision_result.get("answer", ""))
+            parsed = _validated_vision_answer(vision_result)
+            model_desc, model_ocr = parsed["description"].strip(), parsed["ocr_text"].strip()
+            result["finish_reason"] = vision_result.get("finish_reason")
             result["description"] = model_desc
             result["ocr_text"] = model_ocr
 
             # 内容判定（2026-10-02）：区分"学科内容"与"校徽/模板/装饰"。
             # 解析不出时留 None，由调用方按"不因判定失败而丢内容"的原则处理。
-            _d = _parse_vision_dict(vision_result.get("answer", ""))
+            _d = parsed
             result["is_content"] = _as_bool(_d.get("is_content"))
             result["kind"] = str(_d.get("kind") or "")
 
             result["retries"] = vision_result.get("retries", 0)
-            result["vision_status"] = "success"
+            result["vision_status"] = "success" if result["is_content"] else "skipped"
 
             logger.info(
                 f"[Multimodal] Vision调用成功, image={Path(image_path).name}, "
@@ -495,6 +522,8 @@ class MultimodalService:
                     error_type = "unknown"
 
             result["error_type"] = error_type
+            result["finish_reason"] = getattr(e, "finish_reason", None)
+            result["failure_reason"] = str(e) if isinstance(e, VisionResponseError) else error_type
             result["http_status"] = status_code
             user_error = "图片理解服务暂时不可用，请稍后重试"
             result["error"] = user_error
@@ -561,6 +590,8 @@ class MultimodalService:
             "vision_status": extraction_result.get("vision_status", "unknown"),
             "vision_retries": extraction_result.get("retries", 0),
             "http_status": extraction_result.get("http_status"),
+            "finish_reason": extraction_result.get("finish_reason"),
+            "failure_reason": extraction_result.get("failure_reason"),
             # 内容判定（2026-10-02）：透传给增强器，供"噪声图不入库"过滤使用
             "is_content": extraction_result.get("is_content"),
             "content_kind": extraction_result.get("kind") or "",

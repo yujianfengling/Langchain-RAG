@@ -87,6 +87,13 @@ def test_delete_then_rebuild_failure_still_hides_deleted_content(tmp_path, monke
     monkeypatch.setattr(ks, 'rebuild_subject_knowledge',
                         lambda sid: (_ for _ in ()).throw(RuntimeError('forced build failure')))
     monkeypatch.setattr(ks, '_invalidate_subject_index', lambda sid: True)
+    # Failed index publication is now a failed deletion with a recoverable source,
+    # not a false success. A successful retry must still hide all deleted chunks.
+    import pytest
+    with pytest.raises(ks.KnowledgeServiceError):
+        ks.delete_subject_document('s3', 'gone.txt')
+    assert (subject / 'gone.txt').exists()
+    monkeypatch.setattr(ks, 'rebuild_subject_knowledge', lambda sid: {'success': True})
     ks.delete_subject_document('s3', 'gone.txt')
     assert not (subject / 'gone.txt').exists(), '文件应已删除'
 

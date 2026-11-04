@@ -24,6 +24,8 @@ const PdfCanvasViewer: React.FC<{
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRefs = useRef<Record<number, HTMLCanvasElement | null>>({});
   const renderedRef = useRef<Set<number>>(new Set());
+  const generationRef = useRef(0);
+  const renderTasksRef = useRef<Set<any>>(new Set());
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [pageNumbers, setPageNumbers] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,11 +34,14 @@ const PdfCanvasViewer: React.FC<{
   const pageKey = (pages || []).join(',');
 
   useEffect(() => {
+    generationRef.current += 1;
+    const renderTasks = renderTasksRef.current;
     let cancelled = false;
     let doc: any = null;
     setLoading(true);
     setError(null);
     setPdfDoc(null);
+    setPageNumbers([]);
     renderedRef.current = new Set();
     openPdf(data)
       .then((pdf) => {
@@ -48,6 +53,9 @@ const PdfCanvasViewer: React.FC<{
         const nums = pages && pages.length
           ? pages
           : Array.from({ length: pdf.numPages }, (_, i) => i + 1);
+        if (nums.some((n) => !Number.isInteger(n) || n < 1 || n > pdf.numPages)) {
+          throw new Error(`引用页码无效，当前文档共 ${pdf.numPages} 页`);
+        }
         setPdfDoc(pdf);
         setPageNumbers(nums);
       })
@@ -59,6 +67,9 @@ const PdfCanvasViewer: React.FC<{
       });
     return () => {
       cancelled = true;
+      generationRef.current += 1;
+      renderTasks.forEach((task) => task.cancel());
+      renderTasks.clear();
       if (doc) {
         try { doc.destroy(); } catch { /* 忽略 */ }
       }
@@ -72,8 +83,10 @@ const PdfCanvasViewer: React.FC<{
     const canvas = canvasRefs.current[pageNo];
     if (!canvas) return;
     renderedRef.current.add(pageNo);
+    const generation = generationRef.current;
     try {
       const page = await pdfDoc.getPage(pageNo);
+      if (generation !== generationRef.current) return;
       const base = page.getViewport({ scale: 1 });
       const available = Math.max(320, (containerRef.current?.clientWidth || 900) - 4);
       const scale = Math.min(2.2, Math.max(0.6, available / base.width));
@@ -84,8 +97,11 @@ const PdfCanvasViewer: React.FC<{
       canvas.style.height = 'auto';
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('浏览器不支持 Canvas');
-      await page.render({ canvasContext: ctx, viewport }).promise;
+      const task = page.render({ canvasContext: ctx, viewport });
+      renderTasksRef.current.add(task);
+      try { await task.promise; } finally { renderTasksRef.current.delete(task); }
     } catch (e: any) {
+      if (generation !== generationRef.current) return;
       renderedRef.current.delete(pageNo);
       setError(e?.message || 'PDF 页面渲染失败');
     }

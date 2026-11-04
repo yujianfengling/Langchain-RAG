@@ -47,6 +47,12 @@ def test_delete_last_document_clears_knowledge_base(tmp_path, monkeypatch):
                         lambda sid: calls.__setitem__('rebuild', calls['rebuild'] + 1))
     monkeypatch.setattr(ks, 'delete_subject_knowledge',
                         lambda sid: calls.__setitem__('delete_kb', calls['delete_kb'] + 1))
+    index = Path(ks.get_vector_store_dir('sub2'))
+    index.mkdir(parents=True)
+    # Single-file deletion now uses index-only removal; whole-subject deletion
+    # would incorrectly remove unrelated assets and the rollback source.
+    monkeypatch.setattr(ks, 'delete_knowledge_base',
+                        lambda subject_id: calls.__setitem__('delete_kb', calls['delete_kb'] + 1))
     monkeypatch.setattr(ks, '_invalidate_subject_index', lambda sid: True)
 
     ks.delete_subject_document('sub2', 'only.txt')

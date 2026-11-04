@@ -7,13 +7,12 @@ import {
 } from '@ant-design/icons';
 import {
   ImportCapabilities, ImportItem, ImportItemStatus, ImportItemTimings, ImportJob, ImportJobStatus,
-  cancelImport, capabilityUnavailableReason, continueImport, effectiveJobStatus, formatBytes,
+  cancelImport, discardImport, capabilityUnavailableReason, continueImport, effectiveJobStatus, formatBytes,
   getImportCapabilities, getImportJob, hasRetryableFailed, isJobPaused, isJobRunning, isTerminalStatus,
   jobCanCancel, jobCanPause, jobCanResume, jobNeedsContinue,
   listImports, pauseImport, resolveLimits, resolveTotals, resumeImport, retryImport, startImport,
   validateSelection,
 } from '../../api/import';
-import { deleteDocument } from '../../api/knowledge';
 import './upload.css';
 
 const { Text } = Typography;
@@ -425,18 +424,10 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   const handleDiscard = async () => {
     if (!job) return;
     setBusy('discard');
-    const names = (job.items || [])
-      .filter((it) => it.status === 'ready')
-      .map((it) => (it.doc_id && it.doc_id.startsWith('f:') ? it.doc_id.slice(2) : it.display_name))
-      .filter((name): name is string => Boolean(name));
     try {
-      if (!isTerminalStatus(job.status) || isJobPaused(job)) {
-        try { await cancelImport(job.job_id); } catch { /* 已经停了就继续删文件 */ }
-      }
-      for (const name of names) {
-        await deleteDocument(subjectId, name);
-      }
-      message.success(names.length > 0 ? `已删除 ${names.length} 份资料` : '已去掉这次上传');
+      const result = await discardImport(job.job_id);
+      message.success(`已删除 ${result.deleted.length} 份本次资料` +
+        (result.retained.length ? `，保留 ${result.retained.length} 份复用资料或同名新版本` : ''));
       setJob(null);
       onFinishedRef.current?.(job);
     } catch (e) {

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # 2026-10-02 升到 v1.2：v1.1 虽然改了提示词，但那批缓存里的 is_content
 # 在数据流上是断的（service→enricher 未透传），落盘的都是 null，
 # 沿用会让噪声过滤失效。v1.2 修正透传，故必须让 v1.1 缓存失效。
-VISION_PROMPT_VERSION = "v1.2"
+VISION_PROMPT_VERSION = "v1.3"
 
 # 过小图片阈值（字节）：低于此值视为装饰/校徽/边框，直接跳过识图。
 # 依据：实测课件 <8KB 的图占 44%~59%，抽检几乎全部为模板类噪声。
@@ -208,6 +208,8 @@ class QwenVisionProvider(VisionProvider):
             result["vision_status"] = metadata.get("vision_status", "unknown")
             result["vision_retries"] = metadata.get("vision_retries", 0)
             result["http_status"] = metadata.get("http_status")
+            result["finish_reason"] = metadata.get("finish_reason")
+            result["failure_reason"] = metadata.get("failure_reason")
 
             # 内容判定（2026-10-02）：上游 MultimodalService 已解析出 is_content/kind，
             # 必须在此透传，否则下游的噪声过滤拿不到判定结果，永远不生效。
@@ -763,6 +765,9 @@ class MultimodalEnricher:
                 vision_status = vision_result.get("vision_status", "unknown")
                 doc.metadata["vision_status"] = vision_status
                 doc.metadata["vision_retries"] = vision_result.get("vision_retries", 0)
+                for field in ("finish_reason", "failure_reason"):
+                    if vision_result.get(field) is not None:
+                        doc.metadata["vision_" + field] = vision_result[field]
                 if vision_result.get("http_status") is not None:
                     doc.metadata["vision_http_status"] = vision_result["http_status"]
 

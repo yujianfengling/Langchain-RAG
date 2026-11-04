@@ -150,7 +150,7 @@ class TestVisionRequestFormat(unittest.TestCase):
         def fake_post(url, headers=None, data=None, timeout=None, **kw):
             captured["body"] = json.loads(data.decode("utf-8"))
             return make_response(200, {
-                "choices": [{"message": {"content": '{"description":"d","ocr_text":"t"}'}}]
+                "choices": [{"message": {"content": '{"is_content":true,"description":"d","ocr_text":"t"}'}}]
             })
 
         os.environ["DASHSCOPE_API_KEY"] = "sk-test-abc"
@@ -183,7 +183,7 @@ class TestVisionRequestFormat(unittest.TestCase):
         try:
             with mock.patch("services.model_service.requests.post",
                             return_value=make_response(200, {
-                                "choices": [{"message": {"content": '{"description":"desc","ocr_text":"ocr"}'}}]
+                                "choices": [{"message": {"content": '{"is_content":true,"description":"desc","ocr_text":"ocr"}'}}]
                             })):
                 ms = MultimodalService()
                 result = ms.process_image_to_document(self._img_path)
@@ -336,7 +336,7 @@ class TestVisionCache(unittest.TestCase):
 
     def test_success_writes_cache_and_second_hit_no_api(self):
         ok = make_response(200, {
-            "choices": [{"message": {"content": '{"description":"desc","ocr_text":"MM-TEST-2026"}'}}]})
+            "choices": [{"message": {"content": '{"is_content":true,"description":"desc","ocr_text":"MM-TEST-2026"}'}}]})
         os.environ["DASHSCOPE_API_KEY"] = "sk-test-abc"
         try:
             with mock.patch("services.model_service.requests.post",
@@ -372,6 +372,25 @@ class TestVisionCache(unittest.TestCase):
                 # 缓存目录不应产生缓存文件
                 cache_dir = Path(self._tmp.name) / "cache"
                 self.assertFalse(cache_dir.exists() and any(cache_dir.iterdir()))
+        finally:
+            os.environ.pop("DASHSCOPE_API_KEY", None)
+
+    def test_empty_success_response_is_failure_and_not_cached(self):
+        """Formal HTTP/parser/enricher path: empty content is never a successful cache."""
+        os.environ["DASHSCOPE_API_KEY"] = "sk-test-abc"
+        try:
+            response = make_response(200, {"choices": [{
+                "message": {"content": "", "reasoning_content": "not an answer"},
+                "finish_reason": "length"}]})
+            with mock.patch("services.model_service.requests.post", return_value=response), \
+                 mock.patch("rag.multimodal.image.extractor.ImageExtractor.extract_text", return_value=""):
+                en = MultimodalEnricher()
+                doc = en._enrich_image_document(self._make_image_doc())
+            self.assertEqual(doc.metadata["vision_status"], "failed")
+            self.assertEqual(doc.metadata["vision_finish_reason"], "length")
+            cache_dir = Path(self._tmp.name) / "cache"
+            self.assertFalse(cache_dir.exists() and any(cache_dir.iterdir()))
+            self.assertNotIn("not an answer", doc.page_content)
         finally:
             os.environ.pop("DASHSCOPE_API_KEY", None)
 

@@ -16,6 +16,7 @@ import os
 import sys
 import unittest
 from unittest import mock
+from langchain_core.documents import Document
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -200,7 +201,9 @@ class TestLessonPlan(TeacherBase):
 
         with mock.patch("services.ai_service.retrieve_and_build_context",
                         return_value={"context": "二叉树内容", "sources": [
-                            {"file_name": "讲义.txt", "page": 1, "type": "text"}]}), \
+                            {"file_name": "讲义.txt", "page": 1, "type": "text"}],
+                            "documents": [Document(
+                                page_content="二叉树内容", metadata={"source": "讲义.txt", "page": 1})]}), \
              mock.patch("services.ai_service.call_llm", return_value=self._fake_plan_json()):
             plan = lesson_plan_service.generate_draft(
                 self.teacher_a, course["id"], topic="二叉树遍历", hours=1,
@@ -248,10 +251,11 @@ class TestLessonPlan(TeacherBase):
         with mock.patch("services.ai_service.retrieve_and_build_context",
                         return_value={"context": "", "sources": []}), \
              mock.patch("services.ai_service.call_llm", return_value=self._fake_plan_json()):
-            plan = lesson_plan_service.generate_draft(
-                self.teacher_a, course["id"], topic="没有资料的专题")
-        self.assertTrue(plan["insufficient_evidence"],
-                        "课程资料为空时必须标记证据不足，不能假装有依据")
+            # Empty scope must now stop before generation, rather than save an unsupported draft.
+            with self.assertRaises(lesson_plan_service.TeachingError) as caught:
+                lesson_plan_service.generate_draft(
+                    self.teacher_a, course["id"], topic="没有资料的专题")
+        self.assertEqual(caught.exception.error_type, "insufficient_evidence")
 
     def test_other_teacher_cannot_edit_or_publish(self):
         from services import lesson_plan_service

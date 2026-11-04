@@ -398,8 +398,10 @@ def _ocr_user_note(display_name: str, stats: Dict[str, Any]) -> str:
 def _parse_config_signature() -> str:
     """解析配置指纹：用于"内容没变就复用"的幂等判定（视觉提示词版本/模式等）"""
     from rag.enrichment.multimodal_enricher import VISION_PROMPT_VERSION
+    from rag.image_policy import image_policy_signature
     return "|".join([
         f"vision_prompt={VISION_PROMPT_VERSION}",
+        f"image_policy={image_policy_signature()}",
         f"vision_mode={os.getenv('VISION_MODE', 'vision')}",
         f"pdf_map={os.getenv('PDF_HEADING_DETECT', '1')}",
         f"ocr={os.getenv('IMPORT_OCR_ENGINE', 'auto')}",
@@ -2942,4 +2944,42 @@ from services.import_vision import coordinated_control as _vision_control
 cancel_job = _vision_control(cancel_job)
 pause_job = _vision_control(pause_job)
 resume_job = _vision_control(resume_job)
+
+
+@_vision_control
+def discard_job(job_id: str) -> Dict[str, Any]:
+    """Cancel/fence and delete only this upload's unchanged, published files.
+
+    Cancellation, version checks and deletion share the source/publish lock. A
+    same-name replacement or an older reused file must never be deleted here.
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise ValueError("导入任务不存在")
+    if not cancel_job(job_id):
+        raise ValueError("导入任务取消失败，未删除资料")
+    from services.knowledge_service import delete_subject_document, get_subject_document_path
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM import_items WHERE job_id=? AND status='ready'", (job_id,)).fetchall()
+    deleted, retained = [], []
+    for row in rows:
+        item = dict(row)
+        stored = item.get("stored_path")
+        if not stored:
+            continue
+        name = Path(stored).name
+        if not Path(stored).exists():
+            continue
+        path = get_subject_document_path(job["subject_id"], name)
+        if not path.exists():
+            continue  # idempotent retry after a partially completed discard
+        timings = json.loads(item.get("timings_json") or "{}")
+        if timings.get("reused") or not item.get("content_sha") or _sha256(path) != item["content_sha"]:
+            retained.append(name)
+            continue
+        delete_subject_document(job["subject_id"], name)
+        deleted.append(name)
+    cleanup_job_files(job_id)
+    return {"job_id": job_id, "status": "cancelled", "deleted": deleted, "retained": retained}
 

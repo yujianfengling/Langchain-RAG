@@ -16,5 +16,6 @@ export const getPdfJs = async (): Promise<any> => {
 
 export const openPdf = async (data: ArrayBuffer): Promise<any> => {
   const pdfjs = await getPdfJs();
-  return pdfjs.getDocument({ data: new Uint8Array(data) }).promise;
+  // PDF.js transfers its buffer to a worker; retain the caller's reusable bytes.
+  return pdfjs.getDocument({ data: new Uint8Array(data.slice(0)) }).promise;
 };

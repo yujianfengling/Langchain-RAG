@@ -473,7 +473,8 @@ def retrieve_and_build_context_scoped(
     subject_id: Optional[str] = None,
     top_k: int = 5,
     viewer_user_id: Optional[str] = None,
-    scope: Optional[Dict[str, Any]] = None
+    scope: Optional[Dict[str, Any]] = None,
+    min_score: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     按「资料范围」可靠检索（2026-10-07 修复上一轮的召回缺口）。
@@ -492,7 +493,7 @@ def retrieve_and_build_context_scoped(
 
     if not scope or scope.get("mode") == "all":
         result = retrieve_and_build_context(question, subject_id, top_k,
-                                            viewer_user_id=viewer_user_id)
+                                            viewer_user_id=viewer_user_id, min_score=min_score)
         result["scope"] = {"mode": "all", "signature": (scope or {}).get("signature")}
         result["supplemented"] = 0
         return result
@@ -504,7 +505,7 @@ def retrieve_and_build_context_scoped(
 
     fetch_k = max(top_k, top_k * 6)
     base = retrieve_and_build_context(question, subject_id, fetch_k,
-                                      viewer_user_id=viewer_user_id)
+                                      viewer_user_id=viewer_user_id, min_score=min_score)
     docs = material_scope.filter_documents_for_scope(scope, base.get("documents") or [])
 
     def _fingerprint(doc: Any) -> str:
@@ -524,7 +525,7 @@ def retrieve_and_build_context_scoped(
             try:
                 extra = retrieve_and_build_context(
                     f"{name} {question}", subject_id, max(2, top_k - len(docs)),
-                    viewer_user_id=viewer_user_id)
+                    viewer_user_id=viewer_user_id, min_score=min_score)
             except Exception as e:
                 logger.debug(f"补充检索失败（{name}）: {e}")
                 continue
@@ -556,7 +557,8 @@ def retrieve_for_teaching(
     question: str,
     subject_id: Optional[str] = None,
     top_k: int = 5,
-    viewer_user_id: Optional[str] = None
+    viewer_user_id: Optional[str] = None,
+    scope: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     教师侧生成用的检索：先按配置阈值检索，为空时**放宽到不过滤**再检索一次。
@@ -574,14 +576,16 @@ def retrieve_for_teaching(
     Returns:
         与 retrieve_and_build_context 同构，另加 "relaxed": bool
     """
-    result = retrieve_and_build_context(question, subject_id, top_k,
-                                        viewer_user_id=viewer_user_id)
+    retrieve = retrieve_and_build_context if scope is None else retrieve_and_build_context_scoped
+    kwargs = {} if scope is None else {"scope": scope}
+    result = retrieve(question, subject_id, top_k,
+                      viewer_user_id=viewer_user_id, **kwargs)
     if (result.get("context") or "").strip():
         result["relaxed"] = False
         return result
 
-    relaxed = retrieve_and_build_context(question, subject_id, top_k, min_score=0.0,
-                                         viewer_user_id=viewer_user_id)
+    relaxed = retrieve(question, subject_id, top_k, min_score=0.0,
+                       viewer_user_id=viewer_user_id, **kwargs)
     if (relaxed.get("context") or "").strip():
         logger.info(
             "教师侧检索在配置阈值下为空，已放宽阈值命中 %d 条（subject_id=%s）",
