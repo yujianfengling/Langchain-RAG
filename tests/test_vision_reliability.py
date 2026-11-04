@@ -385,7 +385,7 @@ class TestVisionStatusMetadata:
         
         # Mock describe_image返回成功结果
         with patch.object(service, 'describe_image', return_value={
-            "answer": "图片描述",
+            "answer": '{"is_content":true,"description":"图片描述","ocr_text":""}',
             "model": "test-model",
             "latency": 1.0,
             "retries": 0

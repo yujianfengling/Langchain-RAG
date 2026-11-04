@@ -479,6 +479,7 @@ class TestAssignmentApi(TeacherApiBase):
 
     def test_lesson_plan_flow_over_http(self):
         import json
+        from langchain_core.documents import Document
         content = {
             "title": "前序遍历", "objectives": ["掌握前序遍历"],
             "key_points": ["根左右"], "difficulties": ["递归实现"],
@@ -486,7 +487,15 @@ class TestAssignmentApi(TeacherApiBase):
             "examples": [{"question": "顺序？", "answer": "根左右"}],
             "homework": [{"question": "写序列", "answer": "根左右"}],
         }
-        with mock.patch("services.ai_service.call_llm",
+        # This flow now needs an authorized ready material and actual Document
+        # candidates; context-only mocks cannot prove scoped retrieval.
+        with mock.patch("services.lesson_plan_service.td.list_materials", return_value=[
+                 {"id": "api-test-material", "filename": "课程讲义.txt", "status": "ready"}]), \
+             mock.patch("services.ai_service.retrieve_and_build_context", return_value={
+                 "context": "前序遍历顺序为根左右。", "sources": [],
+                 "documents": [Document(page_content="前序遍历顺序为根左右。",
+                                        metadata={"source": "课程讲义.txt", "material_id": "api-test-material"})]}), \
+             mock.patch("services.ai_service.call_llm",
                         return_value=json.dumps(content, ensure_ascii=False)):
             resp = self.client.post(
                 f"/api/teacher/courses/{self.course['id']}/lesson-plans/generate",

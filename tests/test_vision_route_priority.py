@@ -16,7 +16,7 @@ def test_deepseek_description_disables_thinking_in_final_body(tmp_path, monkeypa
     provider.config = {"model_name": "deepseek-flash", "base_url": "https://api.deepseek.com", "name": "test"}
     response = SimpleNamespace(
         raise_for_status=lambda: None,
-        json=lambda: {"choices": [{"message": {"content": '{"description":"diagram","ocr_text":"code"}'}, "finish_reason": "stop"}]},
+        json=lambda: {"choices": [{"message": {"content": '{"is_content":true,"description":"diagram","ocr_text":"code"}'}, "finish_reason": "stop"}]},
     )
     with patch("services.model_service.requests.post", return_value=response) as http:
         result = MultimodalService(provider).describe_image(str(image))
@@ -33,7 +33,8 @@ def test_other_vision_provider_receives_no_deepseek_thinking_option(tmp_path, mo
     monkeypatch.setenv("VISION_MODE", "vision")
     image = tmp_path / "image.png"
     image.write_bytes(b"mock-image")
-    provider = SimpleNamespace(model_name="qwen-vision", vision=Mock(return_value={"answer": "ok"}))
+    provider = SimpleNamespace(model_name="qwen-vision", vision=Mock(return_value={
+        "answer": '{"is_content":true,"description":"ok","ocr_text":""}'}))
     MultimodalService(provider).describe_image(str(image))
     assert "extra_payload" not in provider.vision.call_args.kwargs
 
