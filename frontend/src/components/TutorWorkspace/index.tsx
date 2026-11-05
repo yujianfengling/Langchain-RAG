@@ -462,8 +462,9 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
         const events = Array.isArray(data?.events) ? data.events : [];
         const sourceEvent = [...events].reverse().find((e: any) => e.type === 'sources');
         const doneEvent = [...events].reverse().find((e: any) => e.type === 'done');
-        nextSources = sourceEvent?.payload?.sources
-          || doneEvent?.payload?.sources || [];
+        // Individual sources events may be deltas; done owns the final registry.
+        nextSources = doneEvent?.payload?.sources
+          ?? sourceEvent?.payload?.sources ?? [];
         nextCited = doneEvent?.payload?.cited_source_ids || [];
       } catch {
         // 历史事件取不到就保留空状态，白板仍可正常生成
@@ -814,7 +815,7 @@ const includeNodeSources = useCallback(() => {
         const events = Array.isArray(data?.events) ? data.events : [];
         const sourceEvent = [...events].reverse().find((event: any) => event.type === 'sources');
         const doneEvent = [...events].reverse().find((event: any) => event.type === 'done');
-        nextSources = sourceEvent?.payload?.sources || doneEvent?.payload?.sources || [];
+        nextSources = doneEvent?.payload?.sources ?? sourceEvent?.payload?.sources ?? [];
         nextCited = doneEvent?.payload?.cited_source_ids || [];
       } catch {
         antdMessage.error('引用原文加载失败，请重试');
