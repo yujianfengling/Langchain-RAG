@@ -523,7 +523,7 @@ def _t_read_memory(ctx: ToolContext, max_items: int = 8) -> Dict[str, Any]:
 
 def _t_read_source(ctx: ToolContext, file_name: str, page: Optional[int] = None,
                    max_chars: int = 2000) -> Dict[str, Any]:
-    """按文件名 + 页码读取原文；PDF 无文本层时用本地 OCR。"""
+    """读取可用原文；结构化容器只读取已入库片段，绝不解码其二进制。"""
     from config.path_config import get_subjects_dir
 
     name = str(file_name or "").strip()
@@ -544,6 +544,10 @@ def _t_read_source(ctx: ToolContext, file_name: str, page: Optional[int] = None,
     if not path.is_file():
         return {"ok": False, "error": f"资料不存在: {name}"}
 
+    visible_names = _visible_page_names(ctx)
+    if visible_names is not None and name not in visible_names:
+        return {"ok": False, "error": "该资料不可见或不在本轮选择范围内"}
+
     max_chars = max(200, min(int(max_chars or 2000), 4000))
     used_ocr = False
     page_out: Optional[int] = None
@@ -556,6 +560,34 @@ def _t_read_source(ctx: ToolContext, file_name: str, page: Optional[int] = None,
             text, used_ocr = pdf_ocr.extract_page_text(path, page_out)
         except Exception as e:
             return {"ok": False, "error": f"读取 PDF 失败: {e}"}
+    elif path.suffix.lower() not in (".txt", ".md", ".csv", ".json", ".html", ".htm", ".rst", ".log"):
+        from rag.vector_store import load_vector_store
+        from services.knowledge_service import get_vector_store_dir
+        from services import teaching_access, material_scope
+        try:
+            store = load_vector_store(persist_dir=get_vector_store_dir(ctx.subject_id))
+            docs = list(store.documents) if store else []
+            docs = teaching_access.filter_visible_documents(ctx.user_id, ctx.subject_id, docs)
+            docs = material_scope.filter_documents_for_scope(ctx.scope, docs)
+            docs = [d for d in docs if Path(str(d.metadata.get("file_name") or d.metadata.get("source") or "")).name == name
+                    and (page is None or str(d.metadata.get("page")) == str(page))]
+            # Reject enhancement chunks from a replaced source version.
+            if any(d.metadata.get("source_content_sha") for d in docs):
+                from services.import_vision import source_sha
+                version = source_sha(ctx.subject_id, name)
+                docs = [d for d in docs if not d.metadata.get("source_content_sha") or d.metadata["source_content_sha"] == version]
+            text = "\n\n".join(d.page_content for d in docs if d.page_content.strip())
+            if not text:
+                return {"ok": False, "error": "该资料或页码尚无可读取的已入库内容，请先完成建库或核对页码"}
+            sources = ctx.record_sources([{"file_name": name, "page": d.metadata.get("page"),
+                "type": "image" if d.metadata.get("modality") == "image" else "text",
+                "snippet": d.page_content[:800]} for d in docs])
+            return {"ok": True, "file_name": name, "page": page, "used_ocr": False,
+                    "text": text[:max_chars], "truncated": len(text) > max_chars,
+                    "sources": sources, "source_kind": "indexed_text_and_image_descriptions"}
+        except Exception as e:
+            logger.warning(f"按页读取已入库资料失败: {name}: {type(e).__name__}")
+            return {"ok": False, "error": "读取已入库资料失败，请检查知识库状态"}
     else:
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")

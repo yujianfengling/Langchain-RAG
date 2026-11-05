@@ -85,3 +85,54 @@ def test_unexpected_upstream_failure_remains_visible():
         with pytest.raises(AttributeError):
             list(provider.stream_with_tools([{"role": "user", "content": "offline"}]))
         assert report.call_args.args[1] is False
+
+
+def test_short_teaching_image_survives_real_paired_index_build(tmp_path, monkeypatch):
+    import rag.rag_service as rs
+    import rag.embedding as emb
+    from services import knowledge_service as ks
+    from tests.test_index_atomic_publish import _FakeEmbeddings
+    monkeypatch.setenv("EDU_DATA_DIR", str(tmp_path))
+    fake = _FakeEmbeddings()
+    monkeypatch.setattr(rs, "get_embedding_model", lambda: fake)
+    monkeypatch.setattr(emb, "get_embedding_model", lambda: fake)
+    picture = Document(page_content="图片描述：绿色系统框包含蓝色模块，模块编号 DEMO-37。", metadata={
+        "file_name": "course.pptx", "modality": "image", "page": 2,
+        "is_content": True, "vision_status": "success", "enhancement_item_id": "image-demo"})
+    ks._build_index_with_rollback("demo_short_image", [
+        Document(page_content="需求说明软件需要做什么，设计说明如何实现。" * 12, metadata={"file_name": "course.pptx", "page": 1}), picture])
+    with (tmp_path / "vector_store" / "demo_short_image" / "index.pkl").open("rb") as stream:
+        docs = pickle.load(stream)["documents"]
+    assert any(d.metadata.get("enhancement_item_id") == "image-demo" for d in docs)
+    from rag.hybrid_retriever import read_bm25_meta
+    assert read_bm25_meta(str(tmp_path / "bm25_index" / "demo_short_image"))["documents"] == len(docs)
+
+
+def test_read_ppt_source_uses_indexed_page_instead_of_zip_bytes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from services import tutor_tools as tools
+    monkeypatch.setenv("EDU_DATA_DIR", str(tmp_path))
+    folder = tmp_path / "subjects" / "demo_read_ppt"
+    folder.mkdir(parents=True)
+    (folder / "course.pptx").write_bytes(b"PK\x03\x04binary-container")
+    docs = [Document(page_content="图片独有事实 DEMO-37，绿色框包含蓝色圆。", metadata={"file_name": "course.pptx", "page": 2}),
+            Document(page_content="其他页不能进入结果", metadata={"file_name": "course.pptx", "page": 1})]
+    ctx = tools.ToolContext("offline-user", "demo_read_ppt", scope={"mode": "all"})
+    with patch("rag.vector_store.load_vector_store", return_value=SimpleNamespace(documents=docs)):
+        out = tools._t_read_source(ctx, "course.pptx", page=2)
+    assert out["ok"] and "DEMO-37" in out["text"]
+    assert "binary-container" not in out["text"] and "其他页" not in out["text"]
+    assert out["sources"][0]["file_name"] == "course.pptx" and out["sources"][0]["page"] == 2
+
+
+def test_read_ppt_source_without_index_reports_unavailable(tmp_path, monkeypatch):
+    from services import tutor_tools as tools
+    monkeypatch.setenv("EDU_DATA_DIR", str(tmp_path))
+    folder = tmp_path / "subjects" / "demo_no_index"
+    folder.mkdir(parents=True)
+    (folder / "course.pptx").write_bytes(b"PK\x03\x04binary-container")
+    ctx = tools.ToolContext("offline-user", "demo_no_index", scope={"mode": "all"})
+    with patch("rag.vector_store.load_vector_store", return_value=None):
+        out = tools._t_read_source(ctx, "course.pptx", page=2)
+    assert out["ok"] is False
+    assert "text" not in out

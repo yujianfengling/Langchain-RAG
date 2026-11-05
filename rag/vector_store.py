@@ -367,6 +367,19 @@ def filter_documents_by_min_length(
     if rescued:
         logger.info(f"短资料兜底：为 {rescued} 个来源各保留 1 个分块（避免整份资料被长度过滤丢弃）")
 
+    # A verified teaching-image description is often shorter than a prose
+    # paragraph. Keeping one text chunk for its PPT does not preserve its image
+    # facts: retain each independently validated image, never wrapper/noise rows.
+    rescued_images = 0
+    for d in non_wrapper:
+        meta = getattr(d, "metadata", {}) or {}
+        if (id(d) not in kept_ids and _len(d) >= absolute_floor
+                and meta.get("modality") == "image" and meta.get("is_content") is True
+                and meta.get("vision_status") in ("success", "cached", "ocr")):
+            kept.append(d)
+            kept_ids.add(id(d))
+            rescued_images += 1
+
     stats = {
         "min_length": effective,
         "configured_min_length": min_length,
@@ -376,6 +389,7 @@ def filter_documents_by_min_length(
         "meta_wrapper_dropped": wrapper_dropped,
         "meaningless_dropped": 0,
         "rescued_sources": rescued,
+        "rescued_images": rescued_images,
         "dropped_ratio": round((total - len(kept)) / max(total, 1), 4),
         "relaxed": relaxed,
         "low_yield": len(kept) < max(1, int(total * min_keep_ratio)),
