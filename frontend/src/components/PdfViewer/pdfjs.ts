@@ -17,5 +17,11 @@ export const getPdfJs = async (): Promise<any> => {
 export const openPdf = async (data: ArrayBuffer): Promise<any> => {
   const pdfjs = await getPdfJs();
   // PDF.js transfers its buffer to a worker; retain the caller's reusable bytes.
-  return pdfjs.getDocument({ data: new Uint8Array(data.slice(0)) }).promise;
+  const assets = import.meta.env.DEV
+    ? '/node_modules/pdfjs-dist/'
+    : `${import.meta.env.BASE_URL}pdfjs/`;
+  return pdfjs.getDocument({ data: new Uint8Array(data.slice(0)),
+    cMapUrl: `${assets}cmaps/`, cMapPacked: true,
+    standardFontDataUrl: `${assets}standard_fonts/`,
+  }).promise;
 };

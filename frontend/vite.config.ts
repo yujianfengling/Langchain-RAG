@@ -1,9 +1,28 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { readdirSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), {
+    name: 'pdfjs-support-assets',
+    apply: 'build',
+    generateBundle() {
+      // CJK PDFs can use external character maps instead of embedding fonts.
+      // Emit the resources from the locked pdfjs-dist package, including its
+      // notices, so backend-hosted previews never depend on a public CDN.
+      for (const directory of ['cmaps', 'standard_fonts']) {
+        const base = new URL(`./node_modules/pdfjs-dist/${directory}/`, import.meta.url)
+        for (const file of readdirSync(fileURLToPath(base))) {
+          this.emitFile({ type: 'asset', fileName: `pdfjs/${directory}/${file}`,
+            source: readFileSync(new URL(file, base)) })
+        }
+      }
+      this.emitFile({ type: 'asset', fileName: 'pdfjs/LICENSE',
+        source: readFileSync(new URL('./node_modules/pdfjs-dist/LICENSE', import.meta.url)) })
+    },
+  }],
   // 注意（2026-10-02 实测）：**不要**在这里加按包名的粗粒度 manualChunks。
   // 试过把 react / antd / framer-motion / echarts 拆成 vendor chunk，结果首屏
   // 从 874 KB 涨到 1580 KB（+81%）——单独成 chunk 后 Rollup 保留了 antd 大量
