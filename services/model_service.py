@@ -513,12 +513,17 @@ class OpenAICompatibleProvider(ModelProvider):
         except TurnCancelled:
             raise
         except ModelAPIError:
+            tx.check()
             capability_status.safe_report(capability_status.CAP_LLM, False,
                                           reason="stream_with_tools 失败")
             raise
-        except TurnCancelled:
+        except TurnTimeout:
             raise
         except Exception as e:
+            # Closing a cancelled requests response can surface a transport
+            # AttributeError/ConnectionError instead of our cancellation signal.
+            # Preserve cancellation/deadline semantics before reporting a fault.
+            tx.check()
             capability_status.safe_report(capability_status.CAP_LLM, False,
                                           reason=f"{type(e).__name__}: {e}")
             raise

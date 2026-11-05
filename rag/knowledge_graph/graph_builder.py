@@ -501,13 +501,18 @@ def build_knowledge_graph(
         logger.warning(f"LLM抽取失败/空结果的 chunk 编号: {failed_chunks}")
 
     if not all_triples:
-        logger.warning(f"学科 {subject_id} 未能提取到三元组（可能文档以图片/公式为主，文本内容不足）")
+        # Do not publish an empty graph or replace a previous usable graph after
+        # model/parse failures. The task manager propagates this as failed.
+        raise ValueError("未生成有效知识关系：请检查模型状态和资料内容；已有图谱保留")
     
     # 4. 合并为图谱
     raw_nodes, raw_edges = _merge_triples_to_graph(all_triples, source_info)
     
     # 5. 后处理过滤（防线2+3）
     nodes, edges = _filter_and_normalize_graph(raw_nodes, raw_edges)
+
+    if not nodes or not edges:
+        raise ValueError("抽取结果未形成有效知识关系，已有图谱保留")
     
     filtered_count = len(raw_nodes) - len(nodes)
     if filtered_count > 0:

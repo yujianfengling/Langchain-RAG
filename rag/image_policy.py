@@ -18,6 +18,10 @@ DEFAULTS = {
 
 def image_policy_signature():
     values = {key: str(float(os.getenv(key) or default)) for key, default in DEFAULTS.items()}
-    values["strategy_version"] = "pdf-density-v2"
+    # Use the same effective defaults as the production PPT image enricher.
+    from rag.enrichment.multimodal_enricher import _pptx_ocr_first_enabled, _pptx_ocr_min_chars
+    values["pptx_ocr_first"] = _pptx_ocr_first_enabled()
+    values["pptx_ocr_min_chars"] = _pptx_ocr_min_chars()
+    values["strategy_version"] = "pdf-density-v2-pptx-ocr-v1"
     values["vision_mode"] = os.getenv("VISION_MODE", "vision")
     return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:24]
