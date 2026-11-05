@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # 2026-10-02 升到 v1.2：v1.1 虽然改了提示词，但那批缓存里的 is_content
 # 在数据流上是断的（service→enricher 未透传），落盘的都是 null，
 # 沿用会让噪声过滤失效。v1.2 修正透传，故必须让 v1.1 缓存失效。
-VISION_PROMPT_VERSION = "v1.3"
+VISION_PROMPT_VERSION = "v1.4"
 
 # 过小图片阈值（字节）：低于此值视为装饰/校徽/边框，直接跳过识图。
 # 依据：实测课件 <8KB 的图占 44%~59%，抽检几乎全部为模板类噪声。
@@ -486,6 +486,8 @@ class MultimodalEnricher:
             doc.page_content = cached.get("page_content", "") or ""
             doc.metadata["description"] = meta.get("description", "")
             doc.metadata["ocr_text"] = meta.get("ocr_text", "")
+            doc.metadata["is_content"] = meta.get("is_content")
+            doc.metadata["content_kind"] = meta.get("content_kind")
             doc.metadata["provider_used"] = meta.get("provider_used") or "qwen-vision"
             doc.metadata["model_used"] = meta.get("model_used") or "qwen-vl-plus"
             doc.metadata["vision_status"] = "cached"
@@ -805,6 +807,8 @@ class MultimodalEnricher:
             doc.page_content = cached_data['page_content']
             doc.metadata["description"] = cached_metadata.get("description", "")
             doc.metadata["ocr_text"] = cached_metadata.get("ocr_text", "")
+            doc.metadata["is_content"] = cached_metadata.get("is_content")
+            doc.metadata["content_kind"] = cached_metadata.get("content_kind")
             doc.metadata["provider_used"] = cached_metadata.get("provider_used") or "qwen-vision"
             doc.metadata["model_used"] = cached_metadata.get("model_used") or "qwen-vl-plus"
             doc.metadata["vision_status"] = "cached"

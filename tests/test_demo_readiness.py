@@ -136,3 +136,27 @@ def test_read_ppt_source_without_index_reports_unavailable(tmp_path, monkeypatch
         out = tools._t_read_source(ctx, "course.pptx", page=2)
     assert out["ok"] is False
     assert "text" not in out
+
+
+@pytest.mark.parametrize("fast_scan", [False, True])
+def test_cached_teaching_image_keeps_content_classification(tmp_path, fast_scan):
+    from PIL import Image
+    from rag.enrichment.multimodal_enricher import MultimodalEnricher
+    from rag.vector_store import filter_documents_by_min_length
+    picture = tmp_path / "image.png"
+    Image.new("RGB", (200, 200), "white").save(picture)
+    doc = Document(page_content="", metadata={"file_name": "course.pptx", "image_path": str(picture), "modality": "image"})
+    cached = {"page_content": "系统边界包含模块 DEMO-37，这是测试范围示意图。",
+              "metadata": {"is_content": True, "content_kind": "diagram", "description": "系统边界包含模块"}}
+    provider = MagicMock()
+    enricher = MultimodalEnricher(vision_provider=provider)
+    with patch.object(enricher, "_load_from_cache", return_value=cached):
+        if fast_scan:
+            result = enricher.fill_images_from_cache([doc])[0]
+        else:
+            result = enricher._enrich_image_document(doc)
+    provider.analyze_image.assert_not_called()
+    assert result.metadata.get("is_content") is True
+    kept, _ = filter_documents_by_min_length([
+        Document(page_content="正常正文内容。" * 30, metadata={"file_name": "course.pptx"}), result], min_length=90)
+    assert result in kept
