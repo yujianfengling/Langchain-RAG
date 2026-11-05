@@ -15,11 +15,11 @@ export default defineConfig({
       for (const directory of ['cmaps', 'standard_fonts']) {
         const base = new URL(`./node_modules/pdfjs-dist/${directory}/`, import.meta.url)
         for (const file of readdirSync(fileURLToPath(base))) {
-          this.emitFile({ type: 'asset', fileName: `pdfjs/${directory}/${file}`,
+          this.emitFile({ type: 'asset', fileName: `assets/pdfjs/${directory}/${file}`,
             source: readFileSync(new URL(file, base)) })
         }
       }
-      this.emitFile({ type: 'asset', fileName: 'pdfjs/LICENSE',
+      this.emitFile({ type: 'asset', fileName: 'assets/pdfjs/LICENSE',
         source: readFileSync(new URL('./node_modules/pdfjs-dist/LICENSE', import.meta.url)) })
     },
   }],

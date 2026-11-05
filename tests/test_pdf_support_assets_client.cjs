@@ -15,8 +15,8 @@ new Function('module','exports','getPdfJs', code)(moduleStub,moduleStub.exports,
 (async()=>{
   const original = new Uint8Array([1,2,3]).buffer;
   assert.equal(await moduleStub.exports.openPdf(original),'opened');
-  assert.equal(options.cMapUrl,'/pdfjs/cmaps/');
-  assert.equal(options.standardFontDataUrl,'/pdfjs/standard_fonts/');
+  assert.equal(options.cMapUrl,'/assets/pdfjs/cmaps/');
+  assert.equal(options.standardFontDataUrl,'/assets/pdfjs/standard_fonts/');
   assert.equal(options.cMapPacked,true);
   assert.notEqual(options.data.buffer,original,'retain caller buffer');
   assert.deepEqual([...options.data],[1,2,3]);
