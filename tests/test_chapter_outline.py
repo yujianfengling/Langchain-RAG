@@ -152,3 +152,34 @@ def test_generate_map_prompt_carries_chapter_list(monkeypatch):
     assert labels == ["第1章 绪论"]
     assert [c["label"] for c in payload["uncovered_chapters"]] == ["第2章 数据定义"]
     assert any(d["code"] == "chapter_missing" for d in payload["diagnostics"])
+
+
+def test_truncated_map_fallback_has_one_node_per_file_in_numeric_order(monkeypatch):
+    """生产生成入口遇到截断时，不能把检索片段当成重复章节或漏掉资料。"""
+    files = [f"计算机图形学-第{i}章-很长的真实章节标题.pptx"
+             for i in [10, 2, 1, 12, 11, 9, 8, 7, 6, 5, 4, 3, 13, 14, 15, 16]]
+    evidence = [{"file_name": name, "snippet": "正文片段"}
+                for name in files for _ in range(3)]
+    monkeypatch.setattr(knowledge_map, "collect_evidence", lambda *a, **k: (evidence, {}))
+    monkeypatch.setattr(knowledge_map, "get_map", lambda *a: None)
+    saved = []
+    monkeypatch.setattr(knowledge_map, "_save_map", lambda sid, payload: saved.append(payload))
+    monkeypatch.setattr(knowledge_map, "_record_versions", lambda *a: None)
+
+    class TruncatedProvider:
+        def chat(self, messages, **kwargs):
+            assert kwargs["max_tokens"] == 8000
+            return {"answer": '{"nodes":[', "finish_reason": "length"}
+
+    import services.model_service as model_service
+    monkeypatch.setattr(model_service, "get_model_provider", lambda model=None: TruncatedProvider())
+    payload = knowledge_map.generate_map("u", "s", {
+        "selected": [{"file_name": name} for name in files], "signature": "fallback-test"
+    }, force=True)
+    nodes = payload["nodes"]
+    assert len(nodes) == len({n["node_id"] for n in nodes}) == 16
+    assert [n["source_docs"][0] for n in nodes] == [
+        f"计算机图形学-第{i}章-很长的真实章节标题.pptx" for i in range(1, 17)]
+    assert all("很长的真实章节标题" in n["label"] for n in nodes)
+    assert {d["code"] for d in payload["diagnostics"]} >= {"output_truncated", "bad_json"}
+    assert saved[0]["nodes"] == nodes

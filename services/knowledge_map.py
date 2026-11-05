@@ -466,13 +466,20 @@ def _fallback_map(subject_name: str, evidence: List[Dict[str, Any]]) -> Dict[str
     结构性降级：模型不可用时，按资料清单生成「每份资料一个章节」的最小可用路线，
     不虚构知识点，明确标注为“未解析成知识点”。
     """
+    # evidence 按片段收集：同一文件可能有多条，不能把每条都变成一个章节。
+    # 不截短标题，也不按片段截取前12项，否则会产生同ID节点并漏掉后续资料。
+    filenames = sorted({ev["file_name"] for ev in evidence if ev.get("file_name")},
+                       key=lambda name: [int(part) if part.isdigit() else part.casefold()
+                                         for part in re.split(r"(\d+)", name)])
+    stems = [os.path.splitext(name)[0] for name in filenames]
     nodes = []
-    for i, ev in enumerate(evidence[:12]):
-        label = os.path.splitext(ev["file_name"])[0][:20] or f"资料 {i + 1}"
+    for i, filename in enumerate(filenames):
+        stem = os.path.splitext(filename)[0]
+        label = (filename if stems.count(stem) > 1 else stem) or f"资料 {i + 1}"
         nodes.append({
             "node_id": stable_node_id(label, "root"), "label": label, "level": "chapter",
             "parent_id": None, "objective": "阅读并梳理该资料的主要内容", "type": "concept",
-            "prerequisites": [], "source_docs": [ev["file_name"]],
+            "prerequisites": [], "source_docs": [filename],
             "coverage_note": "模型未可用，按资料清单生成的兜底路线", "entity_version": 1,
         })
     return {"title": subject_name or "学习路线", "nodes": nodes, "uncovered": [],
