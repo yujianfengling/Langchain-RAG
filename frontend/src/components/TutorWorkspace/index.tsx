@@ -33,6 +33,10 @@ import './tutor.css';
 const { Text, Title } = Typography;
 const { TextArea } = Input;
 
+// 暂时隐藏入口，保留白板成果与引导模式实现，方便后续恢复。
+const WHITEBOARD_VISIBLE = false;
+const GUIDANCE_VISIBLE = false;
+
 /**
  * 路线状态的中文兜底。
  * 后端 capabilities/知识地图会给 status_labels，但缺失时界面绝不能回落到英文键
@@ -292,7 +296,7 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       }
       if (sid !== activeSubject.current || epoch !== selectionEpoch.current) return;
       if (data.context?.ability) setAbility(data.context.ability);
-      setGuidanceMode(data.context?.guidance_mode === 'socratic' ? 'socratic' : 'direct');
+      setGuidanceMode(GUIDANCE_VISIBLE && data.context?.guidance_mode === 'socratic' ? 'socratic' : 'direct');
       if (initialNodeId && !manualSubjectRef.current) {
         // 深链是明确选择；只保存节点位置，不把旧会话重新归到此节点。
         await updateTutorSession({ subject_id: sid, node_id: initialNodeId });
@@ -607,7 +611,7 @@ const includeNodeSources = useCallback(() => {
       message: content,
       subject_id: subjectId,
       ability: turnAbility,
-      guidance_mode: guidanceMode,
+      guidance_mode: GUIDANCE_VISIBLE ? guidanceMode : 'direct',
       doc_ids: selectedDocs,
       node_id: currentNode || null,
       conversation_id: convId,
@@ -1100,7 +1104,7 @@ const includeNodeSources = useCallback(() => {
               现在能力统一由快捷命令（以及会话恢复）决定，这里只留右栏开关。 */}
           {/* 范围摘要原先在这里又出现一份（与左栏重复）。现在范围只有左栏一个入口，
               这里放右栏开关：默认收起，点开才占位（窄屏由移动端栏的「引用」承接）。 */}
-          <Tooltip title="引导我：先问你思路，再逐层提示，不直接给答案">
+          {GUIDANCE_VISIBLE && <Tooltip title="引导我：先问你思路，再逐层提示，不直接给答案">
             <Segmented
               size="small"
               value={guidanceMode}
@@ -1111,7 +1115,7 @@ const includeNodeSources = useCallback(() => {
                 { label: '引导', value: 'socratic' },
               ]}
             />
-          </Tooltip>
+          </Tooltip>}
           <div className="tutor-main-actions">
             {/* 2026-10-30：原「工具」下拉已拆开——白板/录音笔记和「历史」并排成独立按钮。
                 收在下拉里时用户必须先点一次才知道有什么，功能等于藏起来了。
@@ -1122,12 +1126,12 @@ const includeNodeSources = useCallback(() => {
                 <span className="tutor-action-label">历史</span>
               </Button>
             </Tooltip>
-            <Tooltip title="用这一轮回答的资料生成板书，可逐层展开讲" trigger={['hover', 'focus']}>
+            {WHITEBOARD_VISIBLE && <Tooltip title="用这一轮回答的资料生成板书，可逐层展开讲" trigger={['hover', 'focus']}>
               <Button size="small" type="text" icon={<HighlightOutlined />} aria-label="白板"
                       onClick={() => void openWhiteboard()}>
                 <span className="tutor-action-label">白板</span>
               </Button>
-            </Tooltip>
+            </Tooltip>}
             <Tooltip title="录一段课堂讲解，自动转写并整理成可复习的笔记" trigger={['hover', 'focus']}>
               <Button size="small" type="text" icon={<AudioOutlined />} aria-label="录音笔记"
                       onClick={() => setLectureOpen(true)}>
@@ -1267,7 +1271,7 @@ const includeNodeSources = useCallback(() => {
                           <Button type="primary" onClick={startLearning}>开始学习</Button>
                         </div>
                       )}
-                      {guidanceMode === 'socratic' && (
+                      {GUIDANCE_VISIBLE && guidanceMode === 'socratic' && (
                         <div className="tutor-welcome-sub" style={{ marginTop: 10 }}>
                           引导模式：先说说你的思路，我会一层层提示，不直接给答案。
                         </div>
@@ -1425,7 +1429,7 @@ const includeNodeSources = useCallback(() => {
                 : '问课件里的问题，或说说哪里没懂…（Shift + Enter 换行）'}
               disabled={running}
             />
-            {guidanceMode === 'socratic' && !running && (
+            {GUIDANCE_VISIBLE && guidanceMode === 'socratic' && !running && (
               <Tooltip title="只给下一层提示，不直接给答案">
                 <Button icon={<BulbOutlined />} onClick={() => send('先别告诉我答案，给我一点提示。')}>
                   提示
@@ -1459,7 +1463,7 @@ const includeNodeSources = useCallback(() => {
         )}
       </main>
 
-      <WhiteboardModal
+      {WHITEBOARD_VISIBLE && <WhiteboardModal
         open={boardOpen}
         onClose={() => setBoardOpen(false)}
         subjectId={subjectId}
@@ -1468,7 +1472,7 @@ const includeNodeSources = useCallback(() => {
         defaultTopic={nodeDetail?.label || ''}
         sources={boardSources}
         citedIds={boardCitedIds}
-      />
+      />}
       <LectureNotesModal
         open={lectureOpen}
         onClose={() => setLectureOpen(false)}
@@ -1550,7 +1554,7 @@ const includeNodeSources = useCallback(() => {
                             ? <MarkdownText text={t.answer} />
                             : <Text type="secondary">这一轮没有留下回答。</Text>}
                         </div>
-                        {t.answer && (
+                        {WHITEBOARD_VISIBLE && t.answer && (
                           <Button
                             size="small" type="primary" ghost icon={<HighlightOutlined />}
                             style={{ marginTop: 12 }}
