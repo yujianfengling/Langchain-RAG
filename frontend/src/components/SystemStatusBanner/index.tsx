@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Space, Typography } from 'antd';
 import { getReadyStatus } from '../../api/health';
-
-const { Text } = Typography;
+import QuietNotice from '../QuietNotice';
 
 /** 能力键 → 人话 */
 const CAP_LABEL: Record<string, string> = {
@@ -60,30 +58,18 @@ const SystemStatusBanner: React.FC = () => {
   if (!degraded.length && !budgetOver.length) return null;
   if (dismissed) return null;
 
+  const parts = degraded.map((d) => (CAP_LABEL[d.key] || d.key) + '：' + d.reason);
+  if (budgetOver.length > 0) {
+    parts.push(
+      '今日外部调用已达预算上限（' + budgetOver.map((k) => CAP_LABEL[k] || k).join('、')
+      + '），自动题库预生成已暂停',
+    );
+  }
+
   return (
-    <Alert
-      type="warning"
-      showIcon
-      closable
-      onClose={() => setDismissed(true)}
-      style={{ margin: '12px 16px 0' }}
-      message="部分功能正在降级运行"
-      description={
-        <Space direction="vertical" size={2}>
-          {degraded.map((d) => (
-            <Text key={d.key} style={{ fontSize: 12 }}>
-              {CAP_LABEL[d.key] || d.key}：{d.reason}
-            </Text>
-          ))}
-          {budgetOver.length > 0 && (
-            <Text key="budget" style={{ fontSize: 12 }}>
-              今日外部调用已达预算上限（{budgetOver.map((k) => CAP_LABEL[k] || k).join('、')}）：
-              自动题库预生成已暂停，学生按需出题不受影响。
-            </Text>
-          )}
-        </Space>
-      }
-    />
+    <QuietNotice onClose={() => setDismissed(true)}>
+      部分功能降级。{parts.join('；')}
+    </QuietNotice>
   );
 };
 

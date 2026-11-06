@@ -542,6 +542,11 @@ def _row_to_user(row, include_secret: bool = False) -> Dict[str, Any]:
         "role_granted_at": row["role_granted_at"] if "role_granted_at" in keys else None,
         "role_source": row["role_source"] if "role_source" in keys else None,
     }
+    avatar = _avatar_file(row["id"])
+    user["has_avatar"] = bool(avatar)
+    user["avatar_updated_at"] = (
+        datetime.fromtimestamp(os.path.getmtime(avatar)).isoformat(timespec="seconds")
+        if avatar else None)
     if include_secret:
         user["password_hash"] = row["password_hash"]
         user["password_salt"] = row["password_salt"]
@@ -599,6 +604,73 @@ def register_user(username: str, password: str, display_name: Optional[str] = No
                 "display_name": display_name or username, "is_legacy": False}
     finally:
         conn.close()
+
+
+def update_display_name(user_id: str, display_name: str) -> Dict[str, Any]:
+    """修改展示名。登录名不变。"""
+    name = (display_name or "").strip()
+    if not name or len(name) > 40:
+        raise AuthError("姓名需要 1 到 40 个字", "invalid_request")
+    if not get_user(user_id):
+        raise AuthError("用户不存在", "not_found")
+    conn = _get_db()
+    try:
+        conn.execute(
+            "UPDATE users SET display_name=?, updated_at=? WHERE id=?",
+            (name, _now(), user_id))
+        conn.commit()
+    finally:
+        conn.close()
+    user = get_user(user_id)
+    if not user:
+        raise AuthError("用户不存在", "not_found")
+    return user
+
+
+_AVATAR_MAX_BYTES = 2 * 1024 * 1024
+_AVATAR_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+
+def _avatar_file(user_id: str) -> Optional[str]:
+    safe = re.sub(r"[^\w.-]", "", user_id or "")
+    if not safe or safe != user_id:
+        return None
+    path = os.path.join(_DATA_DIR, "avatars", safe + ".webp")
+    return path if os.path.isfile(path) else None
+
+
+def avatar_file(user_id: str) -> Optional[str]:
+    return _avatar_file(user_id)
+
+
+def save_avatar(user_id: str, data: bytes, filename: str) -> Dict[str, Any]:
+    """把头像收成 256 像素的 webp。不接受非图片，避免把任意文件存进账号目录。"""
+    if not get_user(user_id):
+        raise AuthError("用户不存在", "not_found")
+    if not data or len(data) > _AVATAR_MAX_BYTES:
+        raise AuthError("头像图片需小于 2MB", "invalid_request")
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext not in _AVATAR_SUFFIXES:
+        raise AuthError("头像只支持 jpg、png、webp、gif", "invalid_request")
+    import io
+    from PIL import Image
+    try:
+        image = Image.open(io.BytesIO(data))
+        image.load()
+    except Exception:
+        raise AuthError("无法识别这张图片", "invalid_request")
+    image = image.convert("RGBA")
+    image.thumbnail((256, 256))
+    dest_dir = os.path.join(_DATA_DIR, "avatars")
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, user_id + ".webp")
+    if os.path.basename(dest) != user_id + ".webp":
+        raise AuthError("用户不存在", "not_found")
+    image.save(dest, "WEBP", quality=80)
+    user = get_user(user_id)
+    if not user:
+        raise AuthError("用户不存在", "not_found")
+    return user
 
 
 def authenticate(username: str, password: str) -> Optional[Dict[str, Any]]:

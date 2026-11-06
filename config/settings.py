@@ -93,6 +93,11 @@ class Settings:
     def RRF_K(self) -> int:
         """兼容性属性：RRF参数k"""
         return self._rag.retrieval.rrf_k
+
+    @property
+    def RETRIEVAL_POOL(self) -> int:
+        """兼容性属性：送入融合/重排前的候选数（RAG_RETRIEVAL_POOL）"""
+        return self._rag.retrieval.pool
     
     @property
     def SIMILARITY_THRESHOLD(self) -> float:

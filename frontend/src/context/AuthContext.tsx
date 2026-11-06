@@ -48,6 +48,7 @@ function toUser(data: any): AuthUser {
   return {
     id: data?.id, username: data?.username, display_name: data?.display_name,
     is_legacy: data?.is_legacy, role: data?.role,
+    has_avatar: !!data?.has_avatar, avatar_updated_at: data?.avatar_updated_at ?? null,
   };
 }
 

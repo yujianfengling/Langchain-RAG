@@ -302,36 +302,46 @@ def retrieve(
     threshold: float = 0.3,
     use_bm25: bool = True,
     use_vector: bool = True,
-    rrf_k: int = 60
+    rrf_k: int = 60,
+    candidate_k: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
     执行混合检索：向量检索 + BM25关键词检索，RRF融合排序
-    
+
     Args:
         query: 用户查询
         subject_id: 学科ID
-        top_k: 返回结果数量
+        top_k: 返回结果数量（融合和重排之后再截断）
         threshold: 向量检索相似度阈值
         use_bm25: 是否启用BM25检索
         use_vector: 是否启用向量检索
         rrf_k: RRF参数
-        
+        candidate_k: 每路召回条数。None 时：开了 Cross-Encoder 用 max(top_k*4, 20)，
+            否则等于 top_k。调用方传入时至少取 top_k，这样 RRF 能看见比最终条数更多的候选。
+
     Returns:
         检索结果列表，每个元素包含：
         - content: 文本内容
         - source: 来源文件
-        - score: 融合分数
+        - score: 融合分数（RRF 或单路原始分）
+        - rerank_score: Cross-Encoder 分数；未重排时为 None
         - retrieval_type: "vector" | "bm25" | "hybrid"
     """
     result_lists = []
     _reset_retrieval_diagnostics()
     from . import reranker
     rerank_on = reranker.enabled()
-    candidate_k = max(top_k * 4, 20) if rerank_on else top_k
+    if candidate_k is None:
+        fetch_k = max(top_k * 4, 20) if rerank_on else top_k
+    else:
+        fetch_k = max(int(candidate_k), top_k)
+        if rerank_on:
+            # 显式候选池不能把 Cross-Encoder 的召回深度缩回去
+            fetch_k = max(fetch_k, top_k * 4, 20)
 
     # 1. 向量检索（返回 (results, reason)；reason为None表示成功）
     if use_vector:
-        vector_results, vector_reason = _vector_search(query, subject_id, candidate_k, threshold)
+        vector_results, vector_reason = _vector_search(query, subject_id, fetch_k, threshold)
         if vector_reason is not None:
             # 向量检索不可用：明确记录降级原因，不参与融合
             with _retrieval_lock:
@@ -350,7 +360,7 @@ def retrieve(
         if subject_id not in _bm25_retrievers:
             _load_bm25_index(subject_id)
         if subject_id in _bm25_retrievers:
-            bm25_results = _bm25_search(query, subject_id, candidate_k)
+            bm25_results = _bm25_search(query, subject_id, fetch_k)
             result_lists.append(bm25_results)
             with _retrieval_lock:
                 _retrieval_info["bm25_available"] = True

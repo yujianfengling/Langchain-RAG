@@ -354,7 +354,480 @@ def _parse_triple_json(text: str) -> List[Dict[str, Any]]:
     return []
 
 
-# ========== 图谱构建 ==========
+# ========== 原文摘录（公式优先，其次定义） ==========
+
+_FORMULA_BLOCK_RE = re.compile(r"\$\$[\s\S]{1,600}?\$\$|\\\[[\s\S]{1,600}?\\\]")
+_INLINE_MATH_RE = re.compile(r"(?<!\$)\$[^$\n]{1,220}\$(?!\$)|\\\([\s\S]{1,220}?\\\)")
+_DEF_CUE_RE = re.compile(r"定义为|的定义|是指|称为|叫做|称作|指的是|定义\s*[:：]")
+_EQ_NOISE_RE = re.compile(r"=>|<=|>=|==|->|→|⇒")
+_OUTLINE_RE = re.compile(r"\d+\.\d+")
+_SENTENCE_END_RE = re.compile(r"[。！？；;]")
+_EXCERPT_LIMIT = 280
+_EXCERPTS_PER_KIND = 2
+# 摘录挑选规则变过。版本不同就从原文重摘，避免空摘录、目录或抽丢的符号留在文件里。
+_EXCERPT_VERSION = 7
+# 幻灯片标题常比正文多或少一个「的」，或在概念中间插「先进的」这类短修饰。
+_FLEX_CHARS = "的和与或及力"
+# 幻灯片常把 σ₃ 画在句子的空档上，抽取后空档还在，符号落到文末。
+_SYMBOL_HOLE_RE = re.compile(r"(?<=[\u4e00-\u9fff])[ \t\u00a0]{2,}(?=[\u4e00-\u9fff])")
+_DETACHED_SYMBOL_RE = re.compile(
+    r"^[0-9]{0,2}[σΣετφμπλθγβα][0-9]{0,2}$"
+)
+_SUB_DIGITS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+
+def _doc_text(doc: Any) -> str:
+    if isinstance(doc, dict):
+        return str(doc.get("page_content") or doc.get("content") or "")
+    return str(getattr(doc, "page_content", "") or "")
+
+
+def _doc_meta(doc: Any) -> Dict[str, Any]:
+    if isinstance(doc, dict):
+        meta = doc.get("metadata") or {}
+    else:
+        meta = getattr(doc, "metadata", None) or {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _normalize_detached_symbol(token: str) -> str:
+    """把抽反的「3σ」收成「σ₃」。"""
+    match = re.fullmatch(r"([0-9]{0,2})([σΣετφμπλθγβα])([0-9]{0,2})", token)
+    if not match:
+        return token
+    base = match.group(2)
+    sub = (match.group(1) or "") + (match.group(3) or "")
+    if not sub:
+        return base
+    return base + sub.translate(_SUB_DIGITS)
+
+
+def _repair_detached_symbols(text: str) -> str:
+    """文末单独成行的 σ₃，按出现顺序填回中文之间的空档。对不上就保持原样。"""
+    lines = text.splitlines()
+    end = len(lines)
+    trailing = []
+    while end > 0:
+        stripped = lines[end - 1].strip()
+        if not stripped:
+            end -= 1
+            continue
+        if not _DETACHED_SYMBOL_RE.match(stripped):
+            break
+        trailing.append(stripped)
+        end -= 1
+    if not trailing:
+        return text
+    trailing.reverse()
+    body = "\n".join(lines[:end]).strip()
+    holes = list(_SYMBOL_HOLE_RE.finditer(body))
+    if len(holes) != len(trailing):
+        return text
+    for hole, token in zip(reversed(holes), reversed(trailing)):
+        body = body[:hole.start()] + _normalize_detached_symbol(token) + body[hole.end():]
+    return body
+
+
+def _source_text(doc: Any) -> str:
+    """摘抄用原文。检索前缀不算原文，有 original_content 时用它。"""
+    meta = _doc_meta(doc)
+    original = str(meta.get("original_content") or "").strip()
+    text = original or _doc_text(doc).strip()
+    if not text:
+        return ""
+    return _repair_detached_symbols(text)
+
+
+def _label_compact(label: str) -> str:
+    return re.sub(r"\s+", "", label)
+
+
+def _compact_index(text: str) -> tuple:
+    """去掉空白后的正文，以及每个字在原文里的位置。换行也算空白，概念可以跨行。"""
+    mapping: List[int] = []
+    chars: List[str] = []
+    for index, ch in enumerate(text):
+        if ch.isspace():
+            continue
+        mapping.append(index)
+        chars.append(ch)
+    return "".join(chars), mapping
+
+
+def _coverage_needles(label: str) -> List[tuple]:
+    """要在原文里找的连续片段。(片段, 覆盖字数, 加分)。长的优先。"""
+    compact = _label_compact(label)
+    if len(compact) < 2:
+        return []
+    items = [(compact, len(compact), 12)]
+    for index, ch in enumerate(compact):
+        if ch in _FLEX_CHARS and len(compact) - 1 >= 4:
+            items.append((compact[:index] + compact[index + 1:], len(compact) - 1, 4))
+    if compact.endswith("现象") or compact.endswith("问题"):
+        stem = compact[:-2]
+        if len(stem) >= 2:
+            items.append((stem, len(stem), 0))
+    for suffix in ("研究", "方法"):
+        if compact.endswith(suffix) and len(compact) - len(suffix) >= 6:
+            stem = compact[:-len(suffix)]
+            items.append((stem, len(stem), 2))
+    # 只从概念开头往下缩短。从尾巴截会把「力学的研究方法」错配到别的学科。
+    floor = 6 if len(compact) >= 10 else 4
+    if len(compact) > floor:
+        for length in range(len(compact) - 1, floor - 1, -1):
+            items.append((compact[:length], length, 0))
+    best: Dict[str, tuple] = {}
+    for needle, matched, bonus in items:
+        prev = best.get(needle)
+        if prev is None or (matched, bonus) > prev:
+            best[needle] = (matched, bonus)
+    ordered = sorted(best.items(), key=lambda item: (item[1][0], item[1][1]), reverse=True)
+    return [(needle, matched, bonus) for needle, (matched, bonus) in ordered]
+
+
+def _find_exact(compact: str, needle: str) -> List[tuple]:
+    found = []
+    start = 0
+    while True:
+        index = compact.find(needle, start)
+        if index < 0:
+            return found
+        found.append((index, index + len(needle)))
+        start = index + 1
+
+
+def _find_flex(compact: str, label: str) -> List[tuple]:
+    """正文比概念多一个「的 / 和 / 力」也算对上，摘出来的仍是原文。"""
+    if len(label) < 4:
+        return []
+    found = []
+    head = label[:2]
+    start = 0
+    while True:
+        index = compact.find(head, start)
+        if index < 0:
+            return found
+        window = compact[index:index + len(label) + 1]
+        if len(window) == len(label) + 1:
+            for pos, ch in enumerate(window):
+                if ch in _FLEX_CHARS and window[:pos] + window[pos + 1:] == label:
+                    found.append((index, index + len(label) + 1))
+                    break
+        start = index + 1
+
+
+def _find_gap(compact: str, label: str) -> List[tuple]:
+    """概念两边都能对上，中间只隔最多 3 个字（如「配置先进的闭环控制系统」）。"""
+    if len(label) < 8:
+        return []
+    found = []
+    for cut in range(2, len(label) - 1):
+        pre, suf = label[:cut], label[cut:]
+        if min(len(pre), len(suf)) < 2 or max(len(pre), len(suf)) < 6:
+            continue
+        start = 0
+        while True:
+            index = compact.find(pre, start)
+            if index < 0:
+                break
+            after = index + len(pre)
+            for gap in (1, 2, 3):
+                end = after + gap
+                if compact[end:end + len(suf)] == suf:
+                    found.append((index, end + len(suf)))
+                    break
+            start = index + 1
+    return found
+
+
+def _line_spans(text: str) -> List[tuple]:
+    offset = 0
+    spans = []
+    for line in text.splitlines(keepends=True):
+        spans.append((offset, offset + len(line), line.strip()))
+        offset += len(line)
+    if text and not spans:
+        spans.append((0, len(text), text.strip()))
+    return spans
+
+
+def _excerpt_around(text: str, start: int, end: int) -> str:
+    """从命中的那几行起摘，断行的句子再往后补，直到句号。"""
+    spans = _line_spans(text)
+    indexes = [
+        index for index, (begin, stop, stripped) in enumerate(spans)
+        if stripped and not (stop <= start or begin >= end)
+    ]
+    if not indexes:
+        return text[start:end].strip()
+    first = indexes[0]
+    last = indexes[-1]
+    stop = spans[last][1]
+    taken = 0
+    opening = spans[first][2]
+    if len(opening) <= 24 or "定义" in opening or not re.search(r"[。！？]$", spans[last][2]):
+        for follow in range(last + 1, len(spans)):
+            if not spans[follow][2]:
+                continue
+            if len(text[spans[first][0]:spans[follow][1]].strip()) > _EXCERPT_LIMIT:
+                break
+            stop = spans[follow][1]
+            taken += 1
+            if taken >= 3 or re.search(r"[。！？]$", spans[follow][2]):
+                break
+    snippet = text[spans[first][0]:stop].strip()
+    if len(snippet) <= _EXCERPT_LIMIT:
+        return snippet
+    left = spans[first][0]
+    while left < start and len(text[left:stop].strip()) > _EXCERPT_LIMIT:
+        nxt = text.find("\n", left)
+        if nxt < 0 or nxt + 1 > start:
+            break
+        left = nxt + 1
+    snippet = text[left:stop].strip()
+    if len(snippet) <= _EXCERPT_LIMIT:
+        return snippet
+    return _clip(text[start:min(len(text), end + 160)])
+
+
+def _clip(text: str, limit: int = _EXCERPT_LIMIT) -> str:
+    snippet = text.strip()
+    if len(snippet) <= limit:
+        return snippet
+    return snippet[:limit].rstrip()
+
+
+def _excerpt_file_name(meta: Dict[str, Any]) -> str:
+    name = str(meta.get("file_name") or meta.get("filename") or "").strip()
+    if name:
+        return name
+    source = str(meta.get("source") or "").replace("\\", "/").split("/")[-1]
+    return source
+
+
+def _excerpt_page(meta: Dict[str, Any]):
+    try:
+        from rag.loaders.pdf_map import display_page
+        page = display_page(meta)
+    except Exception:
+        page = meta.get("page")
+    if page in ("", None):
+        return None
+    return page
+
+
+def _chinese_count(text: str) -> int:
+    return len(re.findall(r"[\u4e00-\u9fff]", text))
+
+
+def _is_formula_text(text: str) -> bool:
+    """真公式才算公式。中文里的「甲=乙」、页眉里的 => 不算。"""
+    if "[公式]" in text or _FORMULA_BLOCK_RE.search(text) or _INLINE_MATH_RE.search(text):
+        return True
+    cleaned = _EQ_NOISE_RE.sub(" ", text)
+    if "=" not in cleaned and "＝" not in cleaned:
+        return False
+    if _chinese_count(text) > 12 and "$" not in text:
+        return False
+    return bool(re.search(r"\\[a-zA-Z]+|[A-Za-zα-ωΑ-Ωπ∑∫√^_]|≤|≥|≈", cleaned))
+
+
+def _is_outline(text: str) -> bool:
+    return len(_OUTLINE_RE.findall(text)) >= 3
+
+
+def _label_only_in_book_title(text: str, label: str) -> bool:
+    outside = re.sub(r"《[^》]*》", "", text)
+    return label in text and label not in outside
+
+
+def _private_use_count(text: str) -> int:
+    return sum(1 for ch in text if "\ue000" <= ch <= "\uf8ff")
+
+
+def _formula_for_label(snippet: str, label: str, core_line: str) -> bool:
+    """公式必须是在讲这个概念。书名页眉、符号字体乱码不算。"""
+    if _label_only_in_book_title(snippet, label):
+        return False
+    if re.search(r"20\d{2}[/-]\d{1,2}[/-]\d{1,2}", core_line) and not _is_formula_text(core_line):
+        return False
+    if not (_is_formula_text(snippet) or _is_formula_text(core_line)):
+        return False
+    body = snippet if _is_formula_text(snippet) else core_line
+    if "$" not in body and "[公式]" not in body and _private_use_count(body) >= 4:
+        return False
+    return True
+
+
+def _classify_excerpt(snippet: str, label: str, core_line: str) -> tuple:
+    """返回 (kind, score)。目录和书名页眉压低，完整定义句抬高。"""
+    if _formula_for_label(snippet, label, core_line):
+        return "formula", 100
+    explanatory = bool(_SENTENCE_END_RE.search(snippet)) and _chinese_count(snippet) >= 12
+    if _DEF_CUE_RE.search(snippet) and explanatory and not _is_outline(snippet):
+        kind, score = "definition", 90
+    elif explanatory:
+        kind, score = "passage", 60
+    else:
+        kind, score = "passage", 20
+    if _SYMBOL_HOLE_RE.search(snippet):
+        score -= 40
+    if _is_outline(snippet):
+        score -= 45
+    if _label_only_in_book_title(snippet, label):
+        score -= 35
+    if re.search(r"20\d{2}[/-]\d{1,2}[/-]\d{1,2}", snippet) and not explanatory:
+        score -= 25
+    return kind, score
+
+
+def _collect_chunk_excerpts(text: str, label: str, meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """摘出包含该概念的连续原文。允许断行，也允许少一个「的」或中间隔几个字。"""
+    compact_label = _label_compact(label)
+    if len(compact_label) < 2:
+        return []
+    compact, mapping = _compact_index(text)
+    if not compact or not mapping:
+        return []
+    hits = []
+    for needle, matched, bonus in _coverage_needles(label):
+        for start, end in _find_exact(compact, needle):
+            hits.append((start, end, matched, bonus))
+    for start, end in _find_flex(compact, compact_label):
+        hits.append((start, end, len(compact_label), 6))
+    for start, end in _find_gap(compact, compact_label):
+        hits.append((start, end, len(compact_label), 6))
+    if not hits:
+        return []
+    best_matched = max(item[2] for item in hits)
+    seen_span = set()
+    excerpts = []
+    seen_text = set()
+    for start, end, matched, bonus in hits:
+        if matched != best_matched or (start, end) in seen_span:
+            continue
+        seen_span.add((start, end))
+        if start >= len(mapping) or end - 1 >= len(mapping):
+            continue
+        orig_start = mapping[start]
+        orig_end = mapping[end - 1] + 1
+        snippet = _excerpt_around(text, orig_start, orig_end)
+        if not snippet or snippet in seen_text:
+            continue
+        seen_text.add(snippet)
+        core = text[orig_start:orig_end].strip()
+        kind, score = _classify_excerpt(snippet, label, core or snippet)
+        excerpts.append({
+            "kind": kind,
+            "text": snippet,
+            "file_name": _excerpt_file_name(meta),
+            "page": _excerpt_page(meta),
+            "score": score + bonus,
+            "matched": matched,
+        })
+        if len(excerpts) >= 6:
+            break
+    return excerpts
+
+
+def _public_excerpt(item: Dict[str, Any]) -> Dict[str, Any]:
+    # 幻灯片项目符号经常落在符号字体的私用区，页面上会变成方框。去掉这些符号，正文照抄。
+    text = "".join(ch for ch in item["text"] if not ("\ue000" <= ch <= "\uf8ff")).strip()
+    return {
+        "kind": item["kind"],
+        "text": text,
+        "file_name": item.get("file_name") or "",
+        "page": item.get("page"),
+    }
+
+
+def _keep_best(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """留下分数接近最高分的几条，目录行不要跟在正文后面充数。"""
+    ranked = sorted(items, key=lambda item: (-item["score"], -min(len(item["text"]), 180)))
+    if not ranked:
+        return []
+    floor = ranked[0]["score"] - 25
+    kept = []
+    for item in ranked:
+        if item["score"] < floor:
+            continue
+        public = _public_excerpt(item)
+        if public["text"]:
+            kept.append(public)
+        if len(kept) >= _EXCERPTS_PER_KIND:
+            break
+    return kept
+
+
+def attach_source_excerpts(nodes: List[Dict], documents: List[Any]) -> List[Dict]:
+    """给每个节点挂上原文摘录。有公式或定义时只留这两类，公式在前；否则留下最像正文的句子。"""
+    prepared = []
+    for doc in documents or []:
+        text = _source_text(doc)
+        if len(text) < 2:
+            continue
+        prepared.append((text, _doc_meta(doc)))
+
+    for node in nodes:
+        label = str(node.get("label") or node.get("id") or "").strip()
+        found: List[Dict[str, Any]] = []
+        seen = set()
+        if len(label) >= 2:
+            for text, meta in prepared:
+                for item in _collect_chunk_excerpts(text, label, meta):
+                    if item["text"] in seen:
+                        continue
+                    seen.add(item["text"])
+                    found.append(item)
+        if found:
+            # 同一概念在别处有更完整的原文时，不用更短的片段充数。
+            best_matched = max(item.get("matched") or 0 for item in found)
+            found = [item for item in found if (item.get("matched") or 0) == best_matched]
+        formulas = _keep_best([item for item in found if item["kind"] == "formula"])
+        definitions = _keep_best([item for item in found if item["kind"] == "definition"])
+        if formulas or definitions:
+            node["excerpts"] = formulas + definitions
+        else:
+            node["excerpts"] = _keep_best(found)
+    return nodes
+
+
+def _load_index_documents(subject_id: str) -> Optional[List[Any]]:
+    """读取知识库里已切好的 chunk。索引不存在时返回 None。"""
+    import pickle
+    from rag.rag_service import _safe_dir_name
+    from config.path_config import get_data_dir
+
+    index_pkl = Path(get_data_dir()) / "vector_store" / _safe_dir_name(subject_id) / "index.pkl"
+    if not index_pkl.exists():
+        return None
+    with open(index_pkl, "rb") as f:
+        stored = pickle.load(f)
+    if not isinstance(stored, dict):
+        return []
+    documents = stored.get("documents", [])
+    return documents if isinstance(documents, list) else []
+
+
+def ensure_node_excerpts(subject_id: str, graph: Dict[str, Any]) -> Dict[str, Any]:
+    """旧图谱没有摘录时，从知识库原文补一次并写回。补不上就不改文件。"""
+    nodes = graph.get("nodes") or []
+    stats = graph.setdefault("stats", {})
+    version_ok = stats.get("excerpt_version") == _EXCERPT_VERSION
+    complete = all(isinstance(node.get("excerpts"), list) for node in nodes)
+    if not nodes or (version_ok and complete):
+        return graph
+    documents = _load_index_documents(subject_id)
+    if not documents:
+        return graph
+    attach_source_excerpts(nodes, documents)
+    stats["excerpt_version"] = _EXCERPT_VERSION
+    try:
+        _save_graph(subject_id, graph)
+    except Exception as e:
+        logger.warning(f"知识图谱摘录写回失败，本次仍返回摘录: {type(e).__name__}: {e}")
+    return graph
+
 
 def _merge_triples_to_graph(
     all_triples: List[Dict[str, Any]],
@@ -428,7 +901,6 @@ def build_knowledge_graph(
         progress_cb: 进度回调 (processed_chunks, total_chunks)，可选
     """
     import os
-    import pickle
     from rag.rag_service import _safe_dir_name
 
     # 独立模型配置：GRAPH_MODEL 优先（不误用聊天模型）
@@ -436,20 +908,10 @@ def build_knowledge_graph(
         model = os.getenv("GRAPH_MODEL", None)
 
     # 1. 复用知识库已切分的 chunk（index.pkl 的 documents 即 RAG 构建时持久化的 split 结果）
-    # 2026-10-31：改走 get_data_dir()（EDU_DATA_DIR 感知）。原实现拼项目根的
-    # data/vector_store，真实索引在 EDU_DATA_DIR 下时永远"知识库尚未构建"
-    # ——知识图谱因此从未在演示环境跑通过。
-    from config.path_config import get_data_dir
-    vs_base = Path(get_data_dir()) / "vector_store"
     safe_name = _safe_dir_name(subject_id)
-    index_pkl = vs_base / safe_name / "index.pkl"
-
-    if not os.path.exists(index_pkl):
+    documents = _load_index_documents(subject_id)
+    if documents is None:
         raise FileNotFoundError(f"知识库尚未构建或索引缺失，请先构建知识库: {subject_id}")
-
-    with open(index_pkl, "rb") as f:
-        stored = pickle.load(f)
-    documents = stored.get("documents", [])
     if not documents:
         raise ValueError("知识库中没有可用文档，请先构建知识库")
 
@@ -513,7 +975,14 @@ def build_knowledge_graph(
 
     if not nodes or not edges:
         raise ValueError("抽取结果未形成有效知识关系，已有图谱保留")
-    
+
+    try:
+        attach_source_excerpts(nodes, documents)
+    except Exception as e:
+        logger.warning(f"知识图谱原文摘录失败，节点仍保留: {type(e).__name__}: {e}")
+        for node in nodes:
+            node.setdefault("excerpts", [])
+
     filtered_count = len(raw_nodes) - len(nodes)
     if filtered_count > 0:
         logger.info(f"后处理过滤：原始{len(raw_nodes)}节点 → 过滤后{len(nodes)}节点（移除{filtered_count}个噪音节点）")
@@ -531,6 +1000,7 @@ def build_knowledge_graph(
             "nodes_before_filter": len(raw_nodes),
             "nodes_filtered": filtered_count,
             "created_at": datetime.now().isoformat(),
+            "excerpt_version": _EXCERPT_VERSION,
         }
     }
     
@@ -615,9 +1085,11 @@ def list_graphs() -> List[Dict[str, Any]]:
     return graphs
 
 
-def query_graph(subject_id: str, node: str = None, depth: int = 1) -> Dict[str, Any]:
-    """查询图谱（支持按节点展开）"""
-    graph = load_knowledge_graph(subject_id)
+def query_graph(subject_id: str, node: str = None, depth: int = 1,
+                graph: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """查询图谱（支持按节点展开）。传入 graph 时不再读盘。"""
+    if graph is None:
+        graph = load_knowledge_graph(subject_id)
     if graph is None:
         return {"nodes": [], "edges": [], "stats": {"node_count": 0, "edge_count": 0}}
     

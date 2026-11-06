@@ -13,4 +13,6 @@ export interface AuthUser {
    * 前端不承担任何安全职责。
    */
   role?: 'student' | 'teacher' | 'admin';
+  has_avatar?: boolean;
+  avatar_updated_at?: string | null;
 }

@@ -444,10 +444,9 @@ def retrieve_context(
     根据问题检索相关上下文（v2.0 混合检索 + Rerank）
     
     检索流程：
-    1. 向量检索（语义相似度）
-    2. BM25关键词检索（精确匹配）
-    3. RRF融合排序
-    4. Rerank重排序
+    1. 向量检索（语义相似度）与 BM25 各取候选池
+    2. RRF 融合（同一 chunk 合并，不同页的相同正文不合并）
+    3. RERANK_ENABLED 时由 Cross-Encoder 重排到 top_k；否则按 RRF 截断
     
     Args:
         question: 用户问题
@@ -475,8 +474,17 @@ def retrieve_context(
     
     # 读取配置
     use_bm25 = settings.USE_BM25 if CONFIG_AVAILABLE else True
-    use_rerank = settings.USE_RERANK if CONFIG_AVAILABLE else True
     rrf_k = settings.RRF_K if CONFIG_AVAILABLE else 60
+    # 候选池：RAG_RETRIEVAL_POOL 以前只写在配置里，检索从未读取。
+    # 至少保持原先 top_k*2 的融合深度；池子配得更大时按配置召回，返回仍是 top_k。
+    pool = top_k * 2
+    if CONFIG_AVAILABLE:
+        try:
+            configured_pool = int(settings.RETRIEVAL_POOL)
+            if configured_pool > 0:
+                pool = max(pool, configured_pool)
+        except (TypeError, ValueError, AttributeError):
+            pass
     # min_score 显式传入时覆盖配置阈值（供"教师侧生成"在检索为空时放宽阈值重试，
     # 见 services.ai_service.retrieve_for_teaching；学生问答仍用配置阈值，行为不变）
     threshold = (float(min_score) if min_score is not None
@@ -488,14 +496,16 @@ def retrieve_context(
             hybrid_results = hybrid_retrieve(
                 query=question,
                 subject_id=subject_id,
-                top_k=top_k * 2,  # 多取一些用于rerank
+                top_k=top_k,
+                candidate_k=pool,
                 threshold=threshold,
                 use_bm25=use_bm25,
                 use_vector=True,
                 rrf_k=rrf_k
             )
 
-            # 读取检索诊断：向量检索不可用时明确降级并跳过依赖Embedding的Rerank
+            # 向量检索不可用时混合检索已降为关键词。这里只记录原因，
+            # 不再按 retrieval_score 重排：那会打乱已有顺序，且嵌入模型此刻也不可用。
             diag = get_retrieval_diagnostics()
             if not diag.get("vector_available", False):
                 mode = diag.get("retrieval_mode", "bm25_degraded")
@@ -503,11 +513,14 @@ def retrieve_context(
                 logger.warning(
                     f"检索降级: retrieval_mode={mode} fallback_reason={reason} "
                     f"subject={subject_id}")
-                use_rerank = False
 
-            # 转换为Document格式
+            # 转换为Document格式。顺序以混合检索为准：
+            # RRF 已经排过；Cross-Encoder 打开时 hybrid 会按 rerank_score 重排。
+            # 这里再按 retrieval_score（RRF 分）排序会把重排结果盖回去，
+            # 而且 RRF 分和余弦分不是同一把尺子。
             documents = []
             for item in hybrid_results:
+                rerank_score = item.get('rerank_score')
                 # 兼容两种格式：直接返回Document对象或返回字典
                 doc = item.get('document')
                 if doc:
@@ -515,23 +528,21 @@ def retrieve_context(
                     if hasattr(doc, 'metadata'):
                         doc.metadata['retrieval_type'] = item.get('retrieval_type', 'unknown')
                         doc.metadata['retrieval_score'] = item.get('score', 0)
+                        if rerank_score is not None:
+                            doc.metadata['rerank_score'] = rerank_score
                     documents.append(doc)
                 elif 'content' in item:
                     # hybrid_retriever返回的是字典格式，转换为Document
                     from langchain_core.documents import Document
-                    metadata = item.get('metadata', {})
-                    metadata['source'] = item.get('source', '')
-                    metadata['section'] = item.get('section', '')
+                    metadata = item.get('metadata', {}) or {}
+                    metadata['source'] = item.get('source', metadata.get('source', ''))
+                    metadata['section'] = item.get('section', metadata.get('section', ''))
                     metadata['retrieval_type'] = item.get('retrieval_type', 'unknown')
                     metadata['retrieval_score'] = item.get('score', 0)
+                    if rerank_score is not None:
+                        metadata['rerank_score'] = rerank_score
                     doc = Document(page_content=item['content'], metadata=metadata)
                     documents.append(doc)
-
-            # Rerank重排序（向量检索不可用时跳过，避免依赖Embedding）
-            # v2.6：去掉 len(documents) > top_k 的前置条件。阈值过滤后候选数可能
-            # 已不足 top_k，此时若跳过精排会形成"既不精排也不足量"的空洞。
-            if use_rerank and len(documents) > 1:
-                documents = rerank_documents(question, documents, top_k)
 
             return documents[:top_k]
         

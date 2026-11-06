@@ -322,6 +322,30 @@ class BM25Retriever:
 
 # ========== RRF融合 ==========
 
+def _fusion_key(doc: Any) -> Tuple[str, str, str, str, str]:
+    """同一条 chunk 的融合键。
+
+    向量和 BM25 命中同一块时必须合并（内容 + 文件 + 页 + chunk_index）。
+    只对正文做 hash 会把不同课件里的同一句话收成一条，页码和来源只留第一处。
+    hash() 还有跨内容碰撞，这里用字段本身做键。
+    """
+    content = doc.page_content if hasattr(doc, "page_content") else str(doc)
+    meta = getattr(doc, "metadata", None) or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    name = str(meta.get("file_name") or meta.get("filename") or meta.get("source") or "")
+    material = str(meta.get("material_id") or "")
+    page = meta.get("page")
+    chunk = meta.get("chunk_index")
+    return (
+        content,
+        name,
+        material,
+        "" if page is None else str(page),
+        "" if chunk is None else str(chunk),
+    )
+
+
 def reciprocal_rank_fusion(
     result_lists: List[List[Dict[str, Any]]],
     k: int = 60
@@ -338,9 +362,9 @@ def reciprocal_rank_fusion(
     Returns:
         融合后的结果列表，按RRF分数降序排列
     """
-    # 收集所有文档的RRF分数
-    doc_scores: Dict[str, float] = {}
-    doc_map: Dict[str, Dict[str, Any]] = {}
+    # 收集所有文档的RRF分数（键是 chunk 身份，不是正文 hash）
+    doc_scores: Dict[Tuple, float] = {}
+    doc_map: Dict[Tuple, Dict[str, Any]] = {}
     
     for results in result_lists:
         for rank, result in enumerate(results):
@@ -348,9 +372,7 @@ def reciprocal_rank_fusion(
             if not doc:
                 continue
             
-            # 使用文档内容的hash作为唯一标识
-            content = doc.page_content if hasattr(doc, 'page_content') else str(doc)
-            doc_key = str(hash(content))
+            doc_key = _fusion_key(doc)
             
             # RRF公式
             rrf_score = 1.0 / (k + rank + 1)

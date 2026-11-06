@@ -94,6 +94,8 @@ def list_scope_materials(user_id: Optional[str], subject_id: str) -> List[Dict[s
                 "course_id": None,
                 "source": "personal",
             })
+    from services.knowledge_service import natural_filename_key
+    items.sort(key=lambda item: natural_filename_key(item.get("file_name") or ""))
     return items
 
 

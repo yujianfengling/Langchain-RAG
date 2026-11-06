@@ -105,7 +105,15 @@ interface PageActiveTask {
   done: number;
   total: number;
   page: number;
+  stage?: string;
 }
+
+const PAGE_STAGE_LABEL: Record<string, string> = {
+  prepare: '准备文档',
+  extract: '抽取正文',
+  ocr: 'OCR识别',
+  render: '生成页面',
+};
 
 interface PageStatusPayload {
   pages?: number;
@@ -120,7 +128,7 @@ const isPageIndexed = (name: string): boolean =>
   /\.(pdf|pptx|ppt)$/i.test(name || '');
 
 const PAGE_POLL_MS = 2000;
-const PAGE_QUEUE_GRACE_MS = 8000;
+const PAGE_QUEUE_GRACE_MS = 30000;
 
 const describeError = (e: unknown, fallback = '操作失败，请重试'): string => {
   const err = e as {
@@ -609,21 +617,11 @@ const MaterialsPage: React.FC = () => {
       display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
       marginTop: 4, paddingLeft: 26,
     };
+    // 进行中的进度只在列表上方显示一条，避免每份资料各挂一条容易卡住的细进度条
+    if (act || busy) return null;
     return (
       <div style={rowStyle}>
-        {act ? (
-          <>
-            <Progress
-              percent={act.total > 0 ? Math.round((act.done / act.total) * 100) : 0}
-              size="small" style={{ width: 110, margin: 0 }}
-            />
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              建页中 {act.done}/{act.total}（第 {act.page} 页）
-            </Text>
-          </>
-        ) : busy ? (
-          <Text type="secondary" style={{ fontSize: 12 }}>建页任务已提交，正在启动…</Text>
-        ) : st ? (
+        {st ? (
           <>
             <Tag color={st.truncated || missing > 0 ? 'orange' : 'green'} style={{ marginInlineEnd: 0 }}>
               页面 {st.indexed_pages}/{st.total_pages}
@@ -658,6 +656,26 @@ const MaterialsPage: React.FC = () => {
       </div>
     );
   };
+
+  const pageTargets = docs.filter((d) => isPageIndexed(d.name));
+  const activeTask = pageActive[0];
+  const donePageFiles = pageTargets.filter((d) => {
+    if (activeTask && activeTask.file_name === d.name) return false;
+    const st = pageDocs.find((p) => p.file_name === d.name);
+    return !!st && st.total_pages > 0 && st.indexed_pages >= st.total_pages && !st.truncated;
+  }).length;
+  const currentPageFrac = activeTask && activeTask.total > 0 ? activeTask.done / activeTask.total : 0;
+  const pagePercent = pageTargets.length
+    ? Math.min(100, Math.round(((donePageFiles + currentPageFrac) / pageTargets.length) * 100))
+    : 0;
+  // 文件都已建完时收起进度条。等待窗口还在时不要留着「准备建页」。
+  const showPageBar = pageTargets.length > 0 && (
+    pageActive.length > 0
+    || (Object.keys(pagePending).length > 0 && donePageFiles < pageTargets.length)
+  );
+  const pageStageText = activeTask
+    ? (PAGE_STAGE_LABEL[activeTask.stage || ''] || '建页索引')
+    : '准备建页';
 
   if (ctx.status === 'loading') {
     return (
@@ -825,9 +843,12 @@ const MaterialsPage: React.FC = () => {
             subjectId={selectedId}
             writable={writable}
             onFinished={() => {
-              // 导入结束后：资料明细、学科卡片数量与建库状态都要立刻更新
+              // 导入结束后：资料明细、学科卡片数量与建库状态都要立刻更新。
+              // 建页是导入后自动开始的，这里要接着轮询，否则进度要手动刷新才出现。
               void loadDetail(selectedId);
               void loadMeta(allIds);
+              setPagePending((prev) => ({ ...prev, '*': Date.now() }));
+              void loadPageStatus(selectedId);
             }}
           />
 
@@ -836,7 +857,7 @@ const MaterialsPage: React.FC = () => {
               <Button icon={<BuildOutlined />} loading={rebuilding} disabled={docs.length === 0} onClick={handleRebuild}>
                 重建知识库
               </Button>
-              <Tooltip title="为 PDF/PPT 逐页生成页面图与文字，图片型课件也能按页检索、按页看原文。资料入库后即可开始伴学，建页只影响「看原页」。">
+              <Tooltip title="导入完成后会自动建页。这里用来补建或重试。资料入库后即可开始伴学，建页只影响「看原页」。">
                 <Button icon={<FileImageOutlined />}
                         loading={pageIndexing || subjectBuilding}
                         disabled={docs.length === 0} onClick={handleBuildPages}>
@@ -867,6 +888,24 @@ const MaterialsPage: React.FC = () => {
             />
           ) : (
             <>
+              {showPageBar && (
+                <div style={{ margin: '4px 0 10px' }}>
+                  <Progress
+                    percent={pagePercent}
+                    size="small"
+                    showInfo={false}
+                    strokeColor="var(--color-primary)"
+                  />
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    建页索引 · {donePageFiles + (activeTask ? 1 : 0)}/{pageTargets.length} 份
+                    {activeTask ? ' · ' + activeTask.file_name : ''}
+                    {' · ' + pageStageText}
+                    {activeTask && activeTask.total > 0
+                      ? ' · 第 ' + activeTask.page + ' 页（' + activeTask.done + '/' + activeTask.total + '）'
+                      : ''}
+                  </Text>
+                </div>
+              )}
               <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, margin: '6px 0' }}>
                 <Checkbox
                   indeterminate={selectedDocs.length > 0 && selectedDocs.length < docs.length}

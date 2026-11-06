@@ -586,6 +586,12 @@ def get_subject_document_path(subject_id: str, filename: str) -> Path:
     return file_path
 
 
+def natural_filename_key(name: str) -> list:
+    """文件名按数字大小排序，避免「第10章」排在「第2章」前面。"""
+    return [int(part) if part.isdigit() else part.casefold()
+            for part in re.split(r"(\d+)", name or "")]
+
+
 def get_subject_documents(subject_id: str) -> List[Dict[str, Any]]:
     """
     获取学科目录下的所有文档列表
@@ -620,7 +626,8 @@ def get_subject_documents(subject_id: str) -> List[Dict[str, Any]]:
                     "type": file_path.suffix.lower(),
                     "upload_time": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
                 })
-        
+
+        documents.sort(key=lambda item: natural_filename_key(item["name"]))
         return documents
         
     except Exception as e:

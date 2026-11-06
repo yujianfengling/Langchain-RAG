@@ -1,4 +1,4 @@
-import apiClient from './axios';
+import apiClient, { authHeaders } from './axios';
 import {
   adoptToken, clearAuth, getStatus, getToken, isLoggedIn, markAuthenticated,
   setUser as setAuthUser, subscribe,
@@ -58,6 +58,29 @@ export const logout = async (): Promise<ApiResponse<null>> => {
 /** 获取当前登录用户（令牌失效返回 401，由拦截器统一清理一次） */
 export const me = async (): Promise<ApiResponse<AuthUser>> => {
   return apiClient.get('/auth/me');
+};
+
+/** 只改展示名，登录名不变 */
+export const updateProfile = async (displayName: string): Promise<ApiResponse<AuthUser>> => {
+  return apiClient.patch('/auth/me', { display_name: displayName });
+};
+
+/** 上传头像。用 fetch 而不是 axios，避免默认的 JSON Content-Type 吃掉文件边界。 */
+export const uploadAvatar = async (file: File): Promise<ApiResponse<AuthUser>> => {
+  const body = new FormData();
+  body.append('file', file);
+  const res = await fetch('/api/auth/avatar', { method: 'POST', headers: authHeaders(), body });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || json?.success === false) {
+    throw new Error(json?.message || '头像上传失败');
+  }
+  return json;
+};
+
+export const fetchAvatarBlob = async (): Promise<Blob> => {
+  const res = await fetch('/api/auth/avatar', { headers: authHeaders() });
+  if (!res.ok) throw new Error('还没有头像');
+  return res.blob();
 };
 
 export const legacyClaims = async (): Promise<ApiResponse<LegacyClaimItem[]>> => {

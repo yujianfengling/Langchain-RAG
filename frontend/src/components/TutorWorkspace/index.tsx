@@ -28,6 +28,11 @@ import PracticeCard, { type PracticeQuestion } from './PracticeCard';
 import SourcePanel from './SourcePanel';
 import WhiteboardModal from './WhiteboardModal';
 import LectureNotesModal from './LectureNotesModal';
+import QuietNotice from '../QuietNotice';
+
+/** 第2章排在第10章前面。pad 后的字符串比较即可，不必拆成数字数组。 */
+const naturalFileKey = (name: string): string =>
+  (name || '').replace(/\d+/g, (digits) => digits.padStart(8, '0')).toLowerCase();
 import './tutor.css';
 
 const { Text, Title } = Typography;
@@ -876,7 +881,9 @@ const includeNodeSources = useCallback(() => {
     }
     return (
       <div className="tutor-center-card">
-        {resumeNotice && <Alert type="warning" showIcon message={resumeNotice} />}
+        {resumeNotice && (
+          <QuietNotice inline onClose={() => setResumeNotice(null)}>{resumeNotice}</QuietNotice>
+        )}
         <Title level={4} style={{ marginTop: 0 }}>选择要学习的内容</Title>
         <Text type="secondary">选定后即可在同一工作区里问答、讲解、练习与整理，不需要反复切换页面。</Text>
         <Space direction="vertical" style={{ width: '100%', marginTop: 12 }} size={8}>
@@ -917,7 +924,11 @@ const includeNodeSources = useCallback(() => {
     );
   }
 
-  const readyMaterials = materials.filter((m) => (m.status || 'ready') === 'ready');
+  const readyMaterials = materials
+    .filter((m) => (m.status || 'ready') === 'ready')
+    .slice()
+    .sort((a, b) => naturalFileKey(a.file_name || '').localeCompare(
+      naturalFileKey(b.file_name || ''), 'zh'));
   const allSelected = selectedDocs.length === 0;
 
   const leftPanel = (
@@ -1157,7 +1168,9 @@ const includeNodeSources = useCallback(() => {
           stickToBottomRef.current = near;
           setAtBottom(near);
         }}>
-          {resumeNotice && <Alert type="warning" showIcon message={resumeNotice} closable onClose={() => setResumeNotice(null)} />}
+          {resumeNotice && (
+            <QuietNotice inline onClose={() => setResumeNotice(null)}>{resumeNotice}</QuietNotice>
+          )}
           {sessionError && (
             <Alert type="error" showIcon message="会话加载失败" description={sessionError}
                    style={{ marginBottom: 12 }} />
@@ -1200,8 +1213,16 @@ const includeNodeSources = useCallback(() => {
                       ) : !hasMap ? (
                         <>
                           <div className="tutor-welcome-eyebrow">资料已就绪</div>
-                          <div className="tutor-welcome-heading">从这份课件开始。</div>
-                          <div className="tutor-welcome-sub">按知识点学习，也可以直接在下方提问。</div>
+                          <div className="tutor-welcome-heading">
+                            {readyMaterials.length > 1
+                              ? readyMaterials.length + ' 份课件都可以学。'
+                              : '从这份课件开始。'}
+                          </div>
+                          <div className="tutor-welcome-sub">
+                            {readyMaterials.length > 1
+                              ? '学习时会用到全部资料，也可以直接在下方提问。'
+                              : '按知识点学习，也可以直接在下方提问。'}
+                          </div>
                         </>
                       ) : nodeDetail ? (
                         <>
@@ -1235,11 +1256,13 @@ const includeNodeSources = useCallback(() => {
                         <div className="tutor-welcome-row">
                           <div className="tutor-welcome-row-icon"><FileTextOutlined /></div>
                           <div className="tutor-welcome-row-main">
-                            <div className="tutor-welcome-row-title">
+                            <div className="tutor-welcome-row-title" title={firstMaterial?.file_name || '课件'}>
                               {firstMaterial?.file_name || '课件'}
                             </div>
                             <div className="tutor-welcome-row-sub">
-                              已可检索 · 学习路线待生成
+                              {readyMaterials.length > 1
+                                ? '共 ' + readyMaterials.length + ' 份，学习时都会用到'
+                                : '已可检索 · 学习路线待生成'}
                             </div>
                           </div>
                           <Button type="primary" loading={mapLoading}

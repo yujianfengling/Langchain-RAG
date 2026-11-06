@@ -43,8 +43,8 @@ interface UploadState {
 
 const ITEM_STATUS_META: Record<ImportItemStatus, { label: string; color: string }> = {
   pending: { label: '排队中', color: 'default' },
-  parsing: { label: '解析中', color: 'processing' },
-  indexing: { label: '建库中', color: 'processing' },
+  parsing: { label: '抽取正文', color: 'processing' },
+  indexing: { label: '写入知识库', color: 'processing' },
   ready: { label: '可学习', color: 'success' },
   failed: { label: '失败', color: 'error' },
   skipped: { label: '已跳过', color: 'warning' },
@@ -56,8 +56,8 @@ const STAGE_LABEL: Record<string, string> = {
   pending: '排队中',
   uploading: '上传中',
   extracting: '解包中',
-  parsing: '解析中',
-  indexing: '建库中',
+  parsing: '抽取正文',
+  indexing: '写入知识库',
   ready: '已入库',
   failed: '失败',
   skipped: '已跳过',
@@ -85,14 +85,17 @@ const formatTimings = (t?: ImportItemTimings): string => {
   return parts.join(' · ');
 };
 
-/** 条目状态：只有 status=ready 才写"可学习"；indexing/建库中单独标示 */
+/** 条目状态：只有 status=ready 才写「可学习」。进行中的标签与总进度用同一套阶段名。 */
 const itemStatusMeta = (item: ImportItem, terminal: boolean): { label: string; color: string } => {
   if (item.status === 'indexing' || item.stage === 'indexing') {
-    return { label: '建库中', color: 'processing' };
+    return { label: stageText(item.stage) || '写入知识库', color: 'processing' };
   }
   if (item.status === 'ready') return ITEM_STATUS_META.ready;
   if (item.status === 'unprocessed' || (item.status === 'pending' && terminal)) {
     return { label: '未处理', color: 'warning' };
+  }
+  if (item.status === 'parsing' || item.stage === 'parsing' || item.stage === 'extracting') {
+    return { label: stageText(item.stage) || '抽取正文', color: 'processing' };
   }
   return ITEM_STATUS_META[item.status] || { label: item.status, color: 'default' };
 };
@@ -478,6 +481,13 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
   const canContinue = jobNeedsContinue(job);
   const processed = totals.ready + totals.failed + totals.skipped;
   const processedPct = totals.total > 0 ? Math.round((processed / totals.total) * 100) : 0;
+  const liveItem = items.find((item) =>
+    item.status === 'parsing' || item.status === 'indexing' || item.stage === 'extracting');
+  const enhCounts = job?.image_enhancement?.counts || {};
+  const enhLeft = (enhCounts.pending || 0) + (enhCounts.running || 0) + (enhCounts.retry || 0);
+  const buildStage = running && liveItem
+    ? stageText(liveItem.stage)
+    : (enhLeft > 0 ? '图片增强' : '');
 
   const renderItem = (item: ImportItem) => {
     const meta = itemStatusMeta(item, terminal);
@@ -498,8 +508,8 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
             title={[subParts.join(' · '), stage ? '阶段 ' + stage : ''].filter(Boolean).join(' · ')}
           >
             {subParts.join(' · ')}
-            {subParts.length > 0 && stage ? ' · ' : ''}
-            {stage ? '阶段 ' + stage : ''}
+            {subParts.length > 0 && stage && stage !== meta.label ? ' · ' : ''}
+            {stage && stage !== meta.label ? '阶段 ' + stage : ''}
           </div>
           {item.status === 'failed' && (
             <div className="udz-row-msg">
@@ -716,6 +726,7 @@ const UploadDropzone: React.FC<UploadDropzoneProps> = ({
               />
               <span className="udz-progress-text">
                 已处理 {processed}/{totals.total} 份
+                {buildStage ? ' · ' + buildStage : ''}
                 {/* 2026-10-30 修复：此前只报「已处理 + 未处理」，把「处理中」漏掉。
                     实测总数 3 / 处理中 1 / 未处理 2 时，文案读起来是「0/3，未处理 2」，
                     0+2≠3，用户会以为计数错了。三个数必须都出现。 */}

@@ -2,8 +2,8 @@
 # 最小身份接口（阶段一）
 
 from typing import Optional
-from fastapi import APIRouter, Depends, Header
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, File, Header, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -24,6 +24,10 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class ProfileUpdate(BaseModel):
+    display_name: str
 
 
 def _auth_error(e: AuthError):
@@ -106,6 +110,49 @@ async def me(user_id: str = Depends(require_current_user)):
     source = await run_in_threadpool(auth_service.teacher_grant_source, user_id)
     return SuccessResponse(data={**user, "role": effective_role, "role_source": source},
                            message="获取当前用户成功")
+
+
+@router.patch("/auth/me")
+async def update_me(body: ProfileUpdate, user_id: str = Depends(require_current_user)):
+    """修改展示名。登录名不能在这里改。"""
+    try:
+        user = await run_in_threadpool(
+            auth_service.update_display_name, user_id, body.display_name)
+        effective_role = await run_in_threadpool(auth_service.get_role, user_id)
+        return SuccessResponse(
+            data={**user, "role": effective_role}, message="姓名已更新")
+    except AuthError as e:
+        return _auth_error(e)
+
+
+@router.post("/auth/avatar")
+async def upload_avatar(
+    file: UploadFile = File(...),
+    user_id: str = Depends(require_current_user),
+):
+    """上传头像。只收图片，服务端会缩小后再保存。"""
+    data = await file.read()
+    try:
+        user = await run_in_threadpool(
+            auth_service.save_avatar, user_id, data, file.filename or "")
+        effective_role = await run_in_threadpool(auth_service.get_role, user_id)
+        return SuccessResponse(
+            data={**user, "role": effective_role}, message="头像已更新")
+    except AuthError as e:
+        return _auth_error(e)
+
+
+@router.get("/auth/avatar")
+async def download_avatar(user_id: str = Depends(require_current_user)):
+    """当前用户的头像。没有头像时返回 404，界面回退到姓名首字。"""
+    path = await run_in_threadpool(auth_service.avatar_file, user_id)
+    if not path:
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "data": None,
+                     "message": "还没有头像", "error_type": "not_found"},
+        )
+    return FileResponse(path, media_type="image/webp")
 
 
 @router.get("/auth/legacy-claims")

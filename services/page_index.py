@@ -260,6 +260,9 @@ def build_document_page_index(
     pdf_path = Path(source)
     file_name = pdf_path.name
     doc_id = _doc_id_for_file(file_name)
+    # 转换和抽文本之前就报进度。否则 OCR/转 PDF 的几分钟里界面没有任何任务，
+    # 进度条要么不出现，要么停在上一页。
+    _report_progress(subject_id, doc_id, file_name, 0, 0, 0, stage="prepare")
     if material_id:
         # 课程资料：把稳定身份（m:<material_id>）登记为本文件的别名
         set_doc_alias(subject_id, _doc_id_for_material(material_id), doc_id)
@@ -274,6 +277,7 @@ def build_document_page_index(
             converted_pdf = Path(converted["converted_path"])
         except Exception as e:
             logger.warning(f"页面索引：PPT 转 PDF 失败 {file_name}: {e}")
+            _clear_progress(subject_id, doc_id)
             return {"ok": False, "file_name": file_name, "doc_id": doc_id,
                     "error": f"PPT 转 PDF 失败: {str(e)[:160]}",
                     "total_pages": 0, "indexed": 0}
@@ -283,6 +287,7 @@ def build_document_page_index(
         doc = fitz.open(str(converted_pdf or pdf_path))
     except Exception as e:
         logger.warning(f"页面索引：打开文档失败 {file_name}: {e}")
+        _clear_progress(subject_id, doc_id)
         return {"ok": False, "file_name": file_name, "doc_id": doc_id,
                 "error": str(e)[:200], "total_pages": 0, "indexed": 0}
 
@@ -354,6 +359,9 @@ def build_document_page_index(
 
         todo = [n for n in range(start, end + 1) if not _page_done(n)]
         skipped = (end - start + 1) - len(todo)
+        if todo:
+            _report_progress(subject_id, doc_id, file_name, 0, len(todo), todo[0],
+                             stage="extract")
 
         # 第一遍：文本层优先；无文本层再看导入缓存；都没有才排进 OCR 队列
         page_text: Dict[int, str] = {}
@@ -393,6 +401,8 @@ def build_document_page_index(
                         pass
 
         if need_ocr and not _aborted():
+            _report_progress(subject_id, doc_id, file_name, 0, len(todo), need_ocr[0],
+                             stage="ocr")
             ocr_map = pdf_ocr.ocr_pdf_pages(
                 pdf_path, pages=need_ocr,
                 should_abort=_aborted, engine=None)
@@ -406,6 +416,8 @@ def build_document_page_index(
         for page_no in todo:
             if _aborted():
                 break
+            _report_progress(subject_id, doc_id, file_name, done, len(todo), page_no,
+                             stage="render")
             try:
                 page = doc.load_page(page_no - 1)
                 if persist_images:
@@ -934,11 +946,13 @@ _ACTIVE_PROGRESS: Dict[str, Dict[str, Any]] = {}
 
 
 def _report_progress(subject_id: str, doc_id: str, file_name: str,
-                     done: int, total: int, page_no: int) -> None:
+                     done: int, total: int, page_no: int,
+                     stage: str = "render") -> None:
     with _ACTIVE_LOCK:
         _ACTIVE_PROGRESS[_task_key(subject_id, doc_id)] = {
             "file_name": file_name, "doc_id": doc_id,
             "done": int(done), "total": int(total), "page": int(page_no),
+            "stage": stage or "render",
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
 

@@ -1,14 +1,14 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Alert, Avatar, Button, Card, Col, List, Progress, Row, Select, Space, Statistic, Tag,
-  Typography,
+  Alert, Button, Card, Col, Input, List, Progress, Row, Select, Space, Statistic, Tag,
+  Typography, message,
 } from 'antd';
 import {
   ExperimentOutlined, FileTextOutlined, ReloadOutlined, RightOutlined, SettingOutlined,
   UserOutlined, WarningOutlined,
 } from '@ant-design/icons';
-import { AuthUser, isLoggedIn, me } from '../api/auth';
+import { AuthUser, isLoggedIn, me, updateProfile, uploadAvatar } from '../api/auth';
 import {
   KnowledgeTracingPoint, MasteryPoint, WrongQuestion,
   getKnowledgeTracing, getMastery, getQuizStats, getWrongQuestions,
@@ -16,6 +16,8 @@ import {
 import { listArtifacts } from '../api/tutor';
 import { MemoryItem, getEffectiveMemory } from '../api/planAgent';
 import { useCourse } from '../context/CourseContext';
+import { useAuth } from '../context/AuthContext';
+import UserAvatar from '../components/UserAvatar';
 import { EmptyBlock, ErrorAlert, LoadingBlock, formatTime } from '../components/Teacher/common';
 import CollapsiblePanel from '../components/CollapsiblePanel';
 import PersonalizationSettings from '../components/PersonalizationSettings';
@@ -68,7 +70,12 @@ const MEMORY_SOURCE: Record<string, string> = {
  */
 const ProfilePage: React.FC = () => {
   const navigate = useNavigate();
+  const { refreshUser } = useAuth();
   const { currentSubjectId, subjects, courses, select, selectSubject } = useCourse();
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [savingProfile, setSavingProfile] = useState(false);
 
   const [user, setUser] = useState<AuthUser | null>(null);
   const [userLoading, setUserLoading] = useState(true);
@@ -160,6 +167,42 @@ const ProfilePage: React.FC = () => {
   }
 
   const displayName = user?.display_name || user?.username || '未登录';
+
+  const saveName = async () => {
+    const name = nameDraft.trim();
+    if (!name) {
+      message.warning('姓名不能为空');
+      return;
+    }
+    setSavingProfile(true);
+    try {
+      await updateProfile(name);
+      await loadUser();
+      await refreshUser();
+      setEditingName(false);
+      message.success('姓名已更新');
+    } catch (e) {
+      const err = e as { response?: { data?: { message?: string } }; message?: string };
+      message.error(err?.response?.data?.message || err?.message || '姓名更新失败');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const changeAvatar = async (file: File) => {
+    setSavingProfile(true);
+    try {
+      await uploadAvatar(file);
+      await loadUser();
+      await refreshUser();
+      message.success('头像已更新');
+    } catch (e) {
+      const err = e as { message?: string };
+      message.error(err?.message || '头像上传失败');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
   const isTeacher = user?.role === 'teacher' || user?.role === 'admin';
   const distribution = mastery?.distribution;
   const evaluated = (mastery?.total_points ?? 0) - (distribution?.pending ?? 0);
@@ -185,14 +228,55 @@ const ProfilePage: React.FC = () => {
         <Card>
           <Row align="middle" gutter={[16, 12]}>
             <Col flex="none">
-              <Avatar size={60} style={{ backgroundColor: 'var(--color-primary)', fontSize: 24 }}>
-                {displayName.charAt(0)}
-              </Avatar>
+              <UserAvatar user={user} size={60} onClick={() => avatarInputRef.current?.click()} />
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                hidden
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = '';
+                  if (file) void changeAvatar(file);
+                }}
+              />
+              <div>
+                <Button type="link" size="small" style={{ padding: 0 }}
+                        disabled={savingProfile}
+                        onClick={() => avatarInputRef.current?.click()}>
+                  更换头像
+                </Button>
+              </div>
             </Col>
             <Col flex="auto" style={{ minWidth: 0 }}>
               <Space direction="vertical" size={2} style={{ width: '100%' }}>
                 <Space size={8} wrap>
-                  <Text strong style={{ fontSize: 18 }}>{displayName}</Text>
+                  {editingName ? (
+                    <>
+                      <Input
+                        value={nameDraft}
+                        maxLength={40}
+                        autoFocus
+                        style={{ width: 220 }}
+                        onChange={(event) => setNameDraft(event.target.value)}
+                        onPressEnter={() => void saveName()}
+                      />
+                      <Button size="small" type="primary" loading={savingProfile} onClick={() => void saveName()}>
+                        保存
+                      </Button>
+                      <Button size="small" disabled={savingProfile} onClick={() => setEditingName(false)}>
+                        取消
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Text strong style={{ fontSize: 18 }}>{displayName}</Text>
+                      <Button type="link" size="small" style={{ padding: 0 }}
+                              onClick={() => { setNameDraft(displayName); setEditingName(true); }}>
+                        修改姓名
+                      </Button>
+                    </>
+                  )}
                   <Tag color={user?.role === 'admin' ? 'gold' : isTeacher ? 'blue' : 'default'}>
                     {ROLE_LABEL[user?.role || 'student'] || '学生'}
                   </Tag>

@@ -1,6 +1,7 @@
 import React from 'react';
-import { Avatar, Button, Dropdown, Space, Typography } from 'antd';
+import { Button, Dropdown, Space, Typography } from 'antd';
 import { UserOutlined, SettingOutlined, BulbOutlined, LogoutOutlined } from '@ant-design/icons';
+import UserAvatar from '../UserAvatar';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import UserAuth from '../UserAuth';
@@ -55,7 +56,7 @@ const AccountMenu: React.FC<{ compact?: boolean; onOpenProfile?: () => void }> =
     <Dropdown menu={{ items, onClick }} trigger={['click']} placement="topRight">
       <Button type="text" block style={{ height: 'auto', padding: '6px 8px', textAlign: 'left' }}>
         <Space size={8} style={{ width: '100%' }}>
-          <Avatar size={28} icon={<UserOutlined />} style={{ backgroundColor: 'var(--color-primary)', flexShrink: 0 }} />
+          <UserAvatar user={user} size={28} />
           <Text style={{ maxWidth: compact ? 96 : 104, fontSize: 13 }} ellipsis>
             {user.display_name || user.username}
           </Text>

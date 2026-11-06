@@ -791,10 +791,12 @@ async def get_knowledge_graph(subject_id: str, node: str = None, depth: int = 1,
     def _load_and_query(sid, _node, _depth):
         """加载图谱 + 查询（同步，移入线程池）"""
         from rag.knowledge_graph import load_knowledge_graph, query_graph
+        from rag.knowledge_graph.graph_builder import ensure_node_excerpts
         existing = load_knowledge_graph(sid)
         if existing is None:
             return None, None
-        return existing, query_graph(sid, node=_node, depth=_depth)
+        existing = ensure_node_excerpts(sid, existing)
+        return existing, query_graph(sid, node=_node, depth=_depth, graph=existing)
 
     try:
         # V2.5.2：图谱加载/查询为同步文件+图遍历，移出事件循环
