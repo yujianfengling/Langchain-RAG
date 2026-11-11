@@ -7,7 +7,7 @@ import {
 import {
   AudioOutlined, BookOutlined, BulbOutlined, CheckCircleOutlined, CloseOutlined, DatabaseOutlined,
   DownOutlined, FileTextOutlined, FormOutlined, HighlightOutlined, HistoryOutlined,
-  MenuOutlined, MoreOutlined,
+  MenuFoldOutlined, MenuOutlined, MenuUnfoldOutlined, MoreOutlined,
   PartitionOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SendOutlined,
   StopOutlined,
   ReadOutlined, AimOutlined,
@@ -178,6 +178,15 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const [panelSources, setPanelSources] = useState<TutorSource[]>([]);
   const [panelCitedIds, setPanelCitedIds] = useState<number[]>([]);
   const [leftOpen, setLeftOpen] = useState(false);
+  /** 桌面左栏收起后只留一条展开按钮。窄屏仍走抽屉，不读这个状态。 */
+  const [leftDocked, setLeftDocked] = useState(() => {
+    try { return window.sessionStorage.getItem('tutor.leftDock') !== '0'; }
+    catch { return true; }
+  });
+  const setDock = useCallback((next: boolean) => {
+    setLeftDocked(next);
+    try { window.sessionStorage.setItem('tutor.leftDock', next ? '1' : '0'); } catch { /* 隐私模式忽略 */ }
+  }, []);
   const [rightOpen, setRightOpen] = useState(false);
   const panelPrefKey = useMemo(() => `tutor.rightPanel:${subjectId || 'default'}`, [subjectId]);
   const panelTriggerRef = useRef<HTMLElement | null>(null);
@@ -934,7 +943,20 @@ const includeNodeSources = useCallback(() => {
   const leftPanel = (
     <div className="tutor-left">
       <div className="tutor-left-section">
-        <div className="tutor-left-title">当前学科</div>
+        <div className="tutor-left-title">
+          <span>当前学科</span>
+          {!isNarrow && (
+            <button
+              type="button"
+              className="tutor-left-fold"
+              aria-label="收起资料与学习路线"
+              title="收起"
+              onClick={() => setDock(false)}
+            >
+              <MenuFoldOutlined />
+            </button>
+          )}
+        </div>
         <Select
           style={{ width: '100%' }}
           value={subjectId}
@@ -1097,7 +1119,19 @@ const includeNodeSources = useCallback(() => {
           </AnimatePresence>
         </>
       ) : (
-        <aside className="tutor-aside tutor-aside-left">{leftPanel}</aside>
+        <aside className={'tutor-aside tutor-aside-left' + (leftDocked ? '' : ' is-collapsed')}>
+          {leftDocked ? leftPanel : (
+            <button
+              type="button"
+              className="tutor-left-fold"
+              aria-label="展开资料与学习路线"
+              title="展开资料与学习路线"
+              onClick={() => setDock(true)}
+            >
+              <MenuUnfoldOutlined />
+            </button>
+          )}
+        </aside>
       )}
 
       <main className={'tutor-main' + (messages.length === 0 ? ' is-empty' : '')}>

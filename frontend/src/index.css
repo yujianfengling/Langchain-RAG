@@ -43,9 +43,11 @@
 }
 
 * { box-sizing: border-box; }
-html { background: var(--color-bg); }
+html { background: var(--color-bg); height: 100%; overflow: hidden; }
 body {
   margin: 0;
+  height: 100%;
+  overflow: hidden;
   min-width: 320px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
@@ -57,21 +59,16 @@ body {
   letter-spacing: 0;
 }
 button, input, textarea, select { font: inherit; }
-#root { min-height: 100vh; }
+#root { height: 100%; overflow: hidden; }
 ::selection { background: var(--color-primary-100); color: var(--color-text); }
 ::-webkit-scrollbar { width: 7px; height: 7px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #cdd2da; border-radius: 8px; }
 ::-webkit-scrollbar-thumb:hover { background: #aab2bf; }
 
-/* 应用外壳 */
+/* 应用外壳（顶栏 / 左轮的具体样式在 components/AppChrome/chrome.css） */
 .ant-layout { background: var(--color-bg) !important; }
 .ant-layout-content { padding: 0 !important; }
-.app-sider {
-  background: #fff !important;
-  border-right: 1px solid var(--color-border) !important;
-  box-shadow: none !important;
-}
 .app-brand-mark {
   background: var(--color-primary) !important;
   border-radius: 10px !important;
@@ -79,75 +76,34 @@ button, input, textarea, select { font: inherit; }
 }
 .app-brand-name { font-size: 17px !important; font-weight: 700 !important; letter-spacing: -0.02em; }
 .app-brand-subtitle { color: var(--color-text-muted) !important; }
-.app-brand-copy {
-  min-width: 0;
-  overflow: hidden;
-  opacity: 1;
-  transform: translateX(0);
-  transition: width var(--duration-panel) var(--ease-standard),
-    opacity var(--duration-fast) var(--ease-standard),
-    transform var(--duration-panel) var(--ease-standard);
-}
-.app-brand-copy.is-collapsed {
-  width: 0;
-  opacity: 0;
-  transform: translateX(-4px);
-  pointer-events: none;
-}
-.app-nav-section {
-  padding: 12px 12px 6px;
-  color: var(--color-text-muted);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-}
-.app-sider .ant-menu { padding: 2px 0; }
-.app-sider .ant-menu-item {
-  margin: 2px 0 !important;
-  border-radius: 8px !important;
-  height: 42px !important;
-  line-height: 42px !important;
-  color: var(--color-text-secondary) !important;
-  transition: background 0.15s ease, color 0.15s ease !important;
-}
-.app-sider .ant-menu-item:hover,
-.app-sider .ant-menu-item:focus-visible,
-.app-sider .ant-menu-item-active {
-  background: var(--color-bg-muted) !important;
-  color: var(--color-text) !important;
-}
-.app-sider .ant-menu-item-selected,
-.app-sider .ant-menu-item-selected:hover {
-  background: var(--color-primary-50) !important;
-  color: var(--color-primary) !important;
-  box-shadow: none !important;
-  font-weight: 600 !important;
-}
-.app-sider .ant-menu-item .anticon,
-.app-sider .ant-menu-item-selected .anticon,
-.app-sider .ant-menu-item:hover .anticon { color: inherit !important; }
-.app-sider .ant-menu-item-selected::after { display: none !important; }
-.app-sider .ant-menu-inline-collapsed .ant-menu-item { padding-inline: calc(50% - 8px) !important; }
-.app-account-collapsed .ant-typography { display: none; }
-.app-account-collapsed .ant-btn { padding-inline: 0 !important; }
-.app-account-collapsed .ant-space { justify-content: center; }
-.app-topbar {
-  display: none;
-  align-items: center;
-  gap: 8px;
-  height: 56px;
-  padding: 0 12px;
-  position: fixed;
-  inset: 0 0 auto;
-  z-index: 120;
-  background: #fff;
-  border-bottom: 1px solid var(--color-border);
-}
-.app-topbar-title { font-size: 17px; letter-spacing: -0.02em; }
-.app-content-narrow { padding-top: 56px; }
 
 /* 通用页面骨架 */
 .app-page { width: min(1180px, 100%); margin: 0 auto; padding: 30px 32px 48px; }
+/* 设置页：标题固定，下面这一块自己滚动，不把窗口撑高 */
+.settings-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.settings-page > .ant-layout-header { flex: 0 0 auto; }
+.settings-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.login-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+.login-scroll > .app-stage,
+.login-scroll > .app-stage > .app-route {
+  overflow: visible;
+  min-height: min-content;
+}
 .app-page-wide { width: min(1360px, 100%); }
 .app-page-narrow { width: min(980px, 100%); }
 .page-header {
@@ -440,8 +396,6 @@ a:hover { color: var(--color-primary-hover); }
 *:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 
 @media (max-width: 900px) {
-  .app-sider, .app-sider-wrap { display: none !important; }
-  .app-topbar { display: flex; }
   .app-page { padding: 22px 20px 36px; }
   .page-header { gap: 16px; margin-bottom: 20px; }
   .page-title { font-size: 23px !important; }

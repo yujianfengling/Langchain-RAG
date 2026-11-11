@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Layout, Typography, Space, Card } from 'antd';
+import { Layout, Typography, Space, Card, Segmented } from 'antd';
 import {
   SettingOutlined, InfoCircleOutlined, UserOutlined, DatabaseOutlined,
 } from '@ant-design/icons';
@@ -11,6 +11,7 @@ import TeacherActivation from '../components/TeacherActivation';
 import SubjectSelector from '../components/SubjectSelector';
 import SystemStatusPanel from '../components/SystemStatusPanel';
 import { getHealth } from '../api/health';
+import { readNavMode, writeNavMode, type NavMode } from '../components/AppChrome/navMode';
 
 const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -20,6 +21,7 @@ const SettingsPage: React.FC = () => {
   const [selectedSubject, setSelectedSubject] = React.useState<string>('');
   // 版本从后端取，不要在页面里硬编码（此前写死 1.0.0，而实际已是 2.2.1）
   const [version, setVersion] = React.useState<string>('');
+  const [navMode, setNavMode] = React.useState<NavMode>(readNavMode);
 
   React.useEffect(() => {
     let alive = true;
@@ -37,7 +39,7 @@ const SettingsPage: React.FC = () => {
   }, [params]);
 
   return (
-    <Layout style={{ height: '100%' }}>
+    <Layout className="settings-page">
       <Header style={{ 
         background: '#fff',
         padding: '0 24px',
@@ -53,10 +55,9 @@ const SettingsPage: React.FC = () => {
         </Space>
       </Header>
       
-      <Content style={{ 
+      <Content className="settings-scroll" style={{ 
         padding: '24px',
         background: '#f5f5f5',
-        overflow: 'auto',
       }}>
         <div style={{ 
           background: '#fff',
@@ -64,6 +65,29 @@ const SettingsPage: React.FC = () => {
           padding: '24px',
           boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
         }}>
+          <div style={{ marginBottom: 24 }}>
+            <Title level={5} style={{ marginBottom: 16 }}>导航方式</Title>
+            <Card size="small">
+              <Space direction="vertical" size={12}>
+                <Text type="secondary">
+                  顶栏平时收成顶部拉条。左轮不留导航条，在空白处右键打开，滚轮换页。
+                </Text>
+                <Segmented
+                  value={navMode}
+                  onChange={(value) => {
+                    const next: NavMode = value === 'cylinder' ? 'cylinder' : 'top';
+                    setNavMode(next);
+                    writeNavMode(next);
+                  }}
+                  options={[
+                    { label: '顶栏', value: 'top' },
+                    { label: '左轮', value: 'cylinder' },
+                  ]}
+                />
+              </Space>
+            </Card>
+          </div>
+
           {/* 学习仪表盘 */}
           <div style={{ marginBottom: 24 }}>
             <UserProfileDashboard userId="default_user" subjectId={selectedSubject} />

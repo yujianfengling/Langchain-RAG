@@ -83,7 +83,26 @@ if (-not (Test-Path $PY)) {
     Write-Host "        请先安装依赖：powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1" -ForegroundColor Gray
     exit 1
 }
-OK "Python: $(& $PY --version 2>&1)"
+# 虚拟环境的 python.exe 只是启动器。基础解释器被删掉时，它把
+# "No Python at ..." 打到 stderr，在 ErrorAction=Stop 下会变成难读的远程异常。
+$pyCheck = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$pyVer = & $PY -c "import sys; print(sys.version.split()[0])" 2>&1
+$pyCode = $LASTEXITCODE
+$ErrorActionPreference = $pyCheck
+if ($pyCode -ne 0) {
+    $detail = ($pyVer | Out-String).Trim()
+    Fail "虚拟环境无法启动。"
+    if ($detail) { Write-Host "        $detail" -ForegroundColor Gray }
+    $cfg = Join-Path $ROOT "venv\pyvenv.cfg"
+    if (Test-Path $cfg) {
+        $homeLine = Select-String -Path $cfg -Pattern '^home\s*=' | Select-Object -First 1
+        if ($homeLine) { Write-Host "        $($homeLine.Line.Trim())" -ForegroundColor Gray }
+    }
+    Write-Host "        pyvenv.cfg 里的基础解释器已经不在。装回同一版本的 Python 3.12，或重建 venv。" -ForegroundColor Gray
+    exit 1
+}
+OK "Python: $pyVer"
 
 if (-not (Test-Path (Join-Path $ROOT ".env"))) {
     Warn "未找到 .env —— 模型 API Key 等配置缺失，问答/出题会失败"

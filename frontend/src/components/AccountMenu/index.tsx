@@ -13,8 +13,14 @@ const { Text } = Typography;
  * 登录态来自 AuthProvider（唯一来源），本组件不再自行请求 /auth/me，
  * 避免侧栏、顶栏、抽屉多个实例各发一次请求并各自处理 401。
  */
-const AccountMenu: React.FC<{ compact?: boolean; onOpenProfile?: () => void }> = ({
-  compact, onOpenProfile,
+const AccountMenu: React.FC<{
+  compact?: boolean;
+  /** 顶栏 / 左轮里不要撑满一整行 */
+  inline?: boolean;
+  placement?: 'topRight' | 'bottomRight' | 'bottomLeft';
+  onOpenProfile?: () => void;
+}> = ({
+  compact, inline, placement = 'bottomRight', onOpenProfile,
 }) => {
   const navigate = useNavigate();
   const { status, user, logout } = useAuth();
@@ -53,13 +59,20 @@ const AccountMenu: React.FC<{ compact?: boolean; onOpenProfile?: () => void }> =
   };
 
   return (
-    <Dropdown menu={{ items, onClick }} trigger={['click']} placement="topRight">
-      <Button type="text" block style={{ height: 'auto', padding: '6px 8px', textAlign: 'left' }}>
-        <Space size={8} style={{ width: '100%' }}>
+    <Dropdown menu={{ items, onClick }} trigger={['click']} placement={placement}>
+      <Button
+        type="text"
+        block={!inline}
+        className="app-account-trigger"
+        style={{ height: 'auto', padding: inline ? '4px 6px' : '6px 8px', textAlign: 'left' }}
+      >
+        <Space size={8} style={{ width: inline ? 'auto' : '100%' }}>
           <UserAvatar user={user} size={28} />
-          <Text style={{ maxWidth: compact ? 96 : 104, fontSize: 13 }} ellipsis>
-            {user.display_name || user.username}
-          </Text>
+          {!compact && (
+            <Text style={{ maxWidth: 120, fontSize: 13 }} ellipsis>
+              {user.display_name || user.username}
+            </Text>
+          )}
         </Space>
       </Button>
     </Dropdown>

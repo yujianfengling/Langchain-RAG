@@ -4,8 +4,11 @@
 
 .tutor-workspace {
   display: flex;
-  height: 100vh;
+  flex: 1 1 auto;
+  /* 高度跟着外壳剩余空间走，不再用 100dvh 把窗口撑出滚动条 */
+  height: auto;
   min-height: 0;
+  overflow: hidden;
   background: var(--color-bg);
 }
 
@@ -258,7 +261,7 @@
 .tutor-drawer-close { position: absolute; right: 6px; top: 6px; z-index: 2; }
 
 @media (max-width: 900px) {
-  .tutor-workspace { flex-direction: column; height: calc(100vh - 52px); }
+  .tutor-workspace { flex-direction: column; height: auto; min-height: 0; overflow: hidden; }
   .tutor-mobile-bar { order: 0; }
   .tutor-main { order: 1; }
   .tutor-messages { padding: 12px 12px 4px; }
@@ -772,7 +775,7 @@
 /* ============================================================
    2026-10-25 知学界面升级：安静、专注、上下文不丢失
    ============================================================ */
-.tutor-workspace { height: 100dvh; background: #fff; }
+.tutor-workspace { height: auto; min-height: 0; overflow: hidden; background: #fff; }
 .tutor-aside-left { width: 272px; background: #fafbfc; border-right: 1px solid var(--color-border); }
 .tutor-left { padding: 0; gap: 0; }
 .tutor-left-section,
@@ -880,7 +883,7 @@
   .tutor-main-actions .ant-btn { padding-inline: 8px; }
 }
 @media (max-width: 900px) {
-  .tutor-workspace { height: calc(100dvh - 56px); }
+  .tutor-workspace { height: auto; min-height: 0; overflow: hidden; }
   .tutor-main-head { min-height: 52px; padding: 8px 12px; overflow: visible; }
   .tutor-main-title { display: block; border-right: 0; }
   .tutor-main-title-sub { display: none; }
@@ -1076,6 +1079,29 @@
   display: grid; place-items: center; color: var(--color-text-muted);
   border: 1px solid var(--color-border-light, #eef1f5); font-size: 16px;
 }
+
+/* 左栏可收起：展开是资料与学习路线，收起只留一条展开按钮 */
+.tutor-aside-left { transition: width 220ms cubic-bezier(0.16, 1, 0.3, 1); }
+.tutor-aside-left.is-collapsed {
+  width: 44px;
+  align-items: center;
+  padding-top: 12px;
+}
+.tutor-left-fold {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tutor-left-fold:hover { background: var(--color-bg-muted); color: var(--color-text); }
 .tutor-welcome-row-main { flex: 1; min-width: 0; }
 .tutor-welcome-row-title { font-weight: 550; color: var(--color-text); font-size: 14px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
