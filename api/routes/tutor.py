@@ -15,8 +15,9 @@ from starlette.concurrency import run_in_threadpool
 
 from api.deps import require_current_user, require_subject_read
 from api.schemas.tutor_schema import (
-    ArtifactCreate, ArtifactUpdate, MapGenerateRequest, MindmapRequest, NodeStatusRequest,
-    PracticeAnswerRequest, TutorSessionUpdate, TutorStreamRequest, WhiteboardRequest,
+    ArtifactCreate, ArtifactUpdate, MapGenerateRequest, MindboardSaveRequest,
+    MindmapRequest, NodeStatusRequest, PracticeAnswerRequest, TutorSessionUpdate,
+    TutorStreamRequest, WhiteboardRequest,
 )
 from services import (artifacts_service, auth_service, knowledge_map, material_scope,
                       tutor_agent, tutor_session)
@@ -196,6 +197,30 @@ async def generate_tutor_mindmap(request: MindmapRequest,
     except mindmap_board_service.MindmapError as e:
         raise HTTPException(status_code=400, detail=e.message)
     return {"success": True, "data": data, "message": "思维导图已生成"}
+
+
+@router.get("/tutor/mindboard")
+async def load_mindboard(subject_id: str, key: str = "free",
+                         user_id: str = Depends(require_current_user)):
+    """取学生自己的白板板书存档；没有存档时 data 为 null。"""
+    await require_subject_read(subject_id, user_id)
+    from services import mindboard_store
+    data = await run_in_threadpool(mindboard_store.load_board, user_id, subject_id, key)
+    return {"success": True, "data": data, "message": "ok"}
+
+
+@router.put("/tutor/mindboard")
+async def save_mindboard(request: MindboardSaveRequest,
+                         user_id: str = Depends(require_current_user)):
+    """覆盖式保存学生自己的白板板书（导图 + 标注 + 拖拽位置）。"""
+    await require_subject_read(request.subject_id, user_id)
+    from services import mindboard_store
+    try:
+        data = await run_in_threadpool(
+            mindboard_store.save_board, user_id, request.subject_id, request.key, request.data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"success": True, "data": data, "message": "板书已存档"}
 
 
 # =====================================================================

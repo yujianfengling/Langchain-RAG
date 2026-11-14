@@ -756,6 +756,52 @@
 
 .mindboard-node.is-draggable:active { cursor: grabbing; }
 
+/* 节点图片（变体「⋯」→ 插入图片）：压在框内上方 */
+.mindboard-node-img {
+  max-height: 74px;
+  max-width: 100%;
+  border-radius: 6px;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+
+/* 节点「⋯」样式菜单按钮：与「×」对称放左上角 */
+.mindboard-more {
+  position: absolute;
+  top: -9px;
+  left: -9px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: #64748b;
+  color: #ffffff;
+  font-size: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 3;
+}
+
+.mindboard-node:hover .mindboard-more { opacity: 1; }
+.mindboard-more:hover { background: #475569; }
+
+/* 变体菜单里的颜色块 */
+.mb-swatch {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  vertical-align: middle;
+}
+
 /* 文本标注框：拉出来的框本体，带边框底色，标注模式选「文本」时可点回编辑 */
 .mindboard-anno {
   position: absolute;

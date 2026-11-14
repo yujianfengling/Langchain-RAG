@@ -1,23 +1,25 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Popconfirm, Segmented, Tooltip, message as antdMessage } from 'antd';
+import { Button, Dropdown, Popconfirm, Segmented, Tooltip, message as antdMessage } from 'antd';
 import {
-  ClearOutlined, FilePdfOutlined, PartitionOutlined, UndoOutlined,
+  ClearOutlined, DownloadOutlined, PartitionOutlined, RedoOutlined, UndoOutlined,
 } from '@ant-design/icons';
 import { motion } from 'framer-motion';
 import { jsPDF } from 'jspdf';
-import { generateMindMap } from '../../api/tutor';
+import { generateMindMap, loadMindBoard, saveMindBoard } from '../../api/tutor';
 
 /**
  * 学生思维板书（2026-11-14）
  *
  * - 思维导图：中心框 + 框左右边缘「+」长出子框（贝塞尔连线、弹簧弹出动画）、
  *   点框内文字就地编辑、节点自由拖拽（拖父带子，连线随位置重算）。
- *   注意：节点上的动画是用户点名要的"跳出来"，不受系统"减少动态效果"开关影响。
+ *   节点上的动画是用户点名要的"跳出来"，不受系统"减少动态效果"开关影响。
+ * - 导图操作撤销/重做：快照栈（上限 50 步），Ctrl+Z / Ctrl+Shift+Z，覆盖
+ *   加/删/改字/拖拽/换色/便签/图片/AI 起稿；标注另有独立的单步撤销。
  * - AI 起稿：按当前展示的课件页让模型先生成一版导图（/tutor/mindmap），学生在其上修改。
  * - 标注：画笔 / 文本（按住拉出一个框再输入）/ 箭头 / 五角星，覆盖在导图上层。
- * - 导出 PDF：导图（拖拽后位置）+ 标注重绘到离屏 canvas，交给 jsPDF。
- *
- * 数据只存本地 localStorage（按 用户+学科+知识点 分隔），不上传后端。
+ * - 节点变体：颜色标记 / 便签样式 / 节点图片（框上「⋯」菜单）。
+ * - 存档：localStorage（即时）+ 云端 /tutor/mindboard（防抖跟随），按 updatedAt 取新。
+ * - 导出：PDF / PNG / Markdown 大纲 / OPML（XMind、幕布可导入）。
  */
 
 interface MapNode {
@@ -26,6 +28,10 @@ interface MapNode {
   /** 相对父节点的伸展方向；只有根的孩子才允许 left/right 之分，深层沿用父级方向。 */
   side: 'left' | 'right';
   children: MapNode[];
+  /** 节点变体（2026-11-14）：自定义底色 / 便签样式 / 节点图片。 */
+  color?: string;
+  variant?: 'note';
+  image?: string;
 }
 
 type Mark =
@@ -39,6 +45,12 @@ interface RectBox {
   y: number;
   w: number;
   h: number;
+}
+
+/** 撤销/重做的快照：只覆盖导图（结构/文字/位置），标注走自己的单步撤销。 */
+interface Snapshot {
+  map: MapNode;
+  deltas: Record<string, { dx: number; dy: number }>;
 }
 
 interface LaidNode {
@@ -69,6 +81,7 @@ const V_GAP = 16;
 const MAX_TEXT_W = 208;
 const TEXT_FONT = '500 15px system-ui, sans-serif';
 const DEFAULT_TEXT_W = 180;
+const NODE_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899'];
 
 let idSeed = 0;
 const newNodeId = () => {
@@ -88,6 +101,29 @@ const nodeSkin = (depth: number) => {
   if (depth === 0) return { fill: '#4f46e5', border: '#4338ca', color: '#ffffff', font: 15, bold: true };
   if (depth === 1) return { fill: '#eef2ff', border: '#818cf8', color: '#1e1b4b', font: 14, bold: true };
   return { fill: '#ffffff', border: '#94a3b8', color: '#0f172a', font: 14, bold: false };
+};
+
+/** 节点变体的最终配色：便签 > 自定义色 > 分级默认。 */
+const nodeLook = (item: { node: MapNode; depth: number }) => {
+  const skin = nodeSkin(item.depth);
+  if (item.node.variant === 'note') {
+    return { fill: '#fef9c3', border: '#eab308', color: '#713f12' };
+  }
+  if (item.node.color) {
+    return { fill: item.node.color, border: item.node.color, color: textColorFor(item.node.color) };
+  }
+  return { fill: skin.fill, border: skin.border, color: skin.color };
+};
+
+/** 按 hex 底色亮度挑黑/白文字，保证自定义颜色下仍可读。 */
+const textColorFor = (bg: string): string => {
+  const m = /^#([0-9a-f]{6})$/i.exec(bg.trim());
+  if (!m) return '#ffffff';
+  const v = parseInt(m[1], 16);
+  const r = (v >> 16) & 255;
+  const g = (v >> 8) & 255;
+  const b = v & 255;
+  return (0.299 * r + 0.587 * g + 0.114 * b) > 150 ? '#111827' : '#ffffff';
 };
 
 let measureCtx: CanvasRenderingContext2D | null = null;
@@ -117,14 +153,14 @@ const wrapText = (text: string, maxWidth: number, font: string): string[] => {
   return lines.length ? lines : [''];
 };
 
-const measureNode = (text: string, depth: number) => {
+const measureNode = (text: string, depth: number, hasImage = false) => {
   const skin = nodeSkin(depth);
   const font = `${skin.bold ? 600 : 400} ${skin.font}px system-ui, sans-serif`;
   const lines = wrapText(text || '', MAX_TEXT_W - 22, font);
   const widest = Math.max(...lines.map((l) => getMeasureCtx()?.measureText(l).width || 0));
   return {
-    w: Math.max(depth === 0 ? 132 : 96, Math.min(MAX_TEXT_W, widest + 22)),
-    h: Math.max(depth === 0 ? 46 : 34, lines.length * 19 + 15),
+    w: Math.max(depth === 0 ? 132 : 96, hasImage ? 150 : 0, Math.min(MAX_TEXT_W, widest + 22)),
+    h: Math.max(depth === 0 ? 46 : 34, lines.length * 19 + 15) + (hasImage ? 82 : 0),
     lines, font,
   };
 };
@@ -143,11 +179,11 @@ const layoutMindMap = (rootNode: MapNode) => {
   }
 
   const build = (node: MapNode, depth: number, side: 'left' | 'right'): SubLayout => {
-    const m = measureNode(node.text, depth);
+    const m = measureNode(node.text, depth, Boolean(node.image));
     const children = node.children.map((child) => ({
       child,
       childSide: (depth === 0 ? child.side : side) as 'left' | 'right',
-      m: measureNode(child.text, depth + 1),
+      m: measureNode(child.text, depth + 1, Boolean(child.image)),
       sub: build(child, depth + 1, depth === 0 ? child.side : side),
     }));
     const totalH = children.reduce((acc, item) => acc + item.sub.height, 0)
@@ -200,10 +236,16 @@ const removeNode = (root: MapNode, id: string): MapNode => {
   return walk(root, true);
 };
 
-const cloneWithText = (root: MapNode, id: string, text: string): MapNode => {
-  if (root.id === id) return { ...root, text };
-  return { ...root, children: root.children.map((c) => cloneWithText(c, id, text)) };
+const patchNode = (
+  root: MapNode, id: string,
+  patch: Partial<Omit<MapNode, 'id' | 'children' | 'side'>>,
+): MapNode => {
+  if (root.id === id) return { ...root, ...patch };
+  return { ...root, children: root.children.map((c) => patchNode(c, id, patch)) };
 };
+
+const cloneWithText = (root: MapNode, id: string, text: string): MapNode =>
+  patchNode(root, id, { text });
 
 const addChild = (
   root: MapNode, parentId: string, side: 'left' | 'right',
@@ -300,13 +342,24 @@ const drawMark = (ctx: CanvasRenderingContext2D, mark: Mark) => {
   else drawTextMark(ctx, mark);
 };
 
+const downloadBlob = (blob: Blob, filename: string) => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+};
+
 const MindBoard: React.FC<{
   defaultRootText: string;
   persistKey: string;
+  /** 云端存档键（知识点 node_id 或名称），与 persistKey 末段一致。 */
+  boardKey: string;
   subjectId: string;
   /** 右栏当前展示的课件页：AI 起稿就按这一页来。 */
   pageContext: { file_name?: string; page?: number | null; label?: string } | null;
-}> = ({ defaultRootText, persistKey, subjectId, pageContext }) => {
+}> = ({ defaultRootText, persistKey, boardKey, subjectId, pageContext }) => {
   const [map, setMap] = useState<MapNode>(() => makeRoot(defaultRootText));
   /** 拖拽偏移：相对自动布局的位移；拖父带子靠累积祖先偏移实现。 */
   const [deltas, setDeltas] = useState<Record<string, { dx: number; dy: number }>>({});
@@ -322,6 +375,8 @@ const MindBoard: React.FC<{
   } | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [past, setPast] = useState<Snapshot[]>([]);
+  const [future, setFuture] = useState<Snapshot[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawingRef = useRef<Mark | null>(null);
@@ -330,9 +385,16 @@ const MindBoard: React.FC<{
   const dragRef = useRef<{
     id: string; startX: number; startY: number; orig: { dx: number; dy: number };
   } | null>(null);
+  const dragHistoryRef = useRef<Snapshot | null>(null);
   const dragMovedRef = useRef(false);
   const loadedKeyRef = useRef<string | null>(null);
   const didCenterRef = useRef(false);
+  const lastContentRef = useRef<string | null>(null);
+  const stateRef = useRef({ map, marks, deltas });
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const pendingImageNodeRef = useRef<string | null>(null);
+
+  useEffect(() => { stateRef.current = { map, marks, deltas }; });
 
   // ---------- 布局 + 拖拽偏移 → 最终坐标与连线 ----------
   const { nodes, edges, contentW, contentH } = useMemo(() => {
@@ -374,54 +436,140 @@ const MindBoard: React.FC<{
     return { nodes: finalNodes, edges: edgesBuilt, contentW: right, contentH: bottom };
   }, [map, deltas]);
 
-  // ---------- 本地持久化：按 persistKey 读一次，随改动防抖写回 ----------
+  // ---------- 撤销/重做（导图操作） ----------
+  const pushHistory = useCallback((snapshot: Snapshot) => {
+    setPast((prev) => [...prev.slice(-49), snapshot]);
+    setFuture([]);
+  }, []);
+
+  const undo = () => {
+    if (!past.length) return;
+    const snap = past[past.length - 1];
+    setPast(past.slice(0, -1));
+    setFuture([...future, { map, deltas }]);
+    setMap(snap.map);
+    setDeltas(snap.deltas);
+  };
+
+  const redo = () => {
+    if (!future.length) return;
+    const snap = future[future.length - 1];
+    setFuture(future.slice(0, -1));
+    setPast([...past, { map, deltas }]);
+    setMap(snap.map);
+    setDeltas(snap.deltas);
+  };
+
+  // 每次渲染重绑，保证快捷键拿到最新的撤销栈；输入框里不抢 Ctrl+Z
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const el = event.target as HTMLElement | null;
+      if (el?.closest?.('input,textarea,[contenteditable="true"]')) return;
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z') return;
+      event.preventDefault();
+      if (event.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  // ---------- 本地 + 云端存档：按 persistKey/boardKey 读一次，改动防抖双写 ----------
   useEffect(() => {
     if (loadedKeyRef.current === persistKey) return;
     loadedKeyRef.current = persistKey;
     didCenterRef.current = false;
-    let restored = false;
+    let local: Snapshot & { marks: Mark[]; updatedAt: number } | null = null;
     try {
       const raw = localStorage.getItem(persistKey);
       if (raw) {
         const data = JSON.parse(raw);
         if (data?.root?.id && Array.isArray(data.root.children)) {
-          setMap(data.root as MapNode);
           // v1 存的是 strokes；统一升级为 marks
           const legacy: Mark[] = Array.isArray(data.strokes)
             ? data.strokes.map((s: any) => ({ kind: 'stroke', color: s.color, width: s.width, points: s.points }))
             : [];
-          setMarks(Array.isArray(data.marks) ? data.marks : legacy);
-          restored = true;
+          local = {
+            map: data.root as MapNode,
+            marks: Array.isArray(data.marks) ? data.marks : legacy,
+            deltas: (data.deltas && typeof data.deltas === 'object') ? data.deltas : {},
+            updatedAt: Date.parse(data.updatedAt || '') || 0,
+          };
         }
       }
     } catch { /* 坏数据当作没有存档 */ }
-    if (!restored) {
-      setMap(makeRoot(defaultRootText));
-      setMarks([]);
+    const applied = local ?? { map: makeRoot(defaultRootText), marks: [] as Mark[], deltas: {} };
+    setMap(applied.map);
+    setMarks(applied.marks);
+    setDeltas(applied.deltas);
+    setPast([]);
+    setFuture([]);
+    const initialContent = JSON.stringify({
+      root: applied.map, marks: applied.marks, deltas: applied.deltas,
+    });
+    lastContentRef.current = initialContent;
+    // 云端存档：本地没有或云端更新才采用；用户已经动了就不闪改
+    if (subjectId) {
+      void loadMindBoard(subjectId, boardKey).then((cloud) => {
+        if (!cloud?.root?.id || !Array.isArray(cloud.root.children)) return;
+        const cloudTime = Date.parse(cloud.updatedAt || '') || 0;
+        if (local && cloudTime < local.updatedAt) return; // 本地较新，云端只当备份
+        const cur = stateRef.current;
+        const curContent = JSON.stringify({ root: cur.map, marks: cur.marks, deltas: cur.deltas });
+        if (curContent !== initialContent) return;
+        const marks = Array.isArray(cloud.marks) ? cloud.marks : [];
+        const deltas = (cloud.deltas && typeof cloud.deltas === 'object') ? cloud.deltas : {};
+        setMap(cloud.root);
+        setMarks(marks);
+        setDeltas(deltas);
+        setPast([]);
+        setFuture([]);
+        lastContentRef.current = JSON.stringify({ root: cloud.root, marks, deltas });
+      }).catch(() => { /* 云端不可达就用本地 */ });
     }
-    setDeltas({});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [persistKey]);
+  }, [persistKey, boardKey]);
 
   useEffect(() => {
     if (loadedKeyRef.current !== persistKey) return;
+    const content = JSON.stringify({ root: map, marks, deltas });
+    if (content === lastContentRef.current) return;
+    lastContentRef.current = content;
+    const updatedAt = new Date().toISOString();
     const timer = window.setTimeout(() => {
       try {
-        localStorage.setItem(persistKey, JSON.stringify({
-          root: map, marks, updatedAt: Date.now(),
-        }));
+        localStorage.setItem(persistKey, JSON.stringify({ root: map, marks, deltas, updatedAt }));
       } catch { /* 隐私模式/配额满时忽略 */ }
-    }, 400);
+      if (subjectId) {
+        void saveMindBoard({
+          subject_id: subjectId, key: boardKey,
+          data: { root: map, marks, deltas, updatedAt },
+        }).catch(() => { /* 离线时本地仍是权威 */ });
+      }
+    }, 500);
     return () => window.clearTimeout(timer);
-  }, [map, marks, persistKey]);
+  }, [map, marks, deltas, persistKey, subjectId, boardKey]);
 
   // ---------- 首次渲染把视口滚到中心框 ----------
+  // antd 弹窗有开启动画，刚挂载时容器可能还没布局尺寸，用 rAF 重试直到能滚为止
   useEffect(() => {
-    if (didCenterRef.current || !scrollRef.current) return;
-    didCenterRef.current = true;
-    scrollRef.current.scrollLeft = Math.max(0, BASE_W / 2 - scrollRef.current.clientWidth / 2);
-    scrollRef.current.scrollTop = Math.max(0, BASE_H / 2 - scrollRef.current.clientHeight / 2);
-  }, [nodes.length]);
+    if (didCenterRef.current) return;
+    let frame = 0;
+    let cancelled = false;
+    const attempt = () => {
+      if (cancelled) return;
+      const el = scrollRef.current;
+      if (el && el.clientWidth > 0 && el.scrollWidth > el.clientWidth) {
+        el.scrollLeft = Math.max(0, BASE_W / 2 - el.clientWidth / 2);
+        el.scrollTop = Math.max(0, BASE_H / 2 - el.clientHeight / 2);
+        didCenterRef.current = true;
+        return;
+      }
+      if (frame++ < 60) requestAnimationFrame(attempt);
+    };
+    requestAnimationFrame(attempt);
+    return () => { cancelled = true; };
+  }, [persistKey]);
 
   // ---------- 标注画布 ----------
   const paint = useCallback(() => {
@@ -464,13 +612,12 @@ const MindBoard: React.FC<{
   const onMarkDown = (event: React.PointerEvent) => {
     if (mode !== 'mark') return;
     const point = markPointOf(event);
+    (event.currentTarget as HTMLCanvasElement).setPointerCapture?.(event.pointerId);
     if (tool === 'text') {
       // 按住拉出一个框：起点记下，虚线预览跟着拖
-      (event.currentTarget as HTMLCanvasElement).setPointerCapture?.(event.pointerId);
       rectPreviewRef.current = { x: point.x, y: point.y, w: 0, h: 0 };
       return;
     }
-    (event.currentTarget as HTMLCanvasElement).setPointerCapture?.(event.pointerId);
     if (tool === 'pen') {
       drawingRef.current = { kind: 'stroke', color: penColor, width: penWidth, points: [point] };
     } else if (tool === 'arrow') {
@@ -523,7 +670,7 @@ const MindBoard: React.FC<{
     paint();
   };
 
-  const onMarkUp = (event: React.PointerEvent) => {
+  const onMarkUp = () => {
     if (rectPreviewRef.current) {
       const rect = rectPreviewRef.current;
       rectPreviewRef.current = null;
@@ -547,7 +694,6 @@ const MindBoard: React.FC<{
     } else if (active.kind === 'star') {
       setMarks((prev) => [...prev, active]);
     }
-    void event;
   };
 
   const commitTextDraft = () => {
@@ -565,16 +711,19 @@ const MindBoard: React.FC<{
   };
 
   // ---------- 节点自由拖拽：拖父带子，连线随后重算 ----------
-  // pointerdown 不 preventDefault、不立刻捕获——否则 click 和输入框焦点会被吞掉；
-  // 拖动超过阈值才接管指针。
+  // pointerdown 立即捕获指针但不 preventDefault——拖拽过程不丢事件，
+  // click 和输入框焦点也不受影响（此前吞 click 的是 preventDefault）。
   const onNodeDown = (event: React.PointerEvent, item: LaidNode) => {
     if (mode !== 'map') return;
     if ((event.target as HTMLElement).closest('button,input')) return;
     dragMovedRef.current = false;
+    (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
     dragRef.current = {
       id: item.id, startX: event.clientX, startY: event.clientY,
       orig: deltas[item.id] || { dx: 0, dy: 0 },
     };
+    // 拖拽前的快照：松手时真的拖动了才进撤销栈
+    dragHistoryRef.current = { map, deltas };
   };
 
   const onNodeMove = (event: React.PointerEvent) => {
@@ -582,15 +731,23 @@ const MindBoard: React.FC<{
     if (!drag) return;
     const dx = event.clientX - drag.startX;
     const dy = event.clientY - drag.startY;
-    if (!dragMovedRef.current) {
-      if (Math.abs(dx) + Math.abs(dy) <= 4) return;
-      dragMovedRef.current = true;
-      (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
-    }
+    if (!dragMovedRef.current && Math.abs(dx) + Math.abs(dy) <= 4) return;
+    dragMovedRef.current = true;
     setDeltas((prev) => ({ ...prev, [drag.id]: { dx: drag.orig.dx + dx, dy: drag.orig.dy + dy } }));
   };
 
-  const onNodeUp = () => { dragRef.current = null; };
+  const onNodeUp = () => {
+    if (dragMovedRef.current && dragHistoryRef.current) {
+      pushHistory(dragHistoryRef.current);
+    }
+    dragRef.current = null;
+    dragHistoryRef.current = null;
+    if (dragMovedRef.current) {
+      // click 在 pointerup 后同步派发：用宏任务放行"拖过了"标记，
+      // 拦住拖拽后的误点击进入编辑，又不影响下一次正常点击
+      window.setTimeout(() => { dragMovedRef.current = false; }, 0);
+    }
+  };
 
   // ---------- 节点交互（都是点击驱动，直接基于当前 map 计算） ----------
   const startEdit = (item: LaidNode) => {
@@ -602,19 +759,27 @@ const MindBoard: React.FC<{
 
   const commitEdit = () => {
     if (!editingId) return;
-    setMap(cloneWithText(map, editingId, draft.trim()));
+    const next = draft.trim();
+    const original = findNode(map, editingId)?.text || '';
+    // 空提交一律视为取消（保留原文字）：清空节点用「×」删除，误触 blur 不会吃掉文字
+    if (next && next !== original) {
+      pushHistory({ map, deltas });
+      setMap(cloneWithText(map, editingId, next));
+    }
     setEditingId(null);
   };
 
   const grow = (item: LaidNode, side: 'left' | 'right') => {
     const { tree, childId } = addChild(map, item.id, side);
     if (!childId) return;
+    pushHistory({ map, deltas });
     setMap(tree);
     setEditingId(childId);
     setDraft('');
   };
 
   const removeById = (id: string) => {
+    pushHistory({ map, deltas });
     setMap(removeNode(map, id));
     setDeltas((prev) => {
       if (!prev[id]) return prev;
@@ -652,6 +817,7 @@ const MindBoard: React.FC<{
         page: pageContext.page ?? null,
         topic: pageContext.label || null,
       });
+      pushHistory({ map, deltas });
       setMap(aiTreeToMap(data?.root));
       setDeltas({});
       setEditingId(null);
@@ -663,8 +829,82 @@ const MindBoard: React.FC<{
     }
   };
 
-  // ---------- 导出 PDF：导图（拖拽后位置）+ 标注重绘到离屏 canvas ----------
-  const exportPdf = () => {
+  // ---------- 节点变体：颜色 / 便签 / 图片 ----------
+  const handleVariant = (key: string, item: LaidNode) => {
+    if (key.startsWith('color:')) {
+      pushHistory({ map, deltas });
+      setMap(patchNode(map, item.id, { color: key.slice(6) }));
+    } else if (key === 'color-default') {
+      pushHistory({ map, deltas });
+      setMap(patchNode(map, item.id, { color: undefined }));
+    } else if (key === 'note') {
+      pushHistory({ map, deltas });
+      setMap(patchNode(map, item.id, {
+        variant: item.node.variant === 'note' ? undefined : 'note',
+      }));
+    } else if (key === 'image') {
+      pendingImageNodeRef.current = item.id;
+      fileRef.current?.click();
+    } else if (key === 'image-clear') {
+      pushHistory({ map, deltas });
+      setMap(patchNode(map, item.id, { image: undefined }));
+    }
+  };
+
+  const variantItems = (item: LaidNode) => [
+    { key: 'color-default', label: '恢复默认颜色' },
+    ...NODE_COLORS.map((c) => ({
+      key: `color:${c}`,
+      label: (<span className="mb-swatch" style={{ background: c }} />),
+    })),
+    { type: 'divider' as const },
+    { key: 'note', label: item.node.variant === 'note' ? '✓ 便签样式' : '便签样式' },
+    { key: 'image', label: item.node.image ? '更换图片' : '插入图片' },
+    { key: 'image-clear', label: '移除图片', disabled: !item.node.image },
+  ];
+
+  const onPickImage = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    const nodeId = pendingImageNodeRef.current;
+    event.target.value = '';
+    if (!file || !nodeId) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      // 压到 320px 内再存，免得 localStorage/云端存档被大图撑爆
+      const scale = Math.min(1, 320 / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.width * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      canvas.getContext('2d')?.drawImage(img, 0, 0, canvas.width, canvas.height);
+      pushHistory({ map, deltas });
+      setMap(patchNode(map, nodeId, { image: canvas.toDataURL('image/jpeg', 0.78) }));
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+  };
+
+  // ---------- 导出：PDF / PNG / Markdown / OPML ----------
+  const collectImages = async (): Promise<Map<string, HTMLImageElement>> => {
+    const entries = await Promise.all(nodes
+      .filter((n) => n.node.image)
+      .map(async (n) => {
+        const img = new Image();
+        img.src = n.node.image as string;
+        try {
+          await img.decode();
+          return [n.id, img] as const;
+        } catch {
+          return [n.id, null] as const; // 图片坏了就跳过
+        }
+      }));
+    const found = new Map<string, HTMLImageElement>();
+    for (const [id, img] of entries) if (img) found.set(id, img);
+    return found;
+  };
+
+  const buildExportCanvas = async () => {
     const scale = Math.min(1, 2200 / Math.max(contentW, contentH));
     const w = Math.round(contentW * scale);
     const h = Math.round(contentH * scale);
@@ -672,7 +912,7 @@ const MindBoard: React.FC<{
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) return null;
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, w, h);
     ctx.scale(scale, scale);
@@ -681,36 +921,56 @@ const MindBoard: React.FC<{
     for (const edge of edges) {
       ctx.stroke(new Path2D(edge.d));
     }
+    const images = await collectImages();
     for (const item of nodes) {
-      const skin = nodeSkin(item.depth);
-      const m = measureNode(item.node.text, item.depth);
+      const look = nodeLook(item);
+      const m = measureNode(item.node.text, item.depth, Boolean(item.node.image));
       const x = item.cx - item.w / 2;
       const y = item.cy - item.h / 2;
-      ctx.fillStyle = skin.fill;
-      ctx.strokeStyle = skin.border;
+      ctx.fillStyle = look.fill;
+      ctx.strokeStyle = look.border;
       ctx.lineWidth = item.depth === 0 ? 2 : 1.5;
       drawRoundRect(ctx, x, y, item.w, item.h, 10);
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = skin.color;
+      const img = images.get(item.id);
+      if (img) {
+        const ratio = Math.min((item.w - 20) / img.width, 74 / img.height);
+        const dw = img.width * ratio;
+        const dh = img.height * ratio;
+        ctx.save();
+        drawRoundRect(ctx, item.cx - dw / 2, y + 8, dw, dh, 6);
+        ctx.clip();
+        ctx.drawImage(img, item.cx - dw / 2, y + 8, dw, dh);
+        ctx.restore();
+      }
+      ctx.fillStyle = look.color;
       ctx.font = m.font;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const lineH = 19;
-      const startY = item.cy - ((m.lines.length - 1) * lineH) / 2;
+      const offset = item.node.image ? 41 : 0;
+      const startY = item.cy + offset - ((m.lines.length - 1) * lineH) / 2;
       m.lines.forEach((line, i) => ctx.fillText(line, item.cx, startY + i * lineH));
     }
     for (const mark of marks) drawMark(ctx, mark);
+    return { canvas, w, h };
+  };
+
+  const exportStamp = () => new Date().toISOString().slice(0, 10);
+
+  const exportPdf = async () => {
+    const out = await buildExportCanvas();
+    if (!out) return;
     setExporting(true);
     try {
       const pdf = new jsPDF({
-        orientation: w >= h ? 'landscape' : 'portrait',
+        orientation: out.w >= out.h ? 'landscape' : 'portrait',
         unit: 'px',
-        format: [w, h],
+        format: [out.w, out.h],
       });
-      pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, w, h);
-      const stamp = new Date().toISOString().slice(0, 10);
-      pdf.save(`白板-${stamp}.pdf`);
+      pdf.addImage(out.canvas.toDataURL('image/jpeg', 0.92), 'JPEG', 0, 0, out.w, out.h);
+      pdf.save(`白板-${exportStamp()}.pdf`);
     } catch {
       // 导出失败不打断书写
     } finally {
@@ -718,14 +978,58 @@ const MindBoard: React.FC<{
     }
   };
 
+  const exportPng = async () => {
+    const out = await buildExportCanvas();
+    if (!out) return;
+    setExporting(true);
+    try {
+      const blob = await new Promise<Blob | null>(
+        (resolve) => out.canvas.toBlob(resolve, 'image/png'));
+      if (blob) downloadBlob(blob, `白板-${exportStamp()}.png`);
+    } catch {
+      // 导出失败不打断书写
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const exportMarkdown = () => {
+    const walk = (node: MapNode, depth: number): string => {
+      const indent = '  '.repeat(depth);
+      const line = depth === 0
+        ? `# ${node.text || '白板导图'}\n`
+        : `${indent}- ${node.text || '（空）'}\n`;
+      return line + node.children.map((c) => walk(c, depth + 1)).join('');
+    };
+    downloadBlob(new Blob([walk(map, 0)], { type: 'text/markdown;charset=utf-8' }),
+      `导图-${exportStamp()}.md`);
+  };
+
+  const exportOpml = () => {
+    const esc = (s: string) => s
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const walk = (node: MapNode, indent: string): string =>
+      `${indent}<outline text="${esc(node.text || '节点')}">`
+      + (node.children.length
+        ? `\n${node.children.map((c) => walk(c, `${indent}  `)).join('')}${indent}`
+        : '')
+      + `</outline>\n`;
+    const doc = `<?xml version="1.0" encoding="UTF-8"?>\n<opml version="2.0">\n`
+      + `  <head><title>${esc(map.text || '白板导图')}</title></head>\n`
+      + `  <body>\n${walk(map, '    ')}  </body>\n</opml>\n`;
+    downloadBlob(new Blob([doc], { type: 'text/x-opml;charset=utf-8' }),
+      `导图-${exportStamp()}.opml`);
+  };
+
   const markActive = mode === 'mark';
   const hasMapContent = map.children.length > 0 || Object.keys(deltas).length > 0;
   const canAiGenerate = Boolean(subjectId && pageContext?.file_name);
 
   const aiButton = (
+    // 注意：onClick 由外层 Popconfirm 的 onConfirm 统一触发；
+    // antd 会保留子按钮自身的 onClick，这里再绑会绕过确认框直接生成
     <Button size="small" icon={<PartitionOutlined />} loading={aiLoading}
-            disabled={!canAiGenerate}
-            onClick={() => void aiGenerate()}>
+            disabled={!canAiGenerate}>
       AI 生成导图
     </Button>
   );
@@ -742,7 +1046,20 @@ const MindBoard: React.FC<{
             { value: 'mark', label: '标注' },
           ]}
         />
-        {markActive ? (
+        {!markActive && (
+          <>
+            <Tooltip title="撤销导图操作（Ctrl+Z）">
+              <Button size="small" icon={<UndoOutlined />} disabled={!past.length} onClick={undo} />
+            </Tooltip>
+            <Tooltip title="重做（Ctrl+Shift+Z）">
+              <Button size="small" icon={<RedoOutlined />} disabled={!future.length} onClick={redo} />
+            </Tooltip>
+            <span className="mindboard-hint">
+              拖框移动（拖父带子）；点框边「+」长出子框；点框内文字直接改写；「⋯」换样式
+            </span>
+          </>
+        )}
+        {markActive && (
           <div className="mindboard-pen-tools">
             <Segmented size="small" value={tool}
                        onChange={(v) => setTool(v as 'pen' | 'text' | 'arrow' | 'star')}
@@ -777,27 +1094,37 @@ const MindBoard: React.FC<{
               {tool === 'text' ? '在白板上按住拉出一个框，松手即可输入' : '按住拖动即可书写/指向'}
             </span>
           </div>
-        ) : (
-          <span className="mindboard-hint">
-            拖框移动（拖父带子）；点框边「+」长出子框；点框内文字直接改写
-          </span>
         )}
         <span className="mindboard-spacer" />
         <Tooltip title={canAiGenerate
           ? `按「${pageContext?.file_name}${pageContext?.page != null ? ` 第 ${pageContext.page + 1} 页` : ''}」让 AI 先生成一版导图，再自己改`
           : '右栏还没有展示课件页，先点开一轮回答的引用'}>
           {hasMapContent ? (
-            <Popconfirm title="AI 会替换当前导图（标注保留）？" okText="生成" cancelText="算了"
+            <Popconfirm title="AI 会替换当前导图（可撤销；标注保留）？" okText="生成" cancelText="算了"
                         onConfirm={() => void aiGenerate()}>
               {aiButton}
             </Popconfirm>
           ) : aiButton}
         </Tooltip>
-        <Tooltip title="把思维导图和标注一起导出成 PDF">
-          <Button size="small" icon={<FilePdfOutlined />} loading={exporting} onClick={exportPdf}>
-            导出 PDF
+        <Dropdown trigger={['click']}
+                  menu={{
+                    items: [
+                      { key: 'pdf', label: 'PDF 文档' },
+                      { key: 'png', label: 'PNG 图片' },
+                      { key: 'md', label: 'Markdown 大纲' },
+                      { key: 'opml', label: 'OPML（XMind/幕布）' },
+                    ],
+                    onClick: ({ key }) => {
+                      if (key === 'pdf') void exportPdf();
+                      if (key === 'png') void exportPng();
+                      if (key === 'md') exportMarkdown();
+                      if (key === 'opml') exportOpml();
+                    },
+                  }}>
+          <Button size="small" icon={<DownloadOutlined />} loading={exporting}>
+            导出
           </Button>
-        </Tooltip>
+        </Dropdown>
       </div>
 
       <div className="mindboard-scroll" ref={scrollRef}>
@@ -812,7 +1139,7 @@ const MindBoard: React.FC<{
           </svg>
 
           {nodes.map((item) => {
-            const skin = nodeSkin(item.depth);
+            const look = nodeLook(item);
             const isEditing = editingId === item.id;
             const isRoot = item.depth === 0;
             const canGrowSides: Array<'left' | 'right'> = isRoot
@@ -825,9 +1152,10 @@ const MindBoard: React.FC<{
                             top: item.cy - item.h / 2,
                             width: item.w,
                             minHeight: item.h,
-                            background: skin.fill,
-                            borderColor: skin.border,
-                            color: skin.color,
+                            flexDirection: item.node.image ? 'column' : 'row',
+                            background: look.fill,
+                            borderColor: look.border,
+                            color: look.color,
                           }}
                           initial={{ opacity: 0, scale: 0 }}
                           animate={{ opacity: 1, scale: 1 }}
@@ -835,6 +1163,16 @@ const MindBoard: React.FC<{
                           onPointerDown={(e) => onNodeDown(e, item)}
                           onPointerMove={onNodeMove}
                           onPointerUp={onNodeUp}>
+                <Dropdown trigger={['click']}
+                          menu={{
+                            items: variantItems(item),
+                            onClick: ({ key }) => handleVariant(key, item),
+                          }}>
+                  <button type="button" aria-label="节点样式" className="mindboard-more"
+                          onClick={(e) => e.stopPropagation()}>
+                    ⋯
+                  </button>
+                </Dropdown>
                 {canGrowSides.map((side) => (
                   <button key={side} type="button"
                           aria-label={side === 'right' ? '向右生长子节点' : '向左生长子节点'}
@@ -849,6 +1187,10 @@ const MindBoard: React.FC<{
                           onClick={(e) => { e.stopPropagation(); removeById(item.id); }}>
                     ×
                   </button>
+                )}
+                {item.node.image && (
+                  <img className="mindboard-node-img" src={item.node.image} alt=""
+                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
                 )}
                 {isEditing ? (
                   <input className="mindboard-input" value={draft} autoFocus
@@ -903,6 +1245,9 @@ const MindBoard: React.FC<{
                      }} />
             </div>
           )}
+
+          <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }}
+                 onChange={onPickImage} />
         </div>
       </div>
     </div>

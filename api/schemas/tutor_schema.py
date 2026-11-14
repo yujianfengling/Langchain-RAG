@@ -52,6 +52,13 @@ class MindmapRequest(BaseModel):
     model: Optional[str] = None
 
 
+class MindboardSaveRequest(BaseModel):
+    """白板思维板书存档（2026-11-14）：按 用户+学科+key 覆盖保存。"""
+    subject_id: str
+    key: str = "free"
+    data: Dict[str, Any]
+
+
 class MapGenerateRequest(BaseModel):
     subject_id: str
     doc_ids: Optional[List[str]] = None

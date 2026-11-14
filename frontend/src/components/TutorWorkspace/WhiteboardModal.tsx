@@ -277,6 +277,17 @@ const WhiteboardModal: React.FC<{
 
   const activeImage = pageImages[activePage];
 
+  // AI 起稿的页面上下文：优先右栏正在展示的那页；页面图没建（docx 等）时
+  // 退回第一个来源的 file_name+page，后端会按页取文本、取不到再检索兜底
+  const activeSource = (activeImage && sources.find((s) => s.id === activeImage.id))
+    || sources[0]
+    || null;
+  const pageContext = activeSource ? {
+    file_name: activeSource.file_name,
+    page: activeSource.page ?? null,
+    label: defaultTopic,
+  } : null;
+
   return (
     <>
       <Modal
@@ -309,10 +320,9 @@ const WhiteboardModal: React.FC<{
         <div className="whiteboard-layout">
           <div className="whiteboard-workarea">
             <MindBoard key={persistKey} persistKey={persistKey}
+                       boardKey={nodeId || defaultTopic || 'free'}
                        subjectId={subjectId}
-                       pageContext={activeImage
-                         ? { file_name: activeImage.file_name, page: activeImage.page ?? null, label: defaultTopic }
-                         : null}
+                       pageContext={pageContext}
                        defaultRootText={defaultTopic || '中心主题'} />
           </div>
 

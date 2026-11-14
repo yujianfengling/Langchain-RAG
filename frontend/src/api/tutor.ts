@@ -100,6 +100,20 @@ export const generateMindMap = async (payload: {
   return (res?.data ?? res) as { root: { text: string; children: any[] }; source: { file_name?: string; page?: number | null; ref?: string } };
 };
 
+/** 白板板书存档：按 用户+学科+key 覆盖保存/读取（2026-11-14）。
+ *  key 与前端本地 persistKey 的末段一致（知识点 node_id 或名称，退 free）。 */
+export const saveMindBoard = async (payload: {
+  subject_id: string; key: string; data: Record<string, unknown>;
+}): Promise<{ board_key: string; updated_at: string }> => {
+  const res: any = await apiClient.put('/tutor/mindboard', payload);
+  return (res?.data ?? res) as { board_key: string; updated_at: string };
+};
+
+export const loadMindBoard = async (subjectId: string, key: string): Promise<Record<string, any> | null> => {
+  const res: any = await apiClient.get('/tutor/mindboard', { params: { subject_id: subjectId, key } });
+  return (res?.data ?? res) ?? null;
+};
+
 export const getTutorSession = async (subjectId: string): Promise<TutorSessionData> => {
   const res: any = await apiClient.get('/tutor/session', { params: { subject_id: subjectId } });
   return res?.data ?? res;
