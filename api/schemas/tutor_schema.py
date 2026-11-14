@@ -40,6 +40,18 @@ class WhiteboardRequest(BaseModel):
     model: Optional[str] = None
 
 
+class MindmapRequest(BaseModel):
+    """白板里"按这一页课件生成思维导图"的请求（2026-11-14）。
+
+    file_name + page（0 基页码）定位当前展示的课件页；page 为 null 时只按 topic 兜底检索。
+    """
+    subject_id: str
+    file_name: Optional[str] = None
+    page: Optional[int] = None
+    topic: Optional[str] = None
+    model: Optional[str] = None
+
+
 class MapGenerateRequest(BaseModel):
     subject_id: str
     doc_ids: Optional[List[str]] = None

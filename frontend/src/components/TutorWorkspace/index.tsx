@@ -38,7 +38,9 @@ import './tutor.css';
 const { Text, Title } = Typography;
 const { TextArea } = Input;
 
-// 暂时隐藏入口，保留白板成果与引导模式实现，方便后续恢复。
+// 2026-11-14：白板入口按要求移到「正在学」工具条（开始学习/做练习右侧），
+// 白板弹窗与历史轮次的「用这轮资料打开白板」随之恢复；顶部动作栏不再重复放，
+// 此开关仅留作后续恢复顶部入口时使用。引导模式入口维持隐藏。
 const WHITEBOARD_VISIBLE = false;
 const GUIDANCE_VISIBLE = false;
 
@@ -144,6 +146,8 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const [guidanceMode, setGuidanceMode] = useState<GuidanceMode>('direct');
   const [modeSaving, setModeSaving] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);
+  /** 点引用角标进来时要定位的来源 id；nonce 保证连点同一号也能重新定位。 */
+  const [boardFocus, setBoardFocus] = useState<{ id: number; nonce: number } | null>(null);
   /** 白板当前要展示的课件依据：直接来自本轮回答，或从历史轮次的事件里恢复 */
   const [boardSources, setBoardSources] = useState<TutorSource[]>([]);
   const [boardCitedIds, setBoardCitedIds] = useState<number[]>([]);
@@ -466,31 +470,69 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
    * 打开白板前先把「这一轮回答」的引用找回来。
    * 实时回答的 sources 在 lastSourcesRef；历史回答只存了文本，
    * 需要按 turn_id 取回 sources 事件，否则历史里明明有 [2][6][7]，白板却是空的。
+   * focusSourceId：点回答里的 [x] 角标进来时，白板右栏直接定位到那一号课件页。
+   * override：调用方已备好这一轮的资料时直接采用，跳过「取最新一轮」的默认逻辑。
    */
-  const openWhiteboard = async (explicitTurnId?: string) => {
-    const latest = [...messages].reverse().find((m) => m.role === 'assistant');
-    let nextSources: TutorSource[] = latest?.sources || lastSourcesRef.current || [];
-    let nextCited: number[] = latest?.citedIds || lastCitedRef.current || [];
-    const historyTurnId = explicitTurnId || historyFocusId
-      || (latest?.id?.startsWith('hist-a-') ? latest.id.slice('hist-a-'.length) : '');
-    if (historyTurnId) {
-      const turnId = historyTurnId;
-      try {
-        const data = await getTurn(turnId);
-        const events = Array.isArray(data?.events) ? data.events : [];
-        const sourceEvent = [...events].reverse().find((e: any) => e.type === 'sources');
-        const doneEvent = [...events].reverse().find((e: any) => e.type === 'done');
-        // Individual sources events may be deltas; done owns the final registry.
-        nextSources = doneEvent?.payload?.sources
-          ?? sourceEvent?.payload?.sources ?? [];
-        nextCited = doneEvent?.payload?.cited_source_ids || [];
-      } catch {
-        // 历史事件取不到就保留空状态，白板仍可正常生成
+  const openWhiteboard = async (
+    explicitTurnId?: string,
+    focusSourceId?: number,
+    override?: { sources: TutorSource[]; citedIds: number[] },
+  ) => {
+    let nextSources: TutorSource[];
+    let nextCited: number[];
+    if (override) {
+      nextSources = override.sources;
+      nextCited = override.citedIds;
+    } else {
+      const latest = [...messages].reverse().find((m) => m.role === 'assistant');
+      nextSources = latest?.sources || lastSourcesRef.current || [];
+      nextCited = latest?.citedIds || lastCitedRef.current || [];
+      const historyTurnId = explicitTurnId || historyFocusId
+        || (latest?.id?.startsWith('hist-a-') ? latest.id.slice('hist-a-'.length) : '');
+      if (historyTurnId) {
+        const turnId = historyTurnId;
+        try {
+          const data = await getTurn(turnId);
+          const events = Array.isArray(data?.events) ? data.events : [];
+          const sourceEvent = [...events].reverse().find((e: any) => e.type === 'sources');
+          const doneEvent = [...events].reverse().find((e: any) => e.type === 'done');
+          // Individual sources events may be deltas; done owns the final registry.
+          nextSources = doneEvent?.payload?.sources
+            ?? sourceEvent?.payload?.sources ?? [];
+          nextCited = doneEvent?.payload?.cited_source_ids || [];
+        } catch {
+          // 历史事件取不到就保留空状态，白板仍可正常使用
+        }
       }
     }
     setBoardSources(nextSources);
     setBoardCitedIds(nextCited);
+    setBoardFocus((prev) => ({ id: focusSourceId ?? 0, nonce: (prev?.nonce || 0) + 1 }));
     setBoardOpen(true);
+  };
+
+  /**
+   * 2026-11-14：引用角标 [x] 的点击行为改为直接弹出白板并定位对应课件页。
+   * 右栏「引用原文」没有删——「成果与详情」和「更多」菜单仍能打开它。
+   */
+  const openCitationBoard = async (msg: ChatMessage, sourceId: number) => {
+    let nextSources = msg.sources || [];
+    let nextCited = msg.citedIds || [];
+    if (!nextSources.length && msg.id.startsWith('hist-a-')) {
+      try {
+        const data = await getTurn(msg.id.slice('hist-a-'.length));
+        const events = Array.isArray(data?.events) ? data.events : [];
+        const sourceEvent = [...events].reverse().find((event: any) => event.type === 'sources');
+        const doneEvent = [...events].reverse().find((event: any) => event.type === 'done');
+        nextSources = doneEvent?.payload?.sources ?? sourceEvent?.payload?.sources ?? [];
+        nextCited = doneEvent?.payload?.cited_source_ids || [];
+      } catch {
+        antdMessage.error('引用资料加载失败，请重试');
+        return;
+      }
+    }
+    // 这一轮的资料已经到手，直接交给白板（不再按"最新一轮"解析）
+    await openWhiteboard(undefined, sourceId, { sources: nextSources, citedIds: nextCited });
   };
 
   /** 手动把当前知识点标记为「本次检测通过」。
@@ -823,30 +865,6 @@ const includeNodeSources = useCallback(() => {
       setHistoryLoading(false);
     }
   }, [subjectId]);
-
-  const openCitation = useCallback(async (msg: ChatMessage, sourceId: number, trigger: HTMLElement) => {
-    let nextSources = msg.sources || [];
-    let nextCited = msg.citedIds || [];
-    if (!nextSources.length && msg.id.startsWith('hist-a-')) {
-      try {
-        const data = await getTurn(msg.id.slice('hist-a-'.length));
-        const events = Array.isArray(data?.events) ? data.events : [];
-        const sourceEvent = [...events].reverse().find((event: any) => event.type === 'sources');
-        const doneEvent = [...events].reverse().find((event: any) => event.type === 'done');
-        nextSources = doneEvent?.payload?.sources ?? sourceEvent?.payload?.sources ?? [];
-        nextCited = doneEvent?.payload?.cited_source_ids || [];
-      } catch {
-        antdMessage.error('引用原文加载失败，请重试');
-      }
-    }
-    setPanelSources(nextSources);
-    setPanelCitedIds(nextCited);
-    lastSourcesRef.current = nextSources;
-    lastCitedRef.current = nextCited;
-    setFocusSource(null);
-    window.requestAnimationFrame(() => setFocusSource(sourceId));
-    toggleRightPanel(true, trigger);
-  }, [toggleRightPanel]);
 
   const subjects = useMemo(() => {
     const list = ctx.courses.map((c) => ({ value: c.subject_id, label: c.title + '（课程）' }));
@@ -1361,7 +1379,7 @@ const includeNodeSources = useCallback(() => {
                   )}
                   {msg.content
                     ? <MarkdownText text={msg.content} onCitation={(id) => {
-                      void openCitation(msg, id, document.activeElement as HTMLElement);
+                      void openCitationBoard(msg, id);
                     }} />
                     : (msg.streaming ? (
                       <div className="tutor-stage">
@@ -1442,6 +1460,12 @@ const includeNodeSources = useCallback(() => {
                       onClick={() => startNodeActivity('learn')}>开始学习</Button>
               <Button size="small" icon={<FormOutlined />}
                       onClick={() => startNodeActivity('practice')}>做练习</Button>
+              {/* 2026-11-14：白板入口从顶部动作栏移到这里（用户要求放在「开始学习/做练习」右侧）。
+                  空会话也能打开：sources 为空时按当前知识点（defaultTopic）生成板书。 */}
+              <Tooltip title="把当前知识点或最近一轮回答整理成板书，可逐层展开讲" trigger={['hover', 'focus']}>
+                <Button size="small" icon={<HighlightOutlined />} aria-label="白板"
+                        onClick={() => void openWhiteboard()}>白板</Button>
+              </Tooltip>
               <Dropdown
                 trigger={['click']}
                 menu={{
@@ -1520,16 +1544,16 @@ const includeNodeSources = useCallback(() => {
         )}
       </main>
 
-      {WHITEBOARD_VISIBLE && <WhiteboardModal
+      <WhiteboardModal
         open={boardOpen}
         onClose={() => setBoardOpen(false)}
         subjectId={subjectId}
         nodeId={currentNode}
-        docIds={selectedDocs}
         defaultTopic={nodeDetail?.label || ''}
         sources={boardSources}
         citedIds={boardCitedIds}
-      />}
+        focusSource={boardFocus}
+      />
       <LectureNotesModal
         open={lectureOpen}
         onClose={() => setLectureOpen(false)}
@@ -1608,10 +1632,12 @@ const includeNodeSources = useCallback(() => {
                         </Text>
                         <div style={{ marginTop: 8 }}>
                           {t.answer
-                            ? <MarkdownText text={t.answer} />
+                            ? <MarkdownText text={t.answer} onCitation={(id) => {
+                              void openWhiteboard(String(t.id), id);
+                            }} />
                             : <Text type="secondary">这一轮没有留下回答。</Text>}
                         </div>
-                        {WHITEBOARD_VISIBLE && t.answer && (
+                        {t.answer && (
                           <Button
                             size="small" type="primary" ghost icon={<HighlightOutlined />}
                             style={{ marginTop: 12 }}

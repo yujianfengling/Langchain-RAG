@@ -1,16 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Empty, Input, Modal, Select, Space, Spin, Tag, Tooltip, Typography } from 'antd';
-import { BulbOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Button, Empty, Modal, Spin, Tag, Tooltip, Typography } from 'antd';
 import apiClient from '../../api/axios';
 import PdfCanvasViewer from '../PdfViewer/PdfCanvasViewer';
 import { useAuth } from '../../context/AuthContext';
-import {
-  generateWhiteboard, type TutorSource, type WhiteboardScene,
-} from '../../api/tutor';
+import type { TutorSource } from '../../api/tutor';
+import MindBoard from './MindBoard';
 
 const { Text } = Typography;
-
-const WHITEBOARD_CACHE = 'edu.whiteboard.v2';
 
 /** 引用页码可能是 "1-2" 这样的范围；PDF.js 取第一页即可。 */
 const firstPageNumber = (value: unknown): number | null => {
@@ -18,53 +14,27 @@ const firstPageNumber = (value: unknown): number | null => {
   return matched ? Number(matched[0]) : null;
 };
 
-const cacheKeyOf = (subjectId: string, template: string, topic: string) =>
-  `${WHITEBOARD_CACHE}.${subjectId}.${template}.${(topic.trim() || '__default__')}`;
-
-const readSceneCache = (subjectId: string, template: string, topic: string): WhiteboardScene | null => {
-  try {
-    const raw = localStorage.getItem(cacheKeyOf(subjectId, template, topic));
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (!data || !Array.isArray(data.elements)) return null;
-    return data as WhiteboardScene;
-  } catch {
-    return null;
-  }
-};
-
-const writeSceneCache = (subjectId: string, template: string, topic: string, scene: WhiteboardScene) => {
-  try {
-    localStorage.setItem(cacheKeyOf(subjectId, template, topic), JSON.stringify(scene));
-  } catch {
-    // 隐私模式/配额满时忽略，白板本身仍可用
-  }
-};
-
 /**
- * AI 白板：模型只返回结构化场景 JSON，这里用 SVG 渲染。
- * 不执行模型生成的任何 HTML/JS；坐标已在后端做过边界校验。
+ * 白板（2026-11-14 重做）：
+ * 主区是学生的思维板书（MindBoard：思维导图 + 画笔随手记 + 导出 PDF），
+ * 右栏是本轮回答引用的课件页——点聊天里的 [1] 角标就带着对应页码打开这里。
+ * 原「AI 生成板书」已按需求移除，/tutor/whiteboard 后端接口保留但前端不再调用。
  */
 const WhiteboardModal: React.FC<{
   open: boolean;
   onClose: () => void;
   subjectId: string;
   nodeId?: string;
-  docIds?: string[];
   defaultTopic?: string;
   sources?: TutorSource[];
   citedIds?: number[];
-}> = ({ open, onClose, subjectId, nodeId, docIds, defaultTopic, sources = [], citedIds = [] }) => {
+  /** 点引用角标进来时带上的来源 id；nonce 变化即重新定位，即使 id 相同。 */
+  focusSource?: { id: number; nonce: number } | null;
+}> = ({ open, onClose, subjectId, nodeId, defaultTopic, sources = [], citedIds = [], focusSource = null }) => {
   const { user } = useAuth();
   const userId = user?.id || '';
-  const generation = useRef(0);
-  const [topic, setTopic] = useState(defaultTopic || '');
-  const [template, setTemplate] = useState('concept');
-  const [scene, setScene] = useState<WhiteboardScene | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [pos, setPos] = useState({ x: 80, y: 64 });
-  const [size, setSize] = useState({ w: 1040, h: 620 });
+  const [pos, setPos] = useState({ x: 80, y: 48 });
+  const [size, setSize] = useState({ w: 1200, h: 700 });
   const [preview, setPreview] = useState<{
     url: string; bbox?: number[]; width?: number; height?: number;
   } | null>(null);
@@ -77,13 +47,9 @@ const WhiteboardModal: React.FC<{
   const [activePdf, setActivePdf] = useState<{
     fileName: string; owner: string; version: string; data: ArrayBuffer;
   } | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const sourceKey = JSON.stringify(sources);
   const owner = JSON.stringify([userId, subjectId]);
-  const sceneOwner = owner + JSON.stringify([nodeId, docIds, sourceKey]);
-  // Historical sources without a content version cannot safely reuse generated scenes.
-  const canCacheScene = sources.length > 0 && sources.every((s) => Boolean((s as any).source_content_sha));
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const dragRef = useRef<{ index: number; startX: number; startY: number; orig: any } | null>(null);
   const windowDragRef = useRef<{
     startX: number; startY: number; origX: number; origY: number;
   } | null>(null);
@@ -92,30 +58,26 @@ const WhiteboardModal: React.FC<{
     origX: number; origY: number; origW: number; origH: number;
   } | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const nextTopic = topic || defaultTopic || '';
-    if (!topic && defaultTopic) setTopic(defaultTopic);
-    // 同一学科 + 模板 + 主题直接恢复上次结果，不再重复调用模型
-    setScene(canCacheScene ? readSceneCache(sceneOwner, template, nextTopic) : null);
-    setError(null);
-    const width = Math.min(1040, window.innerWidth - 24);
-    setPos({ x: Math.max(12, (window.innerWidth - width) / 2), y: 64 });
-    setSize((prev) => ({
-      w: Math.min(prev.w, width),
-      h: Math.min(prev.h, Math.max(360, window.innerHeight - 100)),
-    }));
-    // 只在打开/切学科时恢复，不覆盖用户正在编辑的输入
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, sceneOwner]);
+  // 思维板书按 用户+学科+知识点 分隔存档；key 变化时 MindBoard 用同名 key 重挂载读档
+  const persistKey = `edu.mindboard.v1.${userId || 'anon'}.${subjectId || 'none'}.${nodeId || defaultTopic || 'free'}`;
 
   useEffect(() => {
-    generation.current += 1;
-    if (!open) setScene(null);
-    setPreview(null);
-    setActivePdf(null);
-    setLoading(false);
-  }, [sceneOwner, open]);
+    if (!open) return;
+    const width = Math.min(1200, window.innerWidth - 24);
+    setPos({ x: Math.max(12, (window.innerWidth - width) / 2), y: 48 });
+    setSize((prev) => ({
+      w: Math.min(prev.w, width),
+      h: Math.min(prev.h, Math.max(480, window.innerHeight - 80)),
+    }));
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      setPreview(null);
+      setActivePdf(null);
+      setError(null);
+    }
+  }, [open]);
 
   useEffect(() => {
     let cancelled = false;
@@ -190,6 +152,14 @@ const WhiteboardModal: React.FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceKey, citedIds.join(','), subjectId, userId, open]);
 
+  // 引用角标点进来：定位到那一号资料对应的课件页（页图异步加载完也要能落位）
+  useEffect(() => {
+    if (!open || !focusSource?.id) return;
+    const idx = pageImages.findIndex((page) => page.id === focusSource.id);
+    if (idx >= 0) setActivePage(idx);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusSource?.nonce, open, pageImages.length]);
+
   const activePdfName = pageImages[activePage]?.isPdf
     ? pageImages[activePage].file_name : '';
 
@@ -229,8 +199,8 @@ const WhiteboardModal: React.FC<{
         const dy = event.clientY - resize.startY;
         const maxW = window.innerWidth - 24;
         const maxH = window.innerHeight - 40;
-        const minW = Math.min(620, maxW);
-        const minH = 360;
+        const minW = Math.min(880, maxW);
+        const minH = 480;
         let nextW = resize.origW;
         let nextH = resize.origH;
         let nextX = resize.origX;
@@ -251,7 +221,7 @@ const WhiteboardModal: React.FC<{
       }
       const drag = windowDragRef.current;
       if (!drag) return;
-      const width = Math.min(1040, window.innerWidth - 24);
+      const width = Math.min(1200, window.innerWidth - 24);
       const maxX = Math.max(12, window.innerWidth - width - 12);
       const maxY = Math.max(12, window.innerHeight - 120);
       setPos({
@@ -289,56 +259,6 @@ const WhiteboardModal: React.FC<{
     };
   };
 
-  const generate = async (templateOverride?: string, force = false) => {
-    const requestGeneration = ++generation.current;
-    const effectiveTemplate = templateOverride || template;
-    const value = topic.trim();
-    if ((!value && (effectiveTemplate === 'ai' || effectiveTemplate === 'concept')) || !subjectId) return;
-    if (!force && canCacheScene) {
-      const cached = readSceneCache(sceneOwner, effectiveTemplate, value);
-      if (cached) {
-        setScene(cached);
-        setError(null);
-        return;
-      }
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await generateWhiteboard({
-        subject_id: subjectId, topic: value, node_id: nodeId || null, doc_ids: docIds,
-        template: effectiveTemplate === 'ai' ? undefined : effectiveTemplate,
-      });
-      if (generation.current !== requestGeneration) return;
-      setScene(data);
-      if (canCacheScene) writeSceneCache(sceneOwner, effectiveTemplate, value, data);
-    } catch (e: any) {
-      if (generation.current !== requestGeneration) return;
-      setError(e?.response?.data?.detail || '白板生成失败，请稍后重试');
-    } finally {
-      if (generation.current === requestGeneration) setLoading(false);
-    }
-  };
-
-  const clearScene = () => {
-    generation.current += 1;
-    try { localStorage.removeItem(cacheKeyOf(sceneOwner, template, topic)); } catch { /* 忽略 */ }
-    setScene(null);
-    setError(null);
-  };
-
-  const openPageImage = (page: any) => {
-    if (!page?.url) return;
-    setPreview({
-      url: page.url,
-      bbox: page.bbox,
-      width: page.width,
-      height: page.height,
-    });
-  };
-
-  const closePreview = () => setPreview(null);
-
   const bboxStyleOf = (bbox?: number[], width?: number,
                        height?: number): React.CSSProperties | undefined => {
     if (!bbox || !width || !height) return undefined;
@@ -355,115 +275,6 @@ const WhiteboardModal: React.FC<{
     };
   };
 
-  const bboxStyle = () => bboxStyleOf(preview?.bbox, preview?.width, preview?.height);
-
-  const toSvgPoint = (event: React.PointerEvent) => {
-    const rect = svgRef.current?.getBoundingClientRect();
-    if (!rect || !scene) return { x: 0, y: 0 };
-    return {
-      x: ((event.clientX - rect.left) / rect.width) * scene.width,
-      y: ((event.clientY - rect.top) / rect.height) * scene.height,
-    };
-  };
-
-  const startDrag = (event: React.PointerEvent, index: number, el: any) => {
-    event.stopPropagation();
-    const point = toSvgPoint(event);
-    dragRef.current = {
-      index, startX: point.x, startY: point.y,
-      orig: JSON.parse(JSON.stringify(el)),
-    };
-    (event.currentTarget as Element).setPointerCapture?.(event.pointerId);
-  };
-
-  const moveElement = (orig: any, dx: number, dy: number) => {
-    const maxX = scene?.width || 1000;
-    const maxY = scene?.height || 700;
-    const clamp = (value: number, max: number) => Math.max(0, Math.min(max, value));
-    const next = { ...orig };
-    if (orig.type === 'text' || orig.type === 'rect' || orig.type === 'circle') {
-      next.x = clamp((orig.x || 0) + dx, maxX);
-      next.y = clamp((orig.y || 0) + dy, maxY);
-    } else if (orig.type === 'line' || orig.type === 'arrow') {
-      next.x1 = clamp((orig.x1 || 0) + dx, maxX);
-      next.y1 = clamp((orig.y1 || 0) + dy, maxY);
-      next.x2 = clamp((orig.x2 || 0) + dx, maxX);
-      next.y2 = clamp((orig.y2 || 0) + dy, maxY);
-    } else if (orig.type === 'curve') {
-      next.points = (orig.points || []).map((point: number[]) =>
-        [clamp((point[0] || 0) + dx, maxX), clamp((point[1] || 0) + dy, maxY)]);
-    }
-    return next;
-  };
-
-  const onPointerMove = (event: React.PointerEvent) => {
-    const drag = dragRef.current;
-    if (!drag || !scene) return;
-    const point = toSvgPoint(event);
-    const dx = point.x - drag.startX;
-    const dy = point.y - drag.startY;
-    setScene((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        elements: prev.elements.map((item, index) =>
-          index === drag.index ? moveElement(drag.orig, dx, dy) : item),
-      };
-    });
-  };
-
-  const renderElement = (el: any) => {
-    const color = el.color || '#1f2937';
-    switch (el.type) {
-      case 'text':
-        return (
-          <text x={el.x} y={el.y} fill={color}
-                fontSize={el.size || 18} fontFamily="system-ui, sans-serif">
-            {el.text}
-          </text>
-        );
-      case 'line':
-        return <line x1={el.x1} y1={el.y1} x2={el.x2} y2={el.y2}
-                     stroke={color} strokeWidth={2} />;
-      case 'arrow':
-        return <line x1={el.x1} y1={el.y1} x2={el.x2} y2={el.y2}
-                     stroke={color} strokeWidth={2} markerEnd="url(#wb-arrow)" />;
-      case 'rect':
-        return (
-          <g>
-            <rect x={el.x} y={el.y} width={el.w} height={el.h} rx={10}
-                  fill="#ffffff" stroke={color} strokeWidth={2} />
-            {el.text && (
-              <foreignObject x={el.x} y={el.y} width={el.w} height={el.h}
-                             style={{ pointerEvents: 'none' }}>
-                <div {...({ xmlns: 'http://www.w3.org/1999/xhtml' } as any)} className="wb-rect-text"
-                     style={{ color, fontSize: (el.text || '').length > 40 ? 13 : 15 }}>
-                  {el.text}
-                </div>
-              </foreignObject>
-            )}
-          </g>
-        );
-      case 'circle':
-        return (
-          <g>
-            <circle cx={el.x} cy={el.y} r={el.r} fill="none" stroke={color} strokeWidth={2} />
-            {el.text && (
-              <text x={el.x} y={el.y} fill={color} fontSize={15}
-                    textAnchor="middle" dominantBaseline="middle">
-                {el.text}
-              </text>
-            )}
-          </g>
-        );
-      case 'curve':
-        return <polyline points={(el.points || []).map((p: number[]) => p.join(',')).join(' ')}
-                         fill="none" stroke={color} strokeWidth={2.5} />;
-      default:
-        return null;
-    }
-  };
-
   const activeImage = pageImages[activePage];
 
   return (
@@ -471,8 +282,8 @@ const WhiteboardModal: React.FC<{
       <Modal
         title={(
           <div className="whiteboard-drag-title" onPointerDown={startWindowDrag}>
-            <span>AI 白板</span>
-            <span className="whiteboard-drag-desc">依据本轮资料生成板书，分步讲、可展开</span>
+            <span>白板</span>
+            <span className="whiteboard-drag-desc">课件对照 · 思维导图 · 随手记，可导出 PDF</span>
             <span className="whiteboard-drag-hint">拖动标题移动</span>
           </div>
         )}
@@ -495,78 +306,19 @@ const WhiteboardModal: React.FC<{
           },
         }}
       >
-        <Space.Compact style={{ width: '100%', marginBottom: 10 }}>
-          <Select
-            value={template}
-            onChange={(value) => {
-              setTemplate(value);
-              // 先恢复该模板的缓存；没有缓存才调用模型
-              void generate(value);
-            }}
-            style={{ width: 132 }}
-            options={[
-              { value: 'concept', label: '概念图' },
-              { value: 'ai', label: 'AI 自由生成' },
-              { value: 'function', label: '函数图像' },
-              { value: 'geometry', label: '平面几何' },
-              { value: 'force', label: '受力分析' },
-            ]}
-          />
-          <Input
-            value={topic}
-            onChange={(e) => setTopic(e.target.value)}
-            onPressEnter={() => void generate(undefined, true)}
-            placeholder="默认围绕当前知识点，也可输入课件内的其他主题"
-            disabled={loading}
-          />
-          <Button type="primary" icon={<BulbOutlined />} loading={loading}
-                  onClick={() => void generate(undefined, true)}>
-            {scene ? '重新生成' : '生成'}
-          </Button>
-          <Button icon={<ReloadOutlined />} disabled={!scene || loading}
-                  onClick={clearScene}>
-            清空
-          </Button>
-        </Space.Compact>
-
-        {['function', 'geometry', 'force'].includes(template) && (
-          <Alert type="info" showIcon style={{ marginBottom: 10 }}
-                 message="这是通用图形模板，只画示意形状，不解释当前知识点；要生成概念讲解请切「概念图」。" />
-        )}
-        {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 10 }} />}
-
         <div className="whiteboard-layout">
-          <div className="whiteboard-canvas">
-            {loading ? (
-              <Spin tip="正在画…" />
-            ) : scene ? (
-              <svg ref={svgRef} viewBox={`0 0 ${scene.width} ${scene.height}`} width="100%"
-                   onPointerMove={onPointerMove}
-                   onPointerUp={() => { dragRef.current = null; }}
-                   onPointerLeave={() => { dragRef.current = null; }}
-                   style={{ maxHeight: 560, touchAction: 'none', userSelect: 'none' }}>
-                <defs>
-                  <marker id="wb-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3"
-                          orient="auto" markerUnits="strokeWidth">
-                    <path d="M0,0 L0,6 L9,3 z" fill="#64748b" />
-                  </marker>
-                </defs>
-                <rect x="0" y="0" width={scene.width} height={scene.height} fill="#ffffff" />
-                {scene.elements.map((el, index) => (
-                  <g key={index} style={{ cursor: 'move' }}
-                     onPointerDown={(event) => startDrag(event, index, el)}>
-                    {renderElement(el)}
-                  </g>
-                ))}
-              </svg>
-            ) : (
-              <Text type="secondary">输入一个知识点，让 AI 画一张板书</Text>
-            )}
+          <div className="whiteboard-workarea">
+            <MindBoard key={persistKey} persistKey={persistKey}
+                       subjectId={subjectId}
+                       pageContext={activeImage
+                         ? { file_name: activeImage.file_name, page: activeImage.page ?? null, label: defaultTopic }
+                         : null}
+                       defaultRootText={defaultTopic || '中心主题'} />
           </div>
 
           <aside className="whiteboard-sources">
             <div className="whiteboard-sources-head">
-              <span>课件原文</span>
+              <span>课件页</span>
               <Tag>{sources.length}</Tag>
             </div>
             {activeImage ? (
@@ -591,13 +343,16 @@ const WhiteboardModal: React.FC<{
                       </div>
                     )
                   ) : (
-                    <>
-                      <img src={activeImage.url} alt={activeImage.file_name}
-                           onClick={() => openPageImage(activeImage)} />
-                      {activeImage.bbox && (
-                        <div style={bboxStyleOf(activeImage.bbox, activeImage.width, activeImage.height)} />
-                      )}
-                    </>
+                    <img src={activeImage.url} alt={activeImage.file_name}
+                         onClick={() => activeImage.url && setPreview({
+                           url: activeImage.url,
+                           bbox: activeImage.bbox,
+                           width: activeImage.width,
+                           height: activeImage.height,
+                         })} />
+                  )}
+                  {!activeImage.isPdf && activeImage.bbox && (
+                    <div style={bboxStyleOf(activeImage.bbox, activeImage.width, activeImage.height)} />
                   )}
                 </div>
                 <div className="whiteboard-pdf-meta">
@@ -635,12 +390,6 @@ const WhiteboardModal: React.FC<{
           </aside>
         </div>
 
-        {scene && (
-          <Text type="secondary" style={{ display: 'block', marginTop: 8, fontSize: 12 }}>
-            {scene.title} · 共 {scene.elements.length} 个元素（SVG 渲染，不执行模型脚本）· 可拖动元素调整位置 · 已保留上次结果，点「重新生成」才会重新调用模型
-          </Text>
-        )}
-
         {/* 8 个缩放把手：鼠标移到任意边界/角落都能拉大缩小 */}
         {(['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const).map((dir) => (
           <div key={dir} className={`wb-resize wb-resize-${dir}`} aria-hidden
@@ -648,11 +397,12 @@ const WhiteboardModal: React.FC<{
         ))}
       </Modal>
 
-      <Modal title="课件原文" open={!!preview} onCancel={closePreview} footer={null} width={900}>
+      <Modal title="课件原文" open={!!preview} onCancel={() => setPreview(null)} footer={null} width={900}>
         {preview && (
           <div style={{ position: 'relative', width: '100%' }}>
             <img src={preview.url} alt="课件原文" style={{ width: '100%', display: 'block' }} />
-            {bboxStyle() && <div style={bboxStyle()} />}
+            {bboxStyleOf(preview.bbox, preview.width, preview.height)
+              && <div style={bboxStyleOf(preview.bbox, preview.width, preview.height)} />}
           </div>
         )}
         <Text type="secondary" style={{ fontSize: 12 }}>

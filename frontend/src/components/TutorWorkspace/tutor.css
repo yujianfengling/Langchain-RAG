@@ -566,43 +566,250 @@
   display: flex;
   gap: 14px;
   align-items: stretch;
+  flex: 1;
+  min-height: 0;
 }
 
-.whiteboard-canvas {
+/* 主区：学生思维板书（MindBoard 自带工具条与滚动画布） */
+.whiteboard-workarea {
   flex: 1;
   min-width: 0;
-  min-height: 460px;
-  max-height: 560px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: auto;
+  flex-direction: column;
   border: 1px solid rgba(15, 23, 42, 0.07);
   border-radius: 12px;
   background: #ffffff;
+  overflow: hidden;
 }
 
-/* SVG 文本框：自动换行，长句不再溢出方格 */
-.wb-rect-text {
-  width: 100%;
-  height: 100%;
+/* ---------- MindBoard：思维导图 + 画笔随手记 ---------- */
+
+.mindboard {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.mindboard-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  background: #fbfcfe;
+  flex-wrap: wrap;
+}
+
+.mindboard-hint {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.mindboard-spacer { flex: 1; }
+
+.mindboard-pen-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mindboard-color {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.mindboard-color.is-active {
+  border-color: #4f46e5;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.18);
+}
+
+.mindboard-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background:
+    linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px) 0 0 / 28px 28px,
+    linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px) 0 0 / 28px 28px,
+    #fdfefe;
+}
+
+.mindboard-content {
+  position: relative;
+}
+
+.mindboard-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mindboard-node {
+  position: absolute;
   box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 7px 9px;
+  padding: 6px 10px;
+  border: 1.5px solid;
+  border-radius: 10px;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+  user-select: none;
+  z-index: 2;
+}
+
+.mindboard-node.is-root {
+  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.28);
+}
+
+.mindboard-text {
+  font-size: 14px;
+  line-height: 19px;
   text-align: center;
-  line-height: 1.35;
+  cursor: text;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  max-width: 100%;
+}
+
+.mindboard-text.is-empty {
+  color: #b6bfcc;
+  font-style: italic;
+}
+
+.mindboard-input {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  text-align: center;
+  color: inherit;
+}
+
+/* 框左右边缘中点的「+」：点一下长出子框 */
+.mindboard-grow {
+  position: absolute;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  margin-top: -11px;
+  border-radius: 50%;
+  border: 1.5px solid #818cf8;
+  background: #ffffff;
+  color: #4f46e5;
+  font-size: 15px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 3;
+}
+
+.mindboard-node:hover .mindboard-grow,
+.mindboard-grow:focus-visible {
+  opacity: 1;
+}
+
+.mindboard-grow:hover { transform: scale(1.15); background: #eef2ff; }
+.mindboard-grow-right { right: -12px; }
+.mindboard-grow-left { left: -12px; }
+
+.mindboard-del {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: none;
+  background: #ef4444;
+  color: #ffffff;
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 3;
+}
+
+.mindboard-node:hover .mindboard-del { opacity: 1; }
+.mindboard-del:hover { background: #dc2626; }
+
+.mindboard-node.is-draggable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.mindboard-node.is-draggable:active { cursor: grabbing; }
+
+/* 文本标注框：拉出来的框本体，带边框底色，标注模式选「文本」时可点回编辑 */
+.mindboard-anno {
+  position: absolute;
+  z-index: 5;
+  box-sizing: border-box;
+  padding: 6px 9px;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 19px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  word-break: break-word;
-  overflow: hidden;
+  border: 1.5px solid;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.92);
+  cursor: text;
+  user-select: none;
+}
+
+/* 文本标注的就地输入框（松手后出现在拉出的框里） */
+.mindboard-text-draft {
+  position: absolute;
+  z-index: 6;
+  box-sizing: border-box;
+}
+
+.mindboard-text-draft input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1.5px dashed #818cf8;
+  border-radius: 8px;
+  padding: 6px 9px;
+  font: 500 15px/19px system-ui, sans-serif;
+  outline: none;
+  background: #ffffff;
+}
+
+/* 画笔层：盖在导图上面，只有标注模式接住指针 */
+.mindboard-pen {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  cursor: default;
+}
+
+.mindboard-pen.is-active {
+  pointer-events: auto;
+  cursor: crosshair;
+  touch-action: none;
 }
 
 .whiteboard-sources {
-  width: 292px;
+  width: 400px;
   flex-shrink: 0;
-  max-height: 560px;
   overflow: auto;
   padding: 12px;
   border: 1px solid rgba(15, 23, 42, 0.07);

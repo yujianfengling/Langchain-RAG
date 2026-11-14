@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from api.deps import require_current_user, require_subject_read
 from api.schemas.tutor_schema import (
-    ArtifactCreate, ArtifactUpdate, MapGenerateRequest, NodeStatusRequest,
+    ArtifactCreate, ArtifactUpdate, MapGenerateRequest, MindmapRequest, NodeStatusRequest,
     PracticeAnswerRequest, TutorSessionUpdate, TutorStreamRequest, WhiteboardRequest,
 )
 from services import (artifacts_service, auth_service, knowledge_map, material_scope,
@@ -179,6 +179,23 @@ async def generate_whiteboard(request: WhiteboardRequest,
     except whiteboard_service.WhiteboardError as e:
         raise HTTPException(status_code=400, detail=e.message)
     return {"success": True, "data": data, "message": "白板已生成"}
+
+
+@router.post("/tutor/mindmap")
+async def generate_tutor_mindmap(request: MindmapRequest,
+                                 user_id: str = Depends(require_current_user)):
+    """把"这一页课件"整理成一版可编辑的思维导图树（前端 MindBoard 渲染，学生可自行修改）。"""
+    await require_subject_read(request.subject_id, user_id)
+    from services import mindmap_board_service
+    scope = material_scope.build_scope(user_id, request.subject_id)
+    try:
+        data = await run_in_threadpool(
+            mindmap_board_service.generate_mindmap,
+            request.subject_id, user_id, request.file_name, request.page,
+            request.topic, request.model, scope)
+    except mindmap_board_service.MindmapError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    return {"success": True, "data": data, "message": "思维导图已生成"}
 
 
 # =====================================================================

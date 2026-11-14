@@ -91,26 +91,13 @@ export interface TutorStreamHandlers {
   onError?: (message: string) => void;
 }
 
-export interface WhiteboardElement {
-  type: 'text' | 'line' | 'arrow' | 'rect' | 'circle' | 'curve' | string;
-  x?: number; y?: number; x1?: number; y1?: number; x2?: number; y2?: number;
-  w?: number; h?: number; r?: number; text?: string; size?: number;
-  color?: string; points?: number[][];
-}
-
-export interface WhiteboardScene {
-  title: string;
-  width: number;
-  height: number;
-  topic?: string;
-  elements: WhiteboardElement[];
-}
-
-export const generateWhiteboard = async (payload: {
-  subject_id: string; topic: string; template?: string | null; model?: string | null; node_id?: string | null; doc_ids?: string[];
-}): Promise<WhiteboardScene> => {
-  const res: any = await apiClient.post('/tutor/whiteboard', payload);
-  return (res?.data ?? res) as WhiteboardScene;
+/** 按"这一页课件"生成一版可编辑思维导图（2026-11-14 白板重做）。
+ *  file_name + page（0 基页码）定位当前展示的课件页；后端优先读页面索引逐页文本。 */
+export const generateMindMap = async (payload: {
+  subject_id: string; file_name?: string | null; page?: number | null; topic?: string | null;
+}): Promise<{ root: { text: string; children: any[] }; source: { file_name?: string; page?: number | null; ref?: string } }> => {
+  const res: any = await apiClient.post('/tutor/mindmap', payload);
+  return (res?.data ?? res) as { root: { text: string; children: any[] }; source: { file_name?: string; page?: number | null; ref?: string } };
 };
 
 export const getTutorSession = async (subjectId: string): Promise<TutorSessionData> => {
