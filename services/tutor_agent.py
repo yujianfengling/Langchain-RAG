@@ -68,6 +68,9 @@ _COMMON_RULES = """
    （学生刚提到的名词/数字/章节），用它作为 topic 直接调用 generate_practice；
    只有学生没有给出任何具体主题时才要求其补充（实测：上轮刚确认完主题，
    下轮出题却再问一遍"你想考什么"，是真实发生过的坏体验）。
+11. 学生本轮只要出题/练习/检测（没有同时要求讲解）时，正文**不要先概括、讲解或复述知识点**
+    （定义、学科分支、研究范畴等一句都不要写），也不要调用 generate_node_lesson 先讲一遍；
+    检索只为出题服务。正文只保留"出了几道题、考什么、请作答"，内容全部由题目卡片承载。
 """
 
 # 引导模式（2026-10-24）：只改变「怎么讲」，不改变检索、工具权限、判分与掌握度。
@@ -108,6 +111,9 @@ _ABILITY_PROMPTS: Dict[str, str] = {
     tutor_session.ABILITY_PRACTICE: """
 ## 当前能力：练习与检测
 先用 generate_practice 生成围绕当前知识点的题目（答案由后端保存，**你不会拿到答案**）。
+**出题前后都不要概括、讲解或复述知识点**——不写"一、概括"式的定义复述、学科分支、
+研究范畴罗列，也不要顺带调用 generate_node_lesson 讲一遍；那是「开始学习」做的事，
+这里检索只为出题找依据（实测：出题前先背一遍定义，学生要的是题不是课）。
 出题后**只用一两句话说明"出了几道题、考的是什么"并请学生作答**；
 **不要复述题干、选项、答案或解析**——题目会以可交互的卡片直接呈现在学生面前，
 你这里再抄一遍，学生就会看到两份一模一样的题（实测确认过，界面会重复得很难看）。
@@ -530,7 +536,11 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
                     # 有 tool_calls 时它通常只是"我先去查资料"的前言，不作为回答展示。
                     if ev.get("type") == "content":
                         streamed_text += ev.get("text") or ""
-                        yield emit("delta", {"content": ev.get("text") or "", "provisional": True})
+                        # 练习能力的前言实测会被模型写成整段"一、概括"讲解，流式期间
+                        # 学生先被迫读一遍课、done 时才被终答替换；这里扣住不发，
+                        # 等确认本轮无工具调用（即终答）再一次性放出。
+                        if ability != tutor_session.ABILITY_PRACTICE:
+                            yield emit("delta", {"content": ev.get("text") or "", "provisional": True})
                     elif ev.get("type") == "end":
                         end_event = ev
                 execution.check()
@@ -553,6 +563,8 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
 
             calls = end_event.get("tool_calls") or []
             if not calls:
+                if ability == tutor_session.ABILITY_PRACTICE and streamed_text:
+                    yield emit("delta", {"content": streamed_text, "provisional": True})
                 answer_parts.append(end_event.get("content") or streamed_text)
                 break
 

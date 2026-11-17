@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 
-from services import artifacts_service, knowledge_map, material_scope, tutor_session, tutor_tools
+from services import artifacts_service, knowledge_map, material_scope, tutor_agent, tutor_session, tutor_tools
 
 
 # =====================================================================
@@ -352,3 +352,64 @@ def test_tool_schemas_are_valid_json_schema():
         json.dumps(spec.parameters)  # 必须可序列化
         for required in spec.parameters.get("required", []):
             assert required in spec.parameters["properties"]
+
+
+def test_practice_prompt_forbids_pre_quiz_summary():
+    # 回归：点「做练习」后模型先输出"一、概括……"再出题（真实坏体验）
+    scope = {"label": "全部资料", "mode": "all"}
+    practice = tutor_agent.build_system_prompt("岩石力学", "practice", scope, {"subject_id": "s"})
+    assert "不要概括、讲解或复述知识点" in practice
+    # generate_practice 在 chat/explain 能力下也可调用，通用规则必须同样覆盖
+    for ability in ("practice", "chat", "explain"):
+        prompt = tutor_agent.build_system_prompt("岩石力学", ability, scope, {"subject_id": "s"})
+        assert "不要先概括、讲解或复述知识点" in prompt, f"{ability} 缺少出题不讲解的通用规则"
+
+
+def test_practice_turn_never_streams_pre_tool_narration(monkeypatch):
+    # 回归：练习轮里模型把"一、概括"整段讲解当前言流式播出，学生先读一遍课才看到题
+    preamble = "一、概括\n岩石力学是研究岩石的力学性质的一门理论与应用科学。"
+    final = "练习题已生成：共 3 道，请在卡片上作答。"
+
+    class FakeProvider:
+        def __init__(self):
+            self.round = 0
+
+        def stream_with_tools(self, messages, **kwargs):
+            self.round += 1
+            if self.round == 1:
+                yield {"type": "content", "text": preamble}
+                yield {"type": "end", "content": preamble, "tool_calls": [
+                    {"id": "c1", "function": {"name": "generate_practice",
+                                              "arguments": '{"topic": "岩石力学"}'}}]}
+            else:
+                yield {"type": "content", "text": final}
+                yield {"type": "end", "content": final, "tool_calls": []}
+
+    def _run(ability):
+        tag = uuid.uuid4().hex[:8]
+        monkeypatch.setattr(
+            tutor_agent.material_scope, "build_scope",
+            lambda *a, **k: {"mode": "all", "label": "全部资料", "selected": [], "invalid": []})
+        monkeypatch.setattr(
+            tutor_agent.material_scope, "scope_to_public",
+            lambda s: {"mode": s.get("mode", "all"), "label": s.get("label", ""),
+                       "selected": [], "invalid": []})
+        monkeypatch.setattr("services.model_service.get_model_provider",
+                            lambda model=None: FakeProvider())
+        monkeypatch.setattr(
+            tutor_tools, "execute_tool",
+            lambda name, args, ctx: {"ok": True, "questions": [{"id": "q1"}],
+                                     "question_count": 1, "topic": "岩石力学"})
+        events = list(tutor_agent.stream_turn("prac_u_" + tag, "prac_s_" + tag,
+                                              "出 3 道练习题", ability=ability))
+        deltas = "".join(e.get("content") or "" for e in events if e["type"] == "delta")
+        done = next(e for e in events if e["type"] == "done")
+        return deltas, done
+
+    deltas, done = _run("practice")
+    assert "概括" not in deltas, "练习轮的工具前文本不得流式播出"
+    assert final in deltas and done["answer"] == final
+
+    deltas, done = _run("chat")
+    assert preamble in deltas, "其他能力保持 live 流式（done 时由终答替换）"
+    assert done["answer"] == final
