@@ -188,6 +188,7 @@ export interface LearningHome {
   last_position: {
     knowledge_point?: string | null;
     knowledge_point_id?: string | null;
+    subject_id?: string | null;
     question_id?: string | null;
     at?: string | null;
   } | null;

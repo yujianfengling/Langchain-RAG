@@ -22,6 +22,7 @@ import {
   type GuidanceMode, type TutorSource,
 } from '../../api/tutor';
 import { useAuth } from '../../context/AuthContext';
+import { getHome } from '../../api/student';
 import { MarkdownText } from './markdown';
 import MapTree, { type MapNode } from './MapTree';
 import PracticeCard, { type PracticeQuestion } from './PracticeCard';
@@ -346,6 +347,38 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       if (sid === activeSubject.current) setMapLoading(false);
     }
   }, []);
+
+  // 每天进来的第一入口：上次学到哪（student/home.last_position），一键回到该知识点
+  const [lastPosition, setLastPosition] = useState<any>(null);
+  const [pendingKp, setPendingKp] = useState<string | null>(null);
+  useEffect(() => {
+    if (role !== 'student' || !authUser?.id) return;
+    let alive = true;
+    getHome(subjectId || undefined).then((res: any) => {
+      if (alive) setLastPosition(res?.data?.last_position || null);
+    }).catch(() => undefined);
+    return () => { alive = false; };
+  }, [role, authUser?.id, subjectId]);
+  useEffect(() => {
+    if (!pendingKp || mapLoading) return;
+    const nodes = map?.nodes || [];
+    const hit = nodes.find((n: any) => n.label === pendingKp && n.level !== 'chapter')
+      || nodes.find((n: any) => n.label === pendingKp);
+    if (hit) {
+      setCurrentNode(hit.node_id);
+    } else {
+      // 地图未生成或名字对不上：如实告知，不假装已跳转
+      setResumeNotice(`上次学到「${pendingKp}」，学习地图里暂无对应节点，可直接围绕它提问。`);
+    }
+    setPendingKp(null);
+  }, [pendingKp, map, mapLoading]);
+  const continueLast = useCallback(() => {
+    if (!lastPosition?.knowledge_point) return;
+    if (lastPosition.subject_id && lastPosition.subject_id !== subjectId) {
+      setSubjectId(lastPosition.subject_id);
+    }
+    setPendingKp(lastPosition.knowledge_point);
+  }, [lastPosition, subjectId]);
 
   /** 载入一个历史会话到主聊天区（历史抽屉点击 / 自动恢复共用）。
       当前节点与"建议下一步"保持不变——会话原主题 ≠ 当前学习节点。 */
@@ -913,6 +946,13 @@ const includeNodeSources = useCallback(() => {
         )}
         <Title level={4} style={{ marginTop: 0 }}>选择要学习的内容</Title>
         <Text type="secondary">选定后即可在同一工作区里问答、讲解、练习与整理，不需要反复切换页面。</Text>
+        {lastPosition?.knowledge_point && lastPosition.subject_id && (
+          <div style={{ marginTop: 16 }}>
+            <Button type="primary" size="large" onClick={continueLast}>
+              继续学习：{lastPosition.knowledge_point}
+            </Button>
+          </div>
+        )}
         <Space direction="vertical" style={{ width: '100%', marginTop: 12 }} size={8}>
           {ctx.courses.map((c) => (
             <Button key={c.course_id} block size="large" className="tutor-choose-btn"
@@ -1220,6 +1260,13 @@ const includeNodeSources = useCallback(() => {
           stickToBottomRef.current = near;
           setAtBottom(near);
         }}>
+          {lastPosition?.knowledge_point && nodeDetail?.label !== lastPosition.knowledge_point && (
+            <div style={{ marginBottom: 8 }}>
+              <Button size="small" type="primary" ghost onClick={continueLast}>
+                继续上次学习：{lastPosition.knowledge_point}
+              </Button>
+            </div>
+          )}
           {resumeNotice && (
             <QuietNotice inline onClose={() => setResumeNotice(null)}>{resumeNotice}</QuietNotice>
           )}

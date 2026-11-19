@@ -209,7 +209,12 @@ const TasksPage: React.FC = () => {
       if (!t || !t.id || t.status === 'COMPLETED') return;
       if (taskSeen.has(t.id)) return;
       taskSeen.add(t.id);
-      const due = t.planned_date ? String(t.planned_date).slice(0, 10) : null;
+      // 复习去重会丢掉 review 行：FSRS 到期日以 review_tasks 为准，别用计划任务的旧日期
+      const rv = t.task_type === 'REVIEW' && t.knowledge_point_id
+        ? reviews.find((r) => r.knowledge_point_id === t.knowledge_point_id && r.status === 'PENDING')
+        : undefined;
+      const dueRaw = rv?.due_date || t.planned_date;
+      const due = dueRaw ? String(dueRaw).slice(0, 10) : null;
       if (t.task_type === 'REVIEW' && t.knowledge_point_id) coveredKp.add(t.knowledge_point_id);
       out.push({
         key: 'task:' + t.id,
@@ -340,6 +345,9 @@ const TasksPage: React.FC = () => {
     const params = new URLSearchParams();
     if (sid) params.set('subject', sid);
     params.set('task', id);
+    // 伴学页只认 subject/docs/node：把知识点名字带过去，才能定位到对应节点
+    const kp = it.task?.knowledge_point || it.review?.knowledge_point_name || it.wrong?.knowledge_point;
+    if (kp) params.set('kp', kp);
     navigate('/student?' + params.toString());
   };
 
@@ -348,6 +356,8 @@ const TasksPage: React.FC = () => {
     const params = new URLSearchParams();
     if (it.subjectId) params.set('subject', it.subjectId);
     params.set('task', it.assignment.id);
+    const kp = it.assignment.knowledge_points?.[0];
+    if (kp) params.set('kp', kp);
     navigate('/student?' + params.toString());
   };
 

@@ -91,7 +91,11 @@ def prewarm_subject_quiz(subject_id: str) -> Dict[str, Any]:
 
 def _run_safe(subject_id: str) -> None:
     try:
-        prewarm_subject_quiz(subject_id)
+        res = prewarm_subject_quiz(subject_id)
+        # 空学科不算"已预热"：否则建库登记知识点之后，重建再也不会触发预热
+        if res.get("skipped") and res.get("reason") == "该学科还没有知识点":
+            with _lock:
+                _warmed.discard(subject_id)
     except Exception as e:  # 预热永远不该影响主流程
         logger.warning(f"题库预热异常（不影响建库结果）: {e}")
 

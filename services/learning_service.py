@@ -997,6 +997,12 @@ def complete_task(
             conn.commit()
         finally:
             conn.close()
+        # 复习是双写的（review_tasks + learning_tasks）：只关后者会让前者永远待办
+        try:
+            from services.review_service import complete_review_for_source_task
+            complete_review_for_source_task(user_id, task_id)
+        except Exception as e:
+            logger.warning(f"同步关闭复习任务失败（任务状态已保存）: {e}")
 
     # 记录学习行为（幂等：重复完成不重复计数；且不改变掌握度）
     behavior_recorded = False

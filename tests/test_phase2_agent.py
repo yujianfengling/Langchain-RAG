@@ -765,6 +765,20 @@ class TestAgentRuntime(Phase2Base):
                      params={"subject_id": SUBJECT})
         self.assertEqual(r.status_code, 200, r.text)
 
+    def test_run_results_persisted_in_result_json(self):
+        """结果落盘：重新读取运行记录仍能拿到笔记正文等产出（result_json 不只存 errors）"""
+        token, uid = self.login("ar_persist")
+        r = self.req("POST", "/api/agent/run", token=token,
+                     json={"subject_id": SUBJECT, "goal": "帮我复习二叉树"})
+        self.assertEqual(r.status_code, 200, r.text)
+        run_id = r.json()["data"]["id"]
+        again = self.req("GET", f"/api/agent/runs/{run_id}", token=token).json()["data"]
+        results = (again.get("result") or {}).get("results") or {}
+        self.assertIn("learning_state", results)
+        note = results.get("generate_note") or {}
+        self.assertIn("二叉树", json.dumps(note, ensure_ascii=False),
+                      "笔记正文应随本次运行落盘，刷新不丢")
+
     def test_run_via_stream_emits_progress(self):
         """SSE 进度流：能看到步骤与最终结果"""
         token, uid = self.login("ar_stream")

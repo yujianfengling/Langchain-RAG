@@ -1975,6 +1975,12 @@ def _run_job_locked(job_id: str, executor_id: str,
                     stage_timings["build_memory_peak_mb"] = max(
                         float(stage_timings.get("build_memory_peak_mb") or 0.0),
                         _mem_peak_mb(build_base))
+                    # 建库成功即预热题库（进程内同学科只跑一次；失败不影响导入）
+                    try:
+                        from services import quiz_prewarm
+                        quiz_prewarm.schedule_prewarm(subject_id)
+                    except Exception as e:
+                        logger.warning(f"导入后题库预热调度失败（不影响导入）: {e}")
                     chunk_count = None
                     try:
                         chunk_count = (build_result or {}).get("chunk_count")

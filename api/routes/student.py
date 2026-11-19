@@ -134,6 +134,7 @@ async def student_home(subject_id: Optional[str] = None,
         last_position = {
             "knowledge_point": recent[0].get("knowledge_point_name"),
             "knowledge_point_id": recent[0].get("knowledge_point_id"),
+            "subject_id": recent[0].get("subject_id"),
             "question_id": recent[0].get("question_id"),
             "at": recent[0].get("created_at"),
         }

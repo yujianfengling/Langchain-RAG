@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { List, Avatar, Typography, Space, Spin, Button, Tag, Alert, Popconfirm, message } from 'antd';
+import { List, Avatar, Typography, Space, Spin, Button, Tag, Alert, Popconfirm, Collapse, message } from 'antd';
 import {
   UserOutlined, RobotOutlined,
   LoadingOutlined, CheckCircleOutlined, CloseCircleOutlined,
@@ -189,6 +189,15 @@ const AgentProgress: React.FC<{
   const hasAdjustment = (steps || []).some(
     (s) => s.tool === 'propose_adjustment' && s.status === 'done');
 
+  // 笔记正文随运行落盘（result_json.results）：折叠展示，刷新后仍可回看
+  const note = run?.results?.generate_note || null;
+  const noteSections = [
+    { label: '概念', content: note?.concept?.content },
+    { label: '例子', content: note?.example?.content },
+    { label: '易错点', content: note?.mistakes?.content },
+    { label: '课堂提示', content: note?.class_tips?.content },
+  ].filter((s) => typeof s.content === 'string' && s.content.trim());
+
   return (
     <div style={{ minWidth: 280 }}>
       <Space size={8} style={{ marginBottom: 6 }} wrap>
@@ -234,6 +243,26 @@ const AgentProgress: React.FC<{
           {/* 助手提出了计划调整 → 会话内即可确认应用（不必切页签） */}
           {hasAdjustment && <AgentAdjustmentAction subjectId={subjectId} />}
         </>
+      )}
+      {noteSections.length > 0 && (
+        <Collapse
+          size="small"
+          style={{ marginTop: 8 }}
+          items={[{
+            key: 'note',
+            label: note?.title ? `笔记正文：${note.title}` : '笔记正文',
+            children: (
+              <div style={{ fontSize: 13 }}>
+                {noteSections.map((s) => (
+                  <div key={s.label} style={{ marginBottom: 8 }}>
+                    <Text strong>{s.label}</Text>
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{s.content}</div>
+                  </div>
+                ))}
+              </div>
+            ),
+          }]}
+        />
       )}
       {run?.error && (
         <Alert type="warning" showIcon style={{ marginTop: 8 }}

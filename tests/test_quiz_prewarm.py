@@ -13,6 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from services import learning_data
 from services.quiz_prewarm import (
     prewarm_subject_quiz,
     schedule_prewarm,
@@ -30,6 +31,13 @@ class TestQuizPrewarm(unittest.TestCase):
         self._env = mock.patch.dict(os.environ, {"EDU_DATA_DIR": self._tmp})
         self._env.start()
         self.addCleanup(self._env.stop)
+        # learning_data 的 DB_PATH 是模块级常量：环境变量改不动它，直接替换以隔离知识点表
+        self._db = mock.patch.multiple(
+            learning_data, _DATA_DIR=self._tmp,
+            DB_PATH=os.path.join(self._tmp, "learning_loop.db"))
+        self._db.start()
+        self.addCleanup(self._db.stop)
+        learning_data._init_db()
 
     def test_only_limited_points_are_prewarmed(self):
         """只预热前 N 个知识点，且按配置的题量出题（避免烧光模型额度）"""
@@ -91,6 +99,49 @@ class TestQuizPrewarm(unittest.TestCase):
             self.assertFalse(schedule_prewarm("物理"))
 
         self.assertEqual(len(started), 1)
+
+
+    def test_empty_subject_does_not_consume_once_chance(self):
+        """空学科跳过不算"已预热"：建库登记知识点后，重建仍应能触发预热"""
+        started = []
+
+        class _FakeThread:
+            def __init__(self, target=None, args=(), daemon=None, name=None):
+                started.append(args)
+
+            def start(self):
+                pass
+
+        with mock.patch.dict(os.environ, {"WEB_SEARCH_PREGEN_POINTS": "5"}), \
+             mock.patch("services.learning_data.list_knowledge_points", return_value=[]), \
+             mock.patch("services.quiz_prewarm.threading.Thread", _FakeThread):
+            from services import quiz_prewarm as qp
+            self.assertTrue(schedule_prewarm("物理"))
+            qp._run_safe("物理")  # 空转跳过
+            self.assertTrue(schedule_prewarm("物理"), "空跳过后应允许再次预热")
+        self.assertEqual(len(started), 2)
+
+    def test_build_registers_knowledge_points_for_prewarm(self):
+        """建库登记知识点：章节标题去重入库；有地图时优先地图节点（章级不算）"""
+        from services import knowledge_service, learning_data
+
+        class _Doc:
+            def __init__(self, section):
+                self.metadata = {"section": section}
+                self.page_content = "x"
+
+        docs = [_Doc("二叉树定义"), _Doc("二叉树定义"), _Doc("遍历")]
+        self.assertEqual(knowledge_service._sync_knowledge_points("物理", docs), 2)
+        names = [p["name"] for p in learning_data.list_knowledge_points("物理")]
+        self.assertEqual(sorted(names), ["二叉树定义", "遍历"])
+
+        with mock.patch("services.knowledge_map.get_map",
+                        return_value={"nodes": [{"label": "第一章", "level": "chapter"},
+                                                {"label": "平衡树", "level": "point"}]}):
+            knowledge_service._sync_knowledge_points("物理", docs)
+        names = [p["name"] for p in learning_data.list_knowledge_points("物理")]
+        self.assertIn("平衡树", names)
+        self.assertNotIn("第一章", names)
 
 
 if __name__ == "__main__":

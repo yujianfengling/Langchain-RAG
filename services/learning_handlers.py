@@ -105,7 +105,10 @@ def _handle_quiz_attempt_review(ctx: dict) -> None:
         due_on_or_before=(date.today().isoformat() if require_due else None),
     )
     if not closed:
-        return
+        # 待办可能已随"完成计划任务"提前关闭（双写一致化）：真实复习作答仍应推进复测；
+        # 但"存在待办却因未到期没关"不能提前排复测，非复习作答没消耗待办也不排
+        if pending or attempt_kind != "review":
+            return
     logger.info(f"复习通过并关闭待办: user={user_id}, kp={kp_name}, n={closed}")
 
     # 关闭待办 ≠ 长期掌握：读取当前画像判断是否已通过间隔复现

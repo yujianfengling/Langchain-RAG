@@ -71,6 +71,7 @@ interface SubjectMeta {
   docCount: number | null;
   state: KbState;
   progressText: string;
+  progressKp: string | null;
 }
 
 interface SubjectCardData {
@@ -83,6 +84,7 @@ interface SubjectCardData {
   docCount: number | null;
   state: KbState;
   progressText: string;
+  progressKp?: string | null;
 }
 
 /** 单份资料的建页结果（服务端 doc_state，刷新后仍在） */
@@ -335,6 +337,7 @@ const MaterialsPage: React.FC = () => {
         }
       }
       let progressText = '尚未开始';
+      let progressKp: string | null = null;
       try {
         const homeRes = (await getHome(sid)) as unknown as HomeResponse;
         const d = homeRes?.data;
@@ -344,13 +347,14 @@ const MaterialsPage: React.FC = () => {
           + (d?.pending_reviews?.length || 0);
         // 2026-10-31：只有**可靠**的学习节点才作为"继续"依据；
         // 归属不可靠的点位（界面显示"待确认"）不泄漏到卡片上，按未开始处理。
-        progressText = kp && kp !== '待确认'
-          ? '继续：' + kp
+        progressKp = kp && kp !== '待确认' ? kp : null;
+        progressText = progressKp
+          ? '继续：' + progressKp
           : pending > 0 ? pending + ' 项待完成' : '尚未开始';
       } catch {
         // 学习进度读取失败不影响资料卡片本身
       }
-      return [sid, { docCount, state, progressText }];
+      return [sid, { docCount, state, progressText, progressKp }];
     }));
     const next: Record<string, SubjectMeta> = {};
     for (const [sid, m] of entries) next[sid] = m;
@@ -459,6 +463,7 @@ const MaterialsPage: React.FC = () => {
         docCount: m ? m.docCount : (c.material_count ?? null),
         state: m ? m.state : 'unknown',
         progressText: m ? m.progressText : '尚未开始',
+        progressKp: m ? m.progressKp : null,
       });
     }
     for (const s of ctx.personalSubjects) {
@@ -471,6 +476,7 @@ const MaterialsPage: React.FC = () => {
         docCount: m ? m.docCount : null,
         state: m ? m.state : 'unknown',
         progressText: m ? m.progressText : '尚未开始',
+        progressKp: m ? m.progressKp : null,
       });
     }
     return out;
@@ -756,7 +762,24 @@ const MaterialsPage: React.FC = () => {
                   <span>{item.docCount === null ? '资料数量读取中' : '资料 ' + item.docCount + ' 份'}</span>
                   <KbStatusTag state={item.state} />
                 </div>
-                <div className="material-card-progress" title={item.progressText}>{item.progressText}</div>
+                {item.progressKp ? (
+                  <Button
+                    type="link"
+                    size="small"
+                    className="material-card-progress"
+                    style={{ padding: 0, height: 'auto' }}
+                    title={'继续学习：' + item.progressKp}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate('/student?subject=' + encodeURIComponent(item.subject_id)
+                        + '&kp=' + encodeURIComponent(item.progressKp as string));
+                    }}
+                  >
+                    {item.progressText}
+                  </Button>
+                ) : (
+                  <div className="material-card-progress" title={item.progressText}>{item.progressText}</div>
+                )}
 
                 {/* 底部：对齐的主次操作 */}
                 <div className="material-card-actions">

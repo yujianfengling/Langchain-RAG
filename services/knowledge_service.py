@@ -261,6 +261,7 @@ def build_subject_knowledge(subject_id: str, source_path: str) -> Dict[str, Any]
             documents=documents,
             subject_id=subject_id,
         )
+        _sync_knowledge_points(subject_id, documents)
         
         return {
             "success": True,
@@ -1030,6 +1031,45 @@ def _publish_index_pair(live_v: Path, staging_v: Path, old_v: Path, prev_v: Path
 
 
 @coordinated
+def _sync_knowledge_points(subject_id: str, documents: List[Any]) -> int:
+    """建库成功后把地图节点/章节标题登记为知识点（供测验预热与掌握度使用）。
+
+    此前建库只写索引与图谱，knowledge_points 为空 → 预热首次空转
+    "该学科还没有知识点"。登记失败只记日志，绝不能影响建库结果。
+    """
+    try:
+        from services import knowledge_map, learning_data
+        names: List[str] = []
+        payload = knowledge_map.get_map(subject_id) or {}
+        for node in payload.get("nodes") or []:
+            if node.get("level") != "chapter" and node.get("label"):
+                names.append(str(node["label"]))
+        if not names:
+            for doc in documents or []:
+                meta = getattr(doc, "metadata", None) or {}
+                heads = meta.get("parent_headings") or []
+                name = meta.get("section") or (heads[-1] if heads else None)
+                if name:
+                    names.append(str(name))
+        seen: set = set()
+        count = 0
+        for raw in names:
+            name = raw.strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            if learning_data.ensure_knowledge_point(subject_id, name, source="build"):
+                count += 1
+            if count >= 80:
+                break
+        if count:
+            logger.info(f"建库登记知识点: subject={subject_id}, n={count}")
+        return count
+    except Exception as e:
+        logger.warning(f"建库登记知识点失败（不影响建库结果）: {e}")
+        return 0
+
+
 def _build_index_with_rollback(subject_id: str, documents: List[Any]) -> Dict[str, Any]:
     """
     独立目录构建 → 校验 → 原子发布（2026-10-08 重构）。
@@ -1108,6 +1148,9 @@ def _build_index_with_rollback(subject_id: str, documents: List[Any]) -> Dict[st
 
     # 5. 让进程内缓存失效（仅内存），检索下一次会加载新版本
     _invalidate_memory_index(subject_id)
+
+    # 6. 登记知识点：否则测验预热首次空转"该学科还没有知识点"
+    _sync_knowledge_points(subject_id, documents)
 
     # 统计过滤效果（供前端提示"知识库体量"是否异常）
     try:

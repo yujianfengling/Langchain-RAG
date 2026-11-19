@@ -665,6 +665,11 @@ def _extract_goal_signals(goal: str) -> Dict[str, Any]:
     return signals
 
 
+def _result_json(results: Dict[str, Any], errors: List[str]) -> str:
+    # 结果必须落盘：只存 errors 时笔记正文等产出刷新即丢，与本次运行的关联也丢
+    return json.dumps({"errors": errors, "results": results}, ensure_ascii=False, default=str)
+
+
 def run_agent(user_id: str, subject_id: str, goal: str, intent: str = "study",
               cancel_check: Optional[Callable[[], bool]] = None,
               progress: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -719,11 +724,13 @@ def run_agent(user_id: str, subject_id: str, goal: str, intent: str = "study",
             elapsed = time.time() - started
             if elapsed > LIMITS["max_seconds"]:
                 _update_run(run_id, status=STATE_TIMEOUT, steps=steps_done,
+                            result_json=_result_json(results, errors),
                             error=f"执行超时（>{LIMITS['max_seconds']}s）")
                 _emit(step["tool"], TOOLS[step["tool"]]["label"], "timeout")
                 return {**get_run(run_id, user_id), "results": results}
             if (cancel_check and cancel_check()) or _is_cancelled(run_id):
                 _update_run(run_id, status=STATE_CANCELLED, steps=steps_done,
+                            result_json=_result_json(results, errors),
                             error="用户取消")
                 _emit(step["tool"], TOOLS[step["tool"]]["label"], "cancelled")
                 return {**get_run(run_id, user_id), "results": results}
@@ -784,7 +791,7 @@ def run_agent(user_id: str, subject_id: str, goal: str, intent: str = "study",
             # 便于前端提示"部分步骤未完成，可用手动操作"
             status = STATE_FAILED
         _update_run(run_id, status=status, steps=steps_done, llm_calls=llm_calls,
-                    result_json=json.dumps({"errors": errors}, ensure_ascii=False),
+                    result_json=_result_json(results, errors),
                     error="; ".join(errors) if errors else None,
                     finished_at=_now())
         return {**get_run(run_id, user_id), "results": results}
@@ -792,6 +799,7 @@ def run_agent(user_id: str, subject_id: str, goal: str, intent: str = "study",
     except Exception as e:
         logger.error(f"Agent 运行异常: {e}", exc_info=True)
         _update_run(run_id, status=STATE_FAILED, steps=steps_done,
+                    result_json=_result_json(results, errors),
                     error=f"{type(e).__name__}: {e}", finished_at=_now())
         return {**get_run(run_id, user_id), "results": results}
 

@@ -310,6 +310,37 @@ def complete_review_tasks(
         conn.close()
 
 
+def complete_review_for_source_task(user_id: str, source_task_id: str,
+                                    reason: str = "计划任务已完成") -> int:
+    """关闭由该学习任务双写出来的待办复习（review_tasks.source_task_id 指向计划任务）。
+
+    完成任务若只关 learning_tasks，review_tasks 会永远待办（两表长期不一致）。
+    按来源精确关闭，不动同知识点其它尚未到期的复习/复测。
+    """
+    if not user_id or not source_task_id:
+        return 0
+    conn = _get_db()
+    try:
+        cur = conn.execute(
+            """UPDATE review_tasks
+               SET status=?, completed_at=?, reason=?, updated_at=?
+               WHERE user_id=? AND source_task_id=? AND status=?""",
+            (REVIEW_DONE, _now(), reason, _now(), user_id, source_task_id, REVIEW_PENDING))
+        conn.commit()
+        if cur.rowcount:
+            logger.info(f"随计划任务关闭复习: user={user_id}, task={source_task_id}, n={cur.rowcount}")
+        return cur.rowcount
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.error(f"随计划任务关闭复习失败: {e}", exc_info=True)
+        raise ReviewServiceError("关闭复习任务失败", "database_error")
+    finally:
+        conn.close()
+
+
 def schedule_recheck(
     user_id: str,
     subject_id: str,
