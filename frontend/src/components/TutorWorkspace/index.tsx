@@ -23,6 +23,7 @@ import {
 } from '../../api/tutor';
 import { useAuth } from '../../context/AuthContext';
 import { getHome } from '../../api/student';
+import { getModelStatus } from '../../api/models';
 import { MarkdownText } from './markdown';
 import MapTree, { type MapNode } from './MapTree';
 import PracticeCard, { type PracticeQuestion } from './PracticeCard';
@@ -661,6 +662,46 @@ const includeNodeSources = useCallback(() => {
     }
   }, [subjectId, guidanceMode, modeSaving]);
 
+  // ==================== 回答模型选择（与 ChatBox 共享 localStorage 'chat_model'） ====================
+  const [selectedModel, setSelectedModel] = useState<string>(() => {
+    try { return localStorage.getItem('chat_model') || ''; } catch { return ''; }
+  });
+  const [serverDefaultModel, setServerDefaultModel] = useState<string>('deepseek');
+  const [modelOptions, setModelOptions] = useState<{ value: string; label: string }[]>([
+    { value: 'deepseek', label: 'DeepSeek' },
+    { value: 'mimo', label: '小米MiMo' },
+    { value: 'qwen', label: '通义千问' },
+  ]);
+
+  // 载入后端可用模型列表（取不到时保留静态列表，不影响问答）
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res: any = await getModelStatus();
+        const data = res?.data || {};
+        const def = data.default_model || 'deepseek';
+        const models: { value: string; label: string }[] =
+          (data.models || [])
+            .filter((m: any) => ['deepseek', 'mimo', 'qwen'].includes(m.name))
+            .map((m: any) => ({ value: m.name, label: m.display_name || m.name }));
+        if (cancelled) return;
+        setServerDefaultModel(def);
+        if (models.length) setModelOptions(models);
+        if (!localStorage.getItem('chat_model')) setSelectedModel(def);
+      } catch { /* 取不到后端模型状态时保持静态列表 */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleModelChange = useCallback((value: string) => {
+    setSelectedModel(value);
+    try {
+      localStorage.setItem('chat_model', value);
+      localStorage.setItem('chat_model_explicit', '1');
+    } catch { /* 忽略 */ }
+  }, []);
+
   const send = useCallback((text?: string, abilityOverride?: string) => {
     const content = (text ?? input).trim();
     if (!content || running || !subjectId) return;
@@ -704,6 +745,7 @@ const includeNodeSources = useCallback(() => {
       doc_ids: selectedDocs,
       node_id: currentNode || null,
       conversation_id: convId,
+      model: selectedModel || undefined,
     }, {
       onEvent: (ev) => {
         if (subjectId !== activeSubject.current) return;
@@ -815,7 +857,7 @@ const includeNodeSources = useCallback(() => {
         abortRef.current = null;
       },
     });
-  }, [input, running, subjectId, ability, guidanceMode, selectedDocs, currentNode, conversationId, authUser, pushMessage, updateLast, loadMap, loadNode]);
+  }, [input, running, subjectId, ability, guidanceMode, selectedDocs, currentNode, conversationId, authUser, selectedModel, pushMessage, updateLast, loadMap, loadNode]);
 
   const stop = useCallback(() => {
     if (activeTurnRef.current) void cancelTurn(activeTurnRef.current).catch(() => undefined);
@@ -1523,11 +1565,21 @@ const includeNodeSources = useCallback(() => {
                     // 自学场景：自己上传的资料可以自己确认"已通过"。
                     // 老师提供的课程资料会被后端拒绝（成绩必须以检测为准）。
                     { key: 'passed', icon: <CheckCircleOutlined />, label: '我已通过' },
+                    { type: 'divider' as const },
+                    {
+                      key: 'model',
+                      label: '回答模型',
+                      children: modelOptions.map((m) => ({
+                        key: 'model:' + m.value,
+                        label: m.label + (m.value === serverDefaultModel ? '（默认）' : ''),
+                      })),
+                    },
                   ],
                   onClick: ({ key }) => {
                     if (key === 'note') startNodeActivity('note');
                     if (key === 'openPanel') toggleRightPanel(true);
                     if (key === 'passed') markPassed();
+                    if (key.startsWith('model:')) handleModelChange(key.slice(6));
                   },
                 }}
               >
