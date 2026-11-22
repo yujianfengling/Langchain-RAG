@@ -22,8 +22,8 @@ const LoginRequired: React.FC<{ reason?: 'anonymous' | 'expired' }> = ({ reason 
     padding: '0 4px',
   }}>
     <div style={{ marginBottom: 20 }}>
-      <Text type="secondary" style={{ fontSize: 12, letterSpacing: 1 }}>知学 · RAG 智慧学习</Text>
-      <Title level={3} style={{ margin: '6px 0 0' }}>登录知学</Title>
+      <Text type="secondary" style={{ fontSize: 12, letterSpacing: 1 }}>智慧学伴 · 考后分析工作台</Text>
+      <Title level={3} style={{ margin: '6px 0 0' }}>登录智慧学伴</Title>
     </div>
     {reason === 'expired' && (
       <Alert

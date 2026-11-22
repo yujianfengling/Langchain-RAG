@@ -2,8 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useReducedMotion } from 'framer-motion';
 import {
-  BarChartOutlined, CheckSquareOutlined, DatabaseOutlined, EditOutlined,
-  FormOutlined, RobotOutlined, SettingOutlined, UserOutlined,
+  BarChartOutlined, BookOutlined, SettingOutlined, TeamOutlined, UserOutlined,
 } from '@ant-design/icons';
 import AccountMenu from '../AccountMenu';
 import { useAuth } from '../../context/AuthContext';
@@ -27,17 +26,15 @@ interface ShellItem {
   search?: string;
 }
 
-const STUDENT_ITEMS: ShellItem[] = [
-  { key: '/student', label: 'AI 伴学', icon: <RobotOutlined />, pathname: '/student' },
-  { key: '/student/materials', label: '资料库', icon: <DatabaseOutlined />, pathname: '/student/materials' },
-  { key: '/student/tasks', label: '任务与复习', icon: <CheckSquareOutlined />, pathname: '/student/tasks' },
-];
-
-const TEACHER_ITEMS: ShellItem[] = [
-  { key: '/teacher?section=assistant', label: '教学助手', icon: <RobotOutlined />, pathname: '/teacher', search: 'section=assistant' },
-  { key: '/teacher?section=prep', label: '课程与备课', icon: <EditOutlined />, pathname: '/teacher', search: 'section=prep' },
-  { key: '/teacher?section=assignments', label: '作业与批改', icon: <FormOutlined />, pathname: '/teacher', search: 'section=assignments' },
-  { key: '/teacher?section=analytics', label: '学情分析', icon: <BarChartOutlined />, pathname: '/teacher', search: 'section=analytics' },
+/**
+ * 智慧学伴比赛版一级导航（按老师看完一次测验的顺序）：
+ *   班级学情 → 学生答卷（学习建议并入其右侧） → 课标与教材
+ * 旧学生端与教师备课/作业/班级管理入口已移除。
+ */
+const COMPETITION_ITEMS: ShellItem[] = [
+  { key: '/class-analytics', label: '班级学情', icon: <BarChartOutlined />, pathname: '/class-analytics' },
+  { key: '/student-answers', label: '学生答卷', icon: <TeamOutlined />, pathname: '/student-answers' },
+  { key: '/curriculum', label: '课标与教材', icon: <BookOutlined />, pathname: '/curriculum' },
 ];
 
 const ME_ITEM: ShellItem = { key: '/me', label: '我的', icon: <UserOutlined />, pathname: '/me' };
@@ -52,16 +49,11 @@ const CYL_HALF_H = 78;
 
 type Spin = 'idle' | 'next' | 'prev';
 
-function selectedKey(pathname: string, search: string): string {
-  if (pathname.startsWith('/teacher')) {
-    const section = new URLSearchParams(search).get('section') || 'assistant';
-    return '/teacher?section=' + section;
-  }
-  if (pathname.startsWith('/me')) return '/me';
-  if (pathname.startsWith('/settings')) return '/settings';
-  if (pathname.startsWith('/student/materials')) return '/student/materials';
-  if (pathname.startsWith('/student/tasks')) return '/student/tasks';
-  return '/student';
+function selectedKey(pathname: string): string {
+  // 精确匹配三个比赛页面；其余（含账号页）默认不高亮具体比赛项
+  return COMPETITION_ITEMS.find((i) => pathname === i.pathname)?.key
+    || COMPETITION_ITEMS.find((i) => pathname.startsWith(i.pathname))?.key
+    || '';
 }
 
 /** 右键只接管真正的空白，输入框、链接和正文仍用浏览器自己的菜单。 */
@@ -83,13 +75,14 @@ const AppChrome: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const reduceMotion = useReducedMotion();
-  const { user } = useAuth();
-  const isTeacher = user?.role === 'teacher' || user?.role === 'admin';
-  const roleItems = isTeacher ? TEACHER_ITEMS : STUDENT_ITEMS;
+  // 比赛版导航与角色无关：所有入口均是教师学情工作台（权限仍由后端判定）
+  useAuth();
+  const roleItems = COMPETITION_ITEMS;
   const wheelItems = useMemo(() => [...roleItems, ME_ITEM, SETTINGS_ITEM], [roleItems]);
 
   const [mode, setMode] = useState<NavMode>(readNavMode);
-  const [open, setOpen] = useState(false);
+  // 比赛版默认展开顶栏，让打开的人一眼看到「班级学情 / 学生答卷 / 课标与教材」三个入口
+  const [open, setOpen] = useState(true);
   const [pull, setPull] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [diving, setDiving] = useState(false);
@@ -100,7 +93,7 @@ const AppChrome: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState<Spin>('idle');
 
-  const currentKey = selectedKey(location.pathname, location.search);
+  const currentKey = selectedKey(location.pathname);
   const onMe = location.pathname.startsWith('/me');
   const extra = open ? pull : Math.max(0, pull - OPEN_H);
   const ready = !onMe && extra >= PROFILE_PULL && !diving;
@@ -135,7 +128,15 @@ const AppChrome: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   }, []);
 
   const go = (item: ShellItem) => {
-    if (item.search) navigate({ pathname: item.pathname, search: item.search });
+    if (COMPETITION_ITEMS.some((entry) => entry.pathname === item.pathname)) {
+      const current = new URLSearchParams(location.search);
+      const next = new URLSearchParams(item.search || '');
+      for (const key of ['source', 'quizId', 'classId', 'kpId', 'reviewBudget', 'reviewStrategy']) {
+        const value = current.get(key);
+        if (value) next.set(key, value);
+      }
+      navigate({ pathname: item.pathname, search: next.toString() });
+    } else if (item.search) navigate({ pathname: item.pathname, search: item.search });
     else navigate(item.pathname);
   };
   const goRef = useRef(go);
@@ -425,8 +426,8 @@ const AppChrome: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 <div className="app-brand-mark" style={{
                   width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
                   color: '#fff', fontWeight: 750, fontSize: 14, flexShrink: 0,
-                }}>知</div>
-                <span>知学</span>
+                }}>伴</div>
+                <span>智慧学伴</span>
               </div>
               <nav className="app-rail-items" aria-label="主导航">
                 {roleItems.map((item) => (

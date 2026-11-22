@@ -1,0 +1,53 @@
+[
+  {
+    "id": "IND-A",
+    "topicId": "T01",
+    "name": "IND-A · 能进行代数式的化简与求值",
+    "stats": [
+      {
+        "classId": "DC01",
+        "scoreRate": 0.5833,
+        "validAttempts": 3,
+        "status": "正常",
+        "topWrongQuestionIds": [
+          "ITEM-A2",
+          "ITEM-A3"
+        ]
+      },
+      {
+        "classId": "DC02",
+        "scoreRate": 0.0,
+        "validAttempts": 3,
+        "status": "真实零分",
+        "topWrongQuestionIds": [
+          "ITEM-A1",
+          "ITEM-A2",
+          "ITEM-A3"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "IND-B",
+    "topicId": "T02",
+    "name": "IND-B · 会解一元一次方程并检验",
+    "stats": [
+      {
+        "classId": "DC01",
+        "scoreRate": 0.6,
+        "validAttempts": 1,
+        "status": "记录不足",
+        "topWrongQuestionIds": [
+          "ITEM-B1"
+        ]
+      },
+      {
+        "classId": "DC02",
+        "scoreRate": null,
+        "validAttempts": 0,
+        "status": "本次未测",
+        "topWrongQuestionIds": []
+      }
+    ]
+  }
+]

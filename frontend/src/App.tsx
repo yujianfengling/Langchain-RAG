@@ -1,12 +1,11 @@
 import React, { Suspense, lazy } from 'react';
-import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import { Alert, Layout, ConfigProvider, Button, Spin } from 'antd';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { ReloadOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
-import AppChrome from './components/AppChrome';
 import LoginRequired from './components/LoginRequired';
-import SystemStatusBanner from './components/SystemStatusBanner';
+import CompetitionChrome from './competition/shared/CompetitionChrome';
 import { CourseProvider } from './context/CourseContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { themeConfig } from './theme';
@@ -14,13 +13,14 @@ import { themeConfig } from './theme';
 /**
  * 路由级懒加载（首屏只留框架与公共依赖）
  */
-const StudentLearningPage = lazy(() => import('./pages/StudentLearningPage'));
-const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
-const TasksPage = lazy(() => import('./pages/TasksPage'));
-const ProfilePage = lazy(() => import('./pages/ProfilePage'));
-const SettingsPage = lazy(() => import('./pages/SettingsPage'));
-const TeacherPage = lazy(() => import('./pages/TeacherPage'));
-const AssignmentsPage = lazy(() => import('./pages/AssignmentsPage'));
+// 智慧学伴比赛版：三个一级页面 + 账号页。
+// 比赛页面在 src/competition/；旧学生端与教师管理页文件保留不删，仅从路由卸载。
+const ClassAnalyticsPage = lazy(() => import('./competition/classAnalytics/ClassAnalyticsPage'));
+const StudentAnswersPage = lazy(() => import('./competition/studentAnswers/StudentAnswersPage'));
+const CurriculumPage = lazy(() => import('./competition/curriculum/CurriculumPage'));
+
+/** 比赛版统一落点：班级学情（老师看完一次测验的第一步）。 */
+const COMPETITION_HOME = '/class-analytics';
 
 const PageFallback: React.FC = () => (
   <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}><Spin /></div>
@@ -57,16 +57,17 @@ const Protected: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
 const AppRoutes: React.FC = () => {
   const location = useLocation();
-  const navigate = useNavigate();
   const reduceMotion = useReducedMotion();
-  const routeKey = location.pathname + location.search;
+  // 只用路径做过渡键：查询参数（学生/测验/题目/数据源）变化时由页面内部响应式更新，
+  // 否则每次改 URL 都会整页重挂载，弹层、已展开的提示与选中状态会被意外清空。
+  const routeKey = location.pathname;
 
   return (
-    <div className="app-stage">
+    <div className="comp-stage">
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={routeKey}
-          className="app-route"
+          className="comp-route"
           initial={reduceMotion ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={reduceMotion ? undefined : { opacity: 0 }}
@@ -74,21 +75,27 @@ const AppRoutes: React.FC = () => {
         >
           <Suspense fallback={<PageFallback />}>
             <Routes location={location}>
-              <Route path="/" element={<Navigate to={{ pathname: '/student', search: location.search }} replace />} />
-              <Route path="/student" element={<Protected><StudentLearningPage /></Protected>} />
-              <Route path="/student/materials" element={<Protected><MaterialsPage /></Protected>} />
-              <Route path="/student/tasks" element={<Protected><TasksPage /></Protected>} />
-              <Route path="/me" element={<Protected><ProfilePage /></Protected>} />
-              <Route path="/teacher" element={<Protected><TeacherPage onNavigate={navigate} /></Protected>} />
-              <Route path="/settings" element={<Protected><SettingsPage /></Protected>} />
-              {/* 旧网址兼容：功能都有明确的新入口，不留下找不到的功能 */}
-              <Route path="/chat" element={<Navigate to="/student" replace />} />
-              <Route path="/knowledge" element={<Navigate to="/student/materials" replace />} />
-              <Route path="/student/courses" element={<Navigate to="/student/materials" replace />} />
-              <Route path="/student/todo" element={<Navigate to="/student/tasks" replace />} />
-              <Route path="/student/assignments" element={<Protected><AssignmentsPage /></Protected>} />
-              <Route path="/learning" element={<Navigate to="/student/tasks" replace />} />
-              <Route path="*" element={<Navigate to="/student" replace />} />
+              {/* 智慧学伴比赛版：一级导航三页 + 账号页 */}
+              <Route path="/" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="/class-analytics" element={<Protected><ClassAnalyticsPage /></Protected>} />
+              <Route path="/student-answers" element={<Protected><StudentAnswersPage /></Protected>} />
+              <Route path="/curriculum" element={<Protected><CurriculumPage /></Protected>} />
+              {/* 学生端「我的主页 / 设置」不属于比赛版：一并回收，避免老师误入空白个人页。 */}
+              <Route path="/me" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="/settings" element={<Navigate to={COMPETITION_HOME} replace />} />
+              {/* 旧业务路径统一回收到比赛首页：不留下空白页、残留菜单或循环重定向。
+                  旧学生端/教师管理文件保留在仓库里，仅从比赛入口卸载。 */}
+              <Route path="/teacher" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="/student" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="/student/materials" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="/student/tasks" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="/student/assignments" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="/student/courses" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="/student/todo" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="/chat" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="/knowledge" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="/learning" element={<Navigate to={COMPETITION_HOME} replace />} />
+              <Route path="*" element={<Navigate to={COMPETITION_HOME} replace />} />
             </Routes>
           </Suspense>
         </motion.div>
@@ -112,12 +119,15 @@ const App: React.FC = () => {
           <div className="app-brand-mark" style={{
             width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: '#fff', fontWeight: 750, fontSize: 14, flexShrink: 0,
-          }}>知</div>
-          <div style={{ fontWeight: 700, color: '#182033' }}>知学</div>
-          <div className="app-brand-subtitle" style={{ fontSize: 11, color: '#737d8f' }}>RAG 智慧学习</div>
+          }}>伴</div>
+          <div style={{ fontWeight: 700, color: '#182033' }}>智慧学伴</div>
+          <div className="app-brand-subtitle" style={{ fontSize: 11, color: '#737d8f' }}>考后分析工作台</div>
         </header>
+        <div className="comp-login-intro" role="note">
+          七年级数学 · 学情诊断与个性化学习工作台 — 请先用教师账号登录，
+          查看两班学情、学生答卷与课标教材依据。
+        </div>
         <div className="login-scroll">
-          <SystemStatusBanner />
           <Suspense fallback={<PageFallback />}>
             <AppRoutes />
           </Suspense>
@@ -126,11 +136,12 @@ const App: React.FC = () => {
     );
   }
 
+  // 比赛版独立外壳：常显三页导航、明确的数据来源、可完整滚动的内容区。
+  // 不挂载大创的 SystemStatusBanner（语音服务 8100 等与本次比赛无关的降级提示）。
   return (
-    <AppChrome>
-      <SystemStatusBanner />
+    <CompetitionChrome>
       <AppRoutes />
-    </AppChrome>
+    </CompetitionChrome>
   );
 };
 

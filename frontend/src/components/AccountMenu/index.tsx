@@ -54,7 +54,7 @@ const AccountMenu: React.FC<{
     else if (key === 'preference') navigate('/settings?tab=preference');
     else if (key === 'logout') {
       await logout();
-      navigate('/student');
+      navigate('/');
     }
   };
 

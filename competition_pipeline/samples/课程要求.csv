@@ -1,0 +1,3 @@
+﻿indicator_id,theme_id,node_ids,requirement,material_ids,sources
+IND-A,T01,N01,"能进行代数式的化简与求值",M-T01,"样例教材P12"
+IND-B,T02,N01,"会解一元一次方程并检验",M-T02,"样例教材P31"

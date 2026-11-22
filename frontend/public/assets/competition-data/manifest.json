@@ -1,0 +1,14 @@
+{
+  "mode": "real",
+  "source": "sample",
+  "generated_at": "2026-11-20T06:41:51+00:00",
+  "counts": {
+    "raw_answer_rows": 12,
+    "merged_events": 9,
+    "students": 6,
+    "items": 4,
+    "nodes": 1,
+    "curriculum_indicators": 2
+  },
+  "note": "source=sample 表示数据来自自造虚构 CSV，仅验证链路；官方资料到位后重跑 pipeline + bundle。"
+}

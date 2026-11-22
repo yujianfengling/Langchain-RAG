@@ -1,0 +1,282 @@
+[
+  {
+    "id": "ANS-EV001",
+    "studentId": "S01",
+    "questionId": "ITEM-A1",
+    "quizId": "N01",
+    "steps": [
+      {
+        "step": 1,
+        "text": "3x+2y−x+5y = (3−1)x+(2+5)y = 2x+7y"
+      }
+    ],
+    "score": 4.0,
+    "fullScore": 4.0,
+    "scoringPoints": [
+      {
+        "id": "RP-1",
+        "label": "x项2分",
+        "fullScore": 2.0,
+        "earnedScore": 2.0,
+        "ok": true,
+        "evidence": "x项2分"
+      },
+      {
+        "id": "RP-2",
+        "label": "y项2分",
+        "fullScore": 2.0,
+        "earnedScore": 2.0,
+        "ok": true,
+        "evidence": "y项2分"
+      }
+    ],
+    "diagnosis": "以官方记录为准；本条来自作答记录原始字段，未使用演示样例诊断。",
+    "nextStep": "等待正式学习建议接入。",
+    "sourceRecordId": "DR0002",
+    "sourceVersion": "2",
+    "stepsUnavailable": false,
+    "rubricUnavailable": false,
+    "superseded": [
+      {
+        "record_id": "DR0001",
+        "version": "1"
+      }
+    ]
+  },
+  {
+    "id": "ANS-EV002",
+    "studentId": "S02",
+    "questionId": "ITEM-A2",
+    "quizId": "N01",
+    "steps": [
+      {
+        "step": 1,
+        "text": "2a−3b = 2×4−3×1 = 8−3 = 5"
+      }
+    ],
+    "score": 2.0,
+    "fullScore": 4.0,
+    "scoringPoints": [
+      {
+        "id": "RP-1",
+        "label": "代入a=4得2分",
+        "fullScore": 2.0,
+        "earnedScore": 2.0,
+        "ok": true,
+        "evidence": "代入a=4得2分"
+      },
+      {
+        "id": "RP-2",
+        "label": "3b计算0分",
+        "fullScore": 0.0,
+        "earnedScore": 0.0,
+        "ok": false,
+        "evidence": "3b计算0分"
+      }
+    ],
+    "diagnosis": "以官方记录为准；本条来自作答记录原始字段，未使用演示样例诊断。",
+    "nextStep": "等待正式学习建议接入。",
+    "sourceRecordId": "DR0004",
+    "sourceVersion": "2",
+    "stepsUnavailable": false,
+    "rubricUnavailable": false,
+    "superseded": [
+      {
+        "record_id": "DR0003",
+        "version": "1"
+      }
+    ]
+  },
+  {
+    "id": "ANS-EV003",
+    "studentId": "S03",
+    "questionId": "ITEM-A3",
+    "quizId": "N01",
+    "steps": [
+      {
+        "step": 1,
+        "text": "5m−2n−3m+7n = 2m+5n（n项符号有误）"
+      }
+    ],
+    "score": 1.0,
+    "fullScore": 4.0,
+    "scoringPoints": [
+      {
+        "id": "RP-1",
+        "label": "m项1分",
+        "fullScore": 1.0,
+        "earnedScore": 1.0,
+        "ok": true,
+        "evidence": "m项1分"
+      },
+      {
+        "id": "RP-2",
+        "label": "n项0分",
+        "fullScore": 0.0,
+        "earnedScore": 0.0,
+        "ok": false,
+        "evidence": "n项0分"
+      }
+    ],
+    "diagnosis": "以官方记录为准；本条来自作答记录原始字段，未使用演示样例诊断。",
+    "nextStep": "等待正式学习建议接入。",
+    "sourceRecordId": "DR0005",
+    "sourceVersion": "1",
+    "stepsUnavailable": false,
+    "rubricUnavailable": false,
+    "superseded": [
+      {
+        "record_id": "DR0006",
+        "version": "1"
+      }
+    ]
+  },
+  {
+    "id": "ANS-EV004",
+    "studentId": "S04",
+    "questionId": "ITEM-A1",
+    "quizId": "N01",
+    "steps": [
+      {
+        "step": 1,
+        "text": "空"
+      }
+    ],
+    "score": 0.0,
+    "fullScore": 4.0,
+    "scoringPoints": [
+      {
+        "id": "RP-1",
+        "label": "未作答按有效零分",
+        "fullScore": 0.0,
+        "earnedScore": 0.0,
+        "ok": false,
+        "evidence": "未作答按有效零分"
+      }
+    ],
+    "diagnosis": "以官方记录为准；本条来自作答记录原始字段，未使用演示样例诊断。",
+    "nextStep": "等待正式学习建议接入。",
+    "sourceRecordId": "DR0007",
+    "sourceVersion": "1",
+    "stepsUnavailable": false,
+    "rubricUnavailable": false,
+    "superseded": []
+  },
+  {
+    "id": "ANS-EV005",
+    "studentId": "S05",
+    "questionId": "ITEM-A2",
+    "quizId": "N01",
+    "steps": [
+      {
+        "step": 1,
+        "text": "填错：2a−3b=8−1=7"
+      }
+    ],
+    "score": 0.0,
+    "fullScore": 4.0,
+    "scoringPoints": [
+      {
+        "id": "RP-1",
+        "label": "整体错误",
+        "fullScore": 0.0,
+        "earnedScore": 0.0,
+        "ok": false,
+        "evidence": "整体错误"
+      }
+    ],
+    "diagnosis": "以官方记录为准；本条来自作答记录原始字段，未使用演示样例诊断。",
+    "nextStep": "等待正式学习建议接入。",
+    "sourceRecordId": "DR0008",
+    "sourceVersion": "1",
+    "stepsUnavailable": false,
+    "rubricUnavailable": false,
+    "superseded": []
+  },
+  {
+    "id": "ANS-EV006",
+    "studentId": "S06",
+    "questionId": "ITEM-A3",
+    "quizId": "N01",
+    "steps": [
+      {
+        "step": 1,
+        "text": "未化简"
+      }
+    ],
+    "score": 0.0,
+    "fullScore": 4.0,
+    "scoringPoints": [
+      {
+        "id": "RP-1",
+        "label": "空白",
+        "fullScore": 0.0,
+        "earnedScore": 0.0,
+        "ok": false,
+        "evidence": "空白"
+      }
+    ],
+    "diagnosis": "以官方记录为准；本条来自作答记录原始字段，未使用演示样例诊断。",
+    "nextStep": "等待正式学习建议接入。",
+    "sourceRecordId": "DR0009",
+    "sourceVersion": "1",
+    "stepsUnavailable": false,
+    "rubricUnavailable": false,
+    "superseded": []
+  },
+  {
+    "id": "ANS-EV007",
+    "studentId": "S01",
+    "questionId": "ITEM-B1",
+    "quizId": "N01",
+    "steps": [
+      {
+        "step": 1,
+        "text": "2x+3=11"
+      },
+      {
+        "step": 2,
+        "text": "2x=11−3=8"
+      },
+      {
+        "step": 3,
+        "text": "x=4（未检验）"
+      }
+    ],
+    "score": 3.0,
+    "fullScore": 5.0,
+    "scoringPoints": [
+      {
+        "id": "RP-1",
+        "label": "移项2分",
+        "fullScore": 2.0,
+        "earnedScore": 2.0,
+        "ok": true,
+        "evidence": "移项2分"
+      },
+      {
+        "id": "RP-2",
+        "label": "求解1分",
+        "fullScore": 1.0,
+        "earnedScore": 1.0,
+        "ok": true,
+        "evidence": "求解1分"
+      },
+      {
+        "id": "RP-3",
+        "label": "检验0分",
+        "fullScore": 0.0,
+        "earnedScore": 0.0,
+        "ok": false,
+        "evidence": "检验0分"
+      }
+    ],
+    "diagnosis": "以官方记录为准；本条来自作答记录原始字段，未使用演示样例诊断。",
+    "nextStep": "等待正式学习建议接入。",
+    "sourceRecordId": "DR0010",
+    "sourceVersion": "1",
+    "stepsUnavailable": false,
+    "rubricUnavailable": false,
+    "superseded": []
+  }
+]

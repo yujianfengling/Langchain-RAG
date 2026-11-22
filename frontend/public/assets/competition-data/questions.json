@@ -1,0 +1,30 @@
+[
+  {
+    "id": "ITEM-A1",
+    "kpId": "IND-A",
+    "stem": "化简：3x+2y−x+5y",
+    "fullScore": 4.0,
+    "sourceLocation": "样例教材P12例1"
+  },
+  {
+    "id": "ITEM-A2",
+    "kpId": "IND-A",
+    "stem": "求值：2a−3b，其中a=4,b=1",
+    "fullScore": 4.0,
+    "sourceLocation": "样例教材P13例2"
+  },
+  {
+    "id": "ITEM-A3",
+    "kpId": "IND-A",
+    "stem": "合并同类项：5m−2n−3m+7n",
+    "fullScore": 4.0,
+    "sourceLocation": "样例教材P12例3"
+  },
+  {
+    "id": "ITEM-B1",
+    "kpId": "IND-B",
+    "stem": "解方程：2x+3=11，写出完整步骤并检验",
+    "fullScore": 5.0,
+    "sourceLocation": "样例教材P31例4"
+  }
+]

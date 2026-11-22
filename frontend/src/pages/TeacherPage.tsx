@@ -4,8 +4,7 @@ import {
   Alert, Button, Card, Form, Input, Menu, Modal, Select, Space, Typography, message,
 } from 'antd';
 import {
-  BarChartOutlined, BookOutlined, PlusOutlined, ReloadOutlined, RobotOutlined,
-  SolutionOutlined, UserOutlined,
+  BarChartOutlined, BulbOutlined, PlusOutlined, ReloadOutlined, UserOutlined,
 } from '@ant-design/icons';
 import {
   TeacherCourse, createCourse, describeTeacherError, isForbiddenError, listTeacherCourses,
@@ -13,38 +12,42 @@ import {
 import { isLoggedIn } from '../api/auth';
 import { AUTH_CHANGED_EVENT } from '../components/UserAuth';
 import { EmptyBlock, ErrorAlert, LoadingBlock, PermissionAlert } from '../components/Teacher/common';
-import CoursePrepPanel from '../components/Teacher/CoursePrepPanel';
-import AssignmentsPanel from '../components/Teacher/AssignmentsPanel';
 import AnalyticsPanel from '../components/Teacher/AnalyticsPanel';
 import StudentsPanel from '../components/Teacher/StudentsPanel';
-import TutorAssistantPanel from '../components/Teacher/TutorAssistantPanel';
 import { useIsNarrow } from '../hooks/useIsNarrow';
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
 
-/** 教师主导航四个入口（2026-10-07 重构，默认「教学助手」） */
-type SectionKey = 'assistant' | 'prep' | 'assignments' | 'analytics';
-type ViewKey = SectionKey | 'students';
-type PrepTab = 'materials' | 'plans' | 'classes';
+/**
+ * 智慧学伴比赛版工作台（2026-11-18）
+ *
+ * 以现有教师端为基座，只保留考后分析相关三块：
+ * - analytics 班级学情：复用 AnalyticsPanel（班级选择/知识点统计/错题/样本不足）
+ * - students  学生答卷：复用 StudentsPanel + StudentAttemptsDrawer（个人答卷明细/改判）
+ * - feedback  反馈与建议：比赛专用占位视图，四块比赛功能后续从这里接入
+ *
+ * 原「教学助手/课程与备课/作业与批改/班级管理」入口已从比赛导航卸下；
+ * 对应组件文件保留，不删（大创原有模块，后续可能复用）。
+ * 权限由后端判定，这里不构成安全边界。
+ */
+type SectionKey = 'analytics' | 'students' | 'feedback';
+type ViewKey = SectionKey;
 
-const SECTION_KEYS: SectionKey[] = ['assistant', 'prep', 'assignments', 'analytics'];
+const SECTION_KEYS: SectionKey[] = ['analytics', 'students', 'feedback'];
+const DEFAULT_SECTION: SectionKey = 'analytics';
 
-/** 旧入口兼容：materials/plans/classes 归到「课程与备课」，students 归到「学情分析」 */
+/** 旧入口兼容：旧教师 section 统一回收到比赛学情工作台 */
 const LEGACY_SECTION: Record<string, SectionKey> = {
-  assistant: 'assistant',
-  prep: 'prep',
-  materials: 'prep',
-  plans: 'prep',
-  classes: 'prep',
-  assignments: 'assignments',
+  assistant: 'analytics',
+  prep: 'analytics',
+  materials: 'analytics',
+  plans: 'analytics',
+  classes: 'analytics',
+  assignments: 'analytics',
   analytics: 'analytics',
-  students: 'analytics',
-};
-const LEGACY_PREP_TAB: Record<string, PrepTab> = {
-  materials: 'materials',
-  plans: 'plans',
-  classes: 'classes',
+  students: 'students',
+  feedback: 'feedback',
 };
 
 export interface TeacherPageProps {
@@ -63,16 +66,13 @@ export interface TeacherPageProps {
 const TeacherPage: React.FC<TeacherPageProps> = () => {
   const isNarrow = useIsNarrow();
   const [searchParams, setSearchParams] = useSearchParams();
-  const rawSection = searchParams.get('section') || 'assistant';
-  const rawView = searchParams.get('view');
+  const rawSection = searchParams.get('section') || DEFAULT_SECTION;
 
   const navSelected: SectionKey = (SECTION_KEYS as string[]).includes(rawSection)
     ? (rawSection as SectionKey)
-    : (LEGACY_SECTION[rawSection] || 'assistant');
+    : (LEGACY_SECTION[rawSection] || DEFAULT_SECTION);
 
   const [view, setView] = useState<ViewKey>(navSelected);
-  const [prepTab, setPrepTab] = useState<PrepTab>(LEGACY_PREP_TAB[rawSection] || 'materials');
-  const [prepList, setPrepList] = useState(!LEGACY_PREP_TAB[rawSection]);
   const [loggedIn, setLoggedIn] = useState(isLoggedIn());
 
   const [courses, setCourses] = useState<TeacherCourse[]>([]);
@@ -97,15 +97,8 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
 
   // URL 查询参数 → 视图（含旧入口兼容；浏览器前进/后退也同步）
   useEffect(() => {
-    if (rawView === 'students') { setView('students'); return; }
     setView(navSelected);
-    if (LEGACY_PREP_TAB[rawSection]) {
-      setPrepTab(LEGACY_PREP_TAB[rawSection]);
-      setPrepList(false);
-    }
-    // navSelected 由 rawSection 派生，依赖 rawSection / rawView 即可
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawSection, rawView]);
+  }, [navSelected]);
 
   const loadCourses = useCallback(async () => {
     if (!isLoggedIn()) {
@@ -148,8 +141,7 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
       await loadCourses();
       if (created?.id) {
         setCourseId(created.id);
-        setPrepList(false);
-        selectSection('prep');
+        selectSection('analytics');
       }
     } catch (e) {
       message.error(describeTeacherError(e, '创建课程失败').message);
@@ -164,99 +156,53 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
   );
 
   const MENU_ITEMS = [
-    { key: 'assistant', icon: <RobotOutlined />, label: '教学助手' },
-    { key: 'prep', icon: <BookOutlined />, label: '课程与备课' },
-    { key: 'assignments', icon: <SolutionOutlined />, label: '作业与批改' },
-    { key: 'analytics', icon: <BarChartOutlined />, label: '学情分析' },
+    { key: 'analytics', icon: <BarChartOutlined />, label: '班级学情' },
+    { key: 'students', icon: <UserOutlined />, label: '学生答卷' },
+    { key: 'feedback', icon: <BulbOutlined />, label: '反馈与建议' },
   ];
 
   const selectSection = useCallback((key: ViewKey) => {
     setView(key);
-    if (key === 'students') setSearchParams({ section: 'analytics', view: 'students' }, { replace: true });
-    else setSearchParams({ section: key }, { replace: true });
+    setSearchParams({ section: key }, { replace: true });
   }, [setSearchParams]);
 
   const handleMenuClick = ({ key }: { key: string }) => {
-    const k = key as SectionKey;
-    if (k === 'prep') setPrepList(true);
-    selectSection(k);
+    selectSection(key as SectionKey);
   };
 
-  const goPrep = useCallback(() => {
-    setPrepTab('materials');
-    setPrepList(true);
-    selectSection('prep');
-  }, [selectSection]);
-
-  const goCourseWorkspace = useCallback(() => {
-    setPrepList(false);
-    selectSection('prep');
-  }, [selectSection]);
-
   const renderPanel = () => {
-    if (view === 'assistant') {
+    // 旧教师工作台已被 competition/ 三页面取代（不再挂路由）。
+    // 本文件保留仅为复用其中的学情/作答装配参考；feedback 占位视图已并入学生答卷页。
+    if (view === 'feedback') {
       return (
-        <TutorAssistantPanel
-          subjectId={currentCourse?.subject_id}
-          courseId={currentCourse?.id}
-          courseTitle={currentCourse?.title}
-          onGoPrep={goPrep}
-        />
+        <Card size="small">
+          <EmptyBlock description="反馈与学习建议已并入比赛版「学生答卷」页（src/competition/）。" />
+        </Card>
       );
     }
 
-    if (view === 'prep') {
-      return (
-        <CoursePrepPanel
-          courses={courses}
-          loading={coursesLoading}
-          courseId={prepList ? undefined : courseId}
-          courseTitle={currentCourse?.title}
-          initialTab={prepTab}
-          onSelectCourse={(id) => { setCourseId(id); setPrepList(false); }}
-          onBackToList={() => setPrepList(true)}
-          onCreateCourse={() => setCreateOpen(true)}
-          onChanged={loadCourses}
-        />
-      );
-    }
-
+    // 班级学情 / 学生答卷需要一门课程作为数据范围（沿用现状：读原作答/班级/题库）
     if (!courseId) {
       return (
         <Card size="small">
-          <EmptyBlock description="该功能需要先有一门课程。请先在「课程与备课」里选择或创建课程。">
-            <Button type="primary" icon={<BookOutlined />} onClick={goPrep}>去课程与备课</Button>
+          <EmptyBlock description="还没有课程。请先在右上角选择一门课程，或新建一门课程后再查看学情与答卷。">
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>新建课程</Button>
           </EmptyBlock>
         </Card>
       );
     }
 
     switch (view) {
-      case 'assignments':
-        return (
-          <AssignmentsPanel
-            key={'assignments-' + courseId}
-            courseId={courseId}
-            courseTitle={currentCourse?.title}
-            subjectId={currentCourse?.subject_id}
-            onBack={goCourseWorkspace}
-            onOpenMaterials={() => { setPrepTab('materials'); setPrepList(false); selectSection('prep'); }}
-          />
-        );
       case 'analytics':
         return (
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Button icon={<UserOutlined />} onClick={() => selectSection('students')}>学生明细</Button>
-            <AnalyticsPanel
-              key={'analytics-' + courseId}
-              courseId={courseId}
-              courseTitle={currentCourse?.title}
-              onBack={goCourseWorkspace}
-            />
-          </Space>
+          <AnalyticsPanel
+            key={'analytics-' + courseId}
+            courseId={courseId}
+            courseTitle={currentCourse?.title}
+          />
         );
       case 'students':
-        return <StudentsPanel onBack={() => selectSection('analytics')} />;
+        return <StudentsPanel />;
       default:
         return null;
     }
@@ -278,18 +224,18 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
     );
   }
 
-  const sectionTitle = view === 'students' ? '学生明细' : {
-    assistant: '教学助手',
-    prep: '课程与备课',
-    assignments: '作业与批改',
-    analytics: '学情分析',
-  }[view];
-  const sectionSubtitle = view === 'students' ? '查看课程中的学生与学习表现。' : {
-    assistant: '围绕当前课程整理思路、准备教学内容。',
-    prep: '维护课程资料、教案与班级，让教学内容有序沉淀。',
-    assignments: '布置作业、跟进提交并完成批改。',
-    analytics: '基于真实学习数据发现共性问题和个体需求。',
-  }[view];
+  const TITLE_MAP: Record<ViewKey, string> = {
+    analytics: '班级学情',
+    students: '学生答卷',
+    feedback: '反馈与练习建议',
+  };
+  const SUBTITLE_MAP: Record<ViewKey, string> = {
+    analytics: '班级整体作答与知识点掌握情况，定位共性问题。',
+    students: '逐个学生的逐题作答明细，查看答案、判定与改判记录。',
+    feedback: '比赛专用视图：学生反馈与个性化练习建议，四块功能从这里接入。',
+  };
+  const sectionTitle = TITLE_MAP[view];
+  const sectionSubtitle = SUBTITLE_MAP[view];
 
   return (
     <div className="app-page app-page-wide">
@@ -305,7 +251,7 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
             style={{ width: 220 }}
             placeholder={courses.length ? '选择课程' : '还没有课程'}
             value={courseId}
-            onChange={(v) => { setCourseId(v); setPrepList(false); }}
+            onChange={(v) => setCourseId(v)}
             loading={coursesLoading}
             options={courses.map((c) => ({ value: c.id, label: c.title }))}
             notFoundContent="还没有课程，请先新建"
@@ -327,13 +273,13 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
       )}
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        {/* 主导航在全局侧边栏（教学助手 / 课程与备课 / 作业与批改 / 学情分析），
-            这里不再重复第二套导航；窄屏时全局导航在抽屉里，所以保留顶部横向切换。 */}
+        {/* 比赛版主导航在全局顶栏（班级学情 / 学生答卷 / 反馈与建议），
+            这里仅在窄屏保留横向切换。 */}
         <div style={{ flex: 1, minWidth: isNarrow ? 0 : 480 }}>
           {isNarrow && (
             <Menu
               mode="horizontal"
-              selectedKeys={[view === 'students' ? 'analytics' : view]}
+              selectedKeys={[view]}
               items={MENU_ITEMS}
               onClick={handleMenuClick}
               style={{ marginBottom: 12 }}

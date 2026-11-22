@@ -1,0 +1,32 @@
+[
+  {
+    "id": "S01",
+    "name": "样例学生甲",
+    "classId": "DC01"
+  },
+  {
+    "id": "S02",
+    "name": "样例学生乙",
+    "classId": "DC01"
+  },
+  {
+    "id": "S03",
+    "name": "样例学生丙",
+    "classId": "DC01"
+  },
+  {
+    "id": "S04",
+    "name": "样例学生丁",
+    "classId": "DC02"
+  },
+  {
+    "id": "S05",
+    "name": "样例学生戊",
+    "classId": "DC02"
+  },
+  {
+    "id": "S06",
+    "name": "样例学生己",
+    "classId": "DC02"
+  }
+]
