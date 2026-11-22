@@ -4,16 +4,17 @@ import {
 } from 'antd';
 import {
   BookOutlined, BulbOutlined, EditOutlined, HistoryOutlined, RightOutlined,
-  RollbackOutlined, SafetyCertificateOutlined,
+  RollbackOutlined,
 } from '@ant-design/icons';
 import { getSuggestion, getFeedback } from './data';
 import { getStudentName } from '../shared/ids';
 import { getBundle, isRealData } from '../dataSource';
-import { getAnswer } from '../studentAnswers/data';
-import LivePretest from '../livePretest/LivePretest';
+import { getAnswer, listStudentEvents } from '../studentAnswers/data';
+import { questionLabel } from '../shared/teacherContext';
+import LivePretest, { pickQuestion } from '../livePretest/LivePretest';
 import type { TextbookSource } from '../shared/types';
 import type {
-  Candidate, Diagnosis as OfficialDiagnosis, ExecutableTask,
+  Candidate, Diagnosis as OfficialDiagnosis, ExecutableTask, RealAnswer,
 } from '../dataSource';
 
 const { Text, Paragraph, Title } = Typography;
@@ -39,6 +40,7 @@ function readChoice(key: string): TeacherChoice | undefined {
     if (!c || (c.mode !== 'replace' && c.mode !== 'pretest')) return undefined;
     if (!c.task || typeof c.task.material_id !== 'string' || !Array.isArray(c.task.steps)) return undefined;
     if (typeof c.task.type !== 'string' || typeof c.task.reason !== 'string' || typeof c.task.review !== 'string') return undefined;
+    if (!c.task.steps.every((step) => typeof step.order === 'number' && typeof step.title === 'string' && typeof step.when_stuck === 'string')) return undefined;
     return c;
   } catch { return undefined; }
 }
@@ -128,20 +130,15 @@ function buildPretestTask(d: OfficialDiagnosis): ExecutableTask {
 
 const fmtRate = (r: number | null): string => (r == null ? '—' : `${(r * 100).toFixed(1)}%`);
 
-/**
- * 学习建议（学生答卷详情右侧）
- * 演示模式：教材例题 + 练习题 + 反馈预览（原样保留，回归 22/22）。
- * 官方模式：证据化诊断（严格节点范围）→ 下一步安排（整套任务 + 教师调整 v2）
- *          → 考点补充观察 → 完整证据与复查（Collapse）→ 证据回放（自造隔离副本）
- *          → 学生预览 / 反馈预览。
- */
+/** 答卷末尾的教师建议；诊断与回放按需展开，教师调整整套任务且不改官方数据。 */
 const LearningAdvice: React.FC<{
   kpId: string;
   studentId: string;
   questionId?: string;
   nodeId?: string;
+  recordId?: string;
   onOpenTextbook: (source: TextbookSource) => void;
-}> = ({ kpId, studentId, questionId, nodeId, onOpenTextbook }) => {
+}> = ({ kpId, studentId, questionId, nodeId, recordId, onOpenTextbook }) => {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [hintIndex, setHintIndex] = useState(0);
   const [adjustOpen, setAdjustOpen] = useState(false);
@@ -154,12 +151,15 @@ const LearningAdvice: React.FC<{
   const bundle = getBundle();
   const ind = (kpId.match(/-(T\d+I\d+)$/) || [])[1] || kpId;
   const official: OfficialDiagnosis | undefined = useMemo(() => {
-    if (!isRealData() || !bundle?.diagnoses) return undefined;
-    // 严格节点范围：nodeId 给定时禁止跨节点回退；未给定时可取该生该指标任一节点。
+    if (!isRealData() || !bundle?.diagnoses || !nodeId) return undefined;
     return bundle.diagnoses.diagnoses.find((d) => d.student_id === studentId && d.indicator_id === ind
-      && (!nodeId || d.node_id === nodeId));
+      && d.node_id === nodeId);
   }, [bundle, studentId, ind, nodeId]);
 
+  const scopedAnswer = questionId && nodeId ? getAnswer(studentId, questionId, nodeId, recordId) as RealAnswer | undefined : undefined;
+  const scopedEvent = questionId && nodeId ? listStudentEvents(studentId, nodeId).find((e) =>
+    e.questionId === questionId && (!recordId || e.recordId === recordId)) : undefined;
+  const missingRequestedRecord = !!recordId && !scopedAnswer && !scopedEvent;
   const choiceKey = `${studentId}|${nodeId || ''}|${ind}`;
   const choice = readChoice(choiceKey);
   void version; // 触发重读
@@ -168,28 +168,41 @@ const LearningAdvice: React.FC<{
   const feedback = getFeedback(studentId);
 
   // 指定测验下无诊断：如实说明，绝不拿另一场测验的诊断补上
-  if (!official && isRealData() && bundle?.diagnoses && nodeId) {
+  if (isRealData() && (!official || missingRequestedRecord)) {
     return (
-      <Card size="small" title={<Space><SafetyCertificateOutlined />这题失分在哪</Space>}>
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该测验下暂无该考点的诊断" />
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          该生在本测验（{nodeId}）没有 {ind} 的可诊断作答；系统不会跨测验取其他节点的诊断替代。
-        </Text>
-      </Card>
+      <section aria-label="建议">
+        <h3 className="teacher-section-heading">建议</h3>
+        <Paragraph>请先核对本测验的作答记录。</Paragraph>
+        <details><summary style={{ cursor: 'pointer' }}>建议依据</summary>
+          <Paragraph className="teacher-muted" style={{ marginTop: 8 }}>
+            {missingRequestedRecord ? '指定记录与当前学生、测验、题目不匹配，不沿用其他记录的建议。'
+              : '当前学生在本测验没有可用的该考点诊断，不使用其他学生或测验的诊断替代。'}
+          </Paragraph>
+        </details>
+      </section>
     );
   }
 
   if (official) {
     const resource = official.resource;
     const effective: ExecutableTask = choice?.task ?? resource;
-    // 本题判断随当前作答事件/记录号走，不与考点汇总混用
-    const currentAnswer = questionId ? getAnswer(studentId, questionId, nodeId || official.node_id) : undefined;
-    const currentFinding = official.question_findings.find((f) => f.item_id === questionId);
-    const currentCase = currentAnswer
-      ? (currentAnswer.score >= currentAnswer.fullScore ? '满分' : '部分得分')
-      : (currentFinding ? '部分得分' : null);
+    // 记录不匹配或状态无效时，不把考点结论当成本题得分/失分。
+    const currentEvent = scopedEvent;
+    const available = bundle?.quizzes.find((q) => q.id === official.node_id)?.availableItems;
+    const inScope = !available?.length || !!questionId && available.includes(questionId);
+    const currentAnswer = scopedAnswer && inScope && !currentEvent?.quarantined && !currentEvent?.outOfScope
+      && (!currentEvent || currentEvent.status === '有效得分' || currentEvent.status === '已评分')
+      && scopedAnswer.score >= 0 && scopedAnswer.score <= scopedAnswer.fullScore ? scopedAnswer : undefined;
+    const currentFinding = currentAnswer ? official.question_findings.find((f) => f.item_id === questionId
+      && f.record_id === currentAnswer.sourceRecordId && f.kind === '过程与填答不一致') : undefined;
+    const currentCase = currentAnswer ? (currentAnswer.score >= currentAnswer.fullScore ? '满分' : '部分得分') : null;
     const candidates = official.candidates.filter((c) => c.node_available);
     const textbook = diagnosisTextbook(official);
+    // 调整为指定材料后，在线入口也必须打开该材料，而非悄悄执行原推荐题。
+    const liveDiagnosis: OfficialDiagnosis = choice ? { ...official,
+      candidates: official.candidates.filter((c) => c.material_id === effective.material_id),
+    } : official;
+    const onlineQuestion = pickQuestion(ind, liveDiagnosis);
     const hints = effective.steps || [];
     const currentHint = hints[hintIndex];
     // 案例册：case_name 是赛题要求的「展示案例类型」，case 是「考点覆盖判定」，两者口径不同。
@@ -206,13 +219,20 @@ const LearningAdvice: React.FC<{
     };
 
     /** 主建议一句话：老师看完就知道现在做什么（依据在下方按需展开） */
-    const mainAction = currentFinding
-      ? '先让学生核对过程末行和填答栏'
-      : currentCase === '满分'
-        ? (official.case === '记录不足' ? '本题已满分；先补测同类题，收集证据'
-          : official.case === '表现较好' ? '本题已满分；可布置一道迁移变式'
-          : '本题已满分；按覆盖情况安排下一步')
-        : `针对失分的评分点，完成 ${effective.material_id}`;
+    const mainAction = choice
+      ? `请按调整后的「${effective.type}」安排 ${questionLabel(effective.material_id)}${onlineQuestion ? '。' : '（由教师安排）。'}`
+      : currentFinding
+        ? '请学生核对最后一步和填答栏。'
+        : currentCase === '满分'
+          ? (onlineQuestion ? '本题已满分，可做一道同类题观察迁移。' : '本题已满分，可由教师自行选拓展题。')
+          : currentAnswer
+            ? (onlineQuestion ? '请学生订正失分步骤，再做一道同类题。' : '请学生核对失分步骤，再由教师安排订正。')
+            : '请先核对本题作答状态，再安排补充观察。';
+    const factIsCurrentDifference = (text: string) => !!currentFinding && (
+      text === currentFinding.fact || text.includes(currentFinding.fact)
+      || [currentFinding.last_expr, currentFinding.final_answer].some((expr) => !!expr && text.includes(expr))
+      || text.includes(currentFinding.record_id) && /末行|填答|不一致/.test(text)
+    );
 
     /** 手动输入材料编号：用 bundle.questions / curriculumMap 校验存在性 */
     const confirmManual = () => {
@@ -266,37 +286,22 @@ const LearningAdvice: React.FC<{
 
     return (
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        {/* 主卡：一条可执行的建议（先说做什么，依据按需展开） */}
-        <Card size="small" title={<Space><BulbOutlined />下一步</Space>}
-              extra={<Space size={6}>
-                {caseEntry && <span className="comp-case-label">展示案例：{caseEntry.case_name}</span>}
-                <Button size="small" type="text" icon={<EditOutlined />} onClick={() => setAdjustOpen((v) => !v)}>
-                  教师调整
-                </Button>
-              </Space>}>
-          <div className="comp-advice-main">{mainAction}</div>
-          <div className="comp-advice-ctx">
-            本题 {currentAnswer ? `${currentAnswer.score}/${currentAnswer.fullScore}` : '无已评分作答'}
-            ；这个考点目前 {official.coverage.event_count} 条有效作答
-            {official.coverage.event_count < official.coverage.min_evidence
-              ? `（不足 ${official.coverage.min_evidence} 条，先补证据）` : ''}
+        <section aria-label="建议">
+          <h3 className="teacher-section-heading">建议</h3>
+          <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
+            <Text strong>{mainAction}</Text>
+            <Button size="small" type="link" icon={<EditOutlined />} aria-expanded={adjustOpen}
+              onClick={() => setAdjustOpen((v) => !v)}>调整建议</Button>
           </div>
-          {currentCase === '满分' && (
-            <div style={{ marginTop: 8 }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                本题满分、无失分评分点；考点覆盖结论独立于本题，不因本题满分而改变。
-              </Text>
-            </div>
-          )}
-          <Space wrap style={{ marginTop: 10 }}>
-            {textbook && (
-              <Button icon={<BookOutlined />} onClick={() => onOpenTextbook(textbook)}>
-                打开教材 PDF 第 {textbook.page} 页
-              </Button>
-            )}
-            <Button type="primary" onClick={() => setPretestSignal((v) => v + 1)}>现场补测</Button>
+          <Space wrap style={{ marginTop: 12 }}>
+            {onlineQuestion && <Button type="primary" onClick={() => setPretestSignal((v) => v + 1)}>做一道同类题</Button>}
+            {textbook && <Button icon={<BookOutlined />} onClick={() => onOpenTextbook(textbook)}>看教材</Button>}
+            <Button onClick={() => setFeedbackOpen((v) => !v)} aria-expanded={feedbackOpen}>预览学生看到的内容</Button>
           </Space>
-        </Card>
+          {choice && !onlineQuestion && <div className="teacher-muted" style={{ marginTop: 8, fontSize: 12 }}>
+            当前材料不支持在线作答，请按任务步骤由教师安排；下方预览已同步整套调整。
+          </div>}
+        </section>
 
         {/* 教师调整（整套任务更换，前后对照，可恢复；不动官方数据） */}
         {adjustOpen && (
@@ -374,23 +379,20 @@ const LearningAdvice: React.FC<{
           )}
 
         {/* 现场补测（整式化简两步观察；单独保存，不写回官方） */}
-        <LivePretest
-          key={`${studentId}|${official.node_id}|${ind}`}
+        {onlineQuestion && <LivePretest
+          key={`${studentId}|${official.node_id}|${ind}|${questionId}|${recordId || ''}|${choice?.mode || 'system'}|${effective.material_id}`}
           studentId={studentId}
           nodeId={official.node_id}
           indicatorId={ind}
-          diagnosis={official}
+          diagnosis={liveDiagnosis}
           openSignal={pretestSignal}
           hideCard
-        />
+        />}
 
-        {/* 完整建议与依据：两层结论、任务详情、证据链（默认收起，forceRender 保证 DOM 存在） */}
-        <Collapse size="small" items={[{
-          key: 'full',
-          label: '完整建议与依据',
-          forceRender: true,
-          children: (
-            <div>
+        {/* 诊断与隔离回放只在教师主动展开后阅读。 */}
+        <details>
+          <summary style={{ cursor: 'pointer' }}>建议依据</summary>
+            <div style={{ marginTop: 12 }}>
               <Space wrap>
                 {currentCase && (
                   <Tag color={currentCase === '满分' ? 'green' : 'orange'}>
@@ -419,7 +421,7 @@ const LearningAdvice: React.FC<{
                   {caseEntry.selection_reason ? ` 入选理由：${caseEntry.selection_reason}` : ''}
                 </Paragraph>
               )}
-              {caseFocus && (
+              {caseFocus && !currentFinding && (
                 <Paragraph style={{ fontSize: 12, marginTop: 6, marginBottom: 0 }}>
                   <Text strong style={{ fontSize: 12 }}>讲解重点（案例册）：</Text>{caseFocus}
                 </Paragraph>
@@ -458,21 +460,12 @@ const LearningAdvice: React.FC<{
               </div>
 
               <Title level={5} style={{ fontSize: 13, marginTop: 12 }}>观察到的事实</Title>
-              <List size="small" dataSource={official.facts}
+              <List size="small" dataSource={official.facts.filter((fact) => !factIsCurrentDifference(fact))}
                     renderItem={(t) => <List.Item><Text style={{ fontSize: 12 }}>{t}</Text></List.Item>} />
               <div className="comp-review-note" style={{ marginTop: 8 }}>
                 <Text strong style={{ fontSize: 12 }}>推测（需核实）</Text>
                 <div style={{ fontSize: 12.5, marginTop: 2 }}>{official.inference}</div>
               </div>
-              {official.special.filter((s) => !questionId || s.item_id === questionId).map((s, i) => (
-                <Alert key={`${s.record_id}-${i}`} type="warning" showIcon style={{ marginTop: 8 }}
-                  message={`关键差异 · ${s.record_id}`}
-                  description={<>
-                    <div>{s.fact}</div>
-                    <div style={{ marginTop: 4 }}><Text type="secondary">{s.inference}</Text></div>
-                    <div style={{ marginTop: 4 }}><Text strong>{s.action}</Text></div>
-                  </>} />
-              ))}
               <div className="comp-review-note" style={{ marginTop: 8 }}>
                 <Text strong style={{ fontSize: 12 }}>复查条件</Text>
                 <div style={{ fontSize: 12.5, marginTop: 2 }}>{official.observe}</div>
@@ -539,37 +532,26 @@ const LearningAdvice: React.FC<{
                 </Card>
               )}
             </div>
-          ),
-        }]} />
-
-        {/* 学生预览 + 反馈预览（内容用 effective task） */}
-        <Card size="small" title={<Space><RightOutlined />学生预览</Space>}>
-          <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              学生只会看到本人（{getStudentName(studentId)}）的任务与提示。
-            </Text>
-            <Button type="primary" onClick={() => setFeedbackOpen(true)}>预览学生反馈</Button>
-          </Space>
-        </Card>
+        </details>
 
         {feedbackOpen && (
-          <Card size="small" title={`反馈预览 · ${getStudentName(studentId)}`}
-                extra={<Button size="small" onClick={() => setFeedbackOpen(false)}>收起</Button>}>
-            <Alert type="success" showIcon message={`本次在 ${official.indicator_id} 观察到 ${official.event_count} 条有效记录`} />
-            <div style={{ marginTop: 10 }}>
-              <Title level={5} style={{ fontSize: 13 }}>要做的题</Title>
-              <List size="small" dataSource={effective.steps.map((s) => `${s.order}. ${s.title}`)}
-                    renderItem={(t) => <List.Item>{t}</List.Item>} />
-            </div>
-            <Collapse size="small" style={{ marginTop: 8 }} items={[{
-              key: 'hint', label: '需要时展开一条提示',
-              children: currentHint ? currentHint.when_stuck : '已无更多提示',
-            }]} />
-            <div style={{ marginTop: 10 }}>
-              <Title level={5} style={{ fontSize: 13 }}>复查条件</Title>
-              <Text style={{ fontSize: 12 }}>{effective.review}</Text>
-            </div>
-          </Card>
+          <section className="teacher-section" aria-label="学生内容预览" style={{ marginTop: 8 }}>
+            <h3 className="teacher-section-heading">学生内容预览 · {getStudentName(studentId)}</h3>
+            <Paragraph className="teacher-muted">{choice ? '教师调整后的任务' : '系统任务'} · 仅展示当前学生的内容</Paragraph>
+            <Paragraph><Text strong>{effective.type} · {effective.material_id}</Text></Paragraph>
+            <Paragraph>{effective.reason}</Paragraph>
+            {!onlineQuestion && <Paragraph className="teacher-muted">本任务由教师安排，当前材料不提供在线作答入口。</Paragraph>}
+            <ol style={{ paddingLeft: 24 }}>
+              {effective.steps.map((step) => <li key={step.order} value={step.order} style={{ marginBottom: 12 }}>
+                <div>{step.title}</div>
+                <details style={{ marginTop: 4 }}><summary style={{ cursor: 'pointer' }}>需要提示时展开</summary>
+                  <Text className="teacher-muted">{step.when_stuck}</Text>
+                </details>
+              </li>)}
+            </ol>
+            <Text strong>复查条件</Text>
+            <Paragraph style={{ marginTop: 4, marginBottom: 0 }}>{effective.review}</Paragraph>
+          </section>
         )}
       </Space>
     );
@@ -617,7 +599,7 @@ const LearningAdvice: React.FC<{
           只显示「{getStudentName(studentId)}」本人本次的反馈、要做的题与提示。
         </Text>
         <div style={{ marginTop: 10 }}>
-          <Button type="primary" onClick={() => setFeedbackOpen(true)}>预览学生反馈</Button>
+          <Button type="primary" onClick={() => setFeedbackOpen(true)}>预览学生看到的内容</Button>
         </div>
       </Card>
       {feedbackOpen && (

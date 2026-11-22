@@ -48,9 +48,9 @@ const pct = (r: number | null | undefined) => `${Math.round((r ?? 0) * 100)}%`;
 const BarCompare: React.FC<{
   rows: BarRow[];
   lectureClassId: string;
-  compareClassId: string;
+  compareClassId?: string;
   lectureClassName: string;
-  compareClassName: string;
+  compareClassName?: string;
   scope: 'all' | 'common';
   selected: { kpId: string; classId: string } | null;
   onSelect: (indicatorId: string, classId: string) => void;
@@ -62,11 +62,13 @@ const BarCompare: React.FC<{
     if (!c) return { label: '无数据', rate: null, muted: true, title: '该班此考点无统计数据' };
     if (scope === 'common') {
       if (!c.common) return { label: '无法同题比较', rate: null, muted: true, title: '两班没有共同的有效作答题目' };
+      if (c.status === '记录不足' || c.status === '本次未测') return { label: c.status, rate: null, muted: true, title: `${c.status}；共同题 ${c.common.events} 条有效作答，不按零分处理` };
       return { label: pct(c.common.rate), rate: c.common.rate, muted: false, title: `共同题得分率 ${pct(c.common.rate)} = ${c.common.score}÷${c.common.full}（${c.common.events} 条有效 · ${c.common.items} 道共同题）` };
     }
     if (c.status === '本次未测') return { label: '本次未测', rate: null, muted: true, title: '本次测验未考此考点' };
     if (c.status === '记录不足') return { label: `记录不足（${c.validAttempts} 条）`, rate: null, muted: true, title: `仅 ${c.validAttempts} 条有效作答，不足以判定` };
     if (c.status === '真实零分') return { label: '0%', rate: 0, muted: false, title: `${c.validAttempts} 条有效作答，得分率确为 0` };
+    if (c.rate == null) return { label: '无有效得分率', rate: null, muted: true, title: '没有可用于得分率计算的有效记录' };
     return { label: pct(c.rate), rate: c.rate, muted: false, title: `得分率 ${pct(c.rate)} = ${c.score}÷${c.maxScore}（${c.validAttempts} 条有效作答）` };
   };
 
@@ -74,7 +76,7 @@ const BarCompare: React.FC<{
     <div className="bc-wrap" data-testid="bar-compare">
       <div className="bc-legend">
         <span className="bc-legend-item"><i className="bc-swatch is-lecture" />{lectureClassName}（讲评班）</span>
-        <span className="bc-legend-item"><i className="bc-swatch is-compare" />{compareClassName}（对照班）</span>
+        {compareClassId && <span className="bc-legend-item"><i className="bc-swatch is-compare" />{compareClassName}（对照班）</span>}
         {scope === 'common' && <span className="bc-legend-note">口径：仅比较两班共同题目</span>}
       </div>
       {rows.map((row) => {
@@ -91,7 +93,7 @@ const BarCompare: React.FC<{
             </Tooltip>
             <div className="bc-bars">
               {[{ id: lectureClassId, name: lectureClassName, kind: 'lecture' },
-                { id: compareClassId, name: compareClassName, kind: 'compare' }].map(({ id, name, kind }) => {
+                ...(compareClassId ? [{ id: compareClassId, name: compareClassName || compareClassId, kind: 'compare' }] : [])].map(({ id, name, kind }) => {
                 const v = valueOf(row, id);
                 const isSel = selected?.kpId === row.id && selected?.classId === id;
                 return (
@@ -105,7 +107,7 @@ const BarCompare: React.FC<{
                     <span className="bc-track">
                       {!v.muted && v.rate != null && (
                         <span className={'bc-fill' + (kind === 'lecture' ? ' is-lecture' : ' is-compare')}
-                              style={{ width: `${Math.max(v.rate * 100, v.rate != null && v.rate > 0 ? 1.5 : 0)}%` }} />
+                              style={{ width: `${Math.max(0, Math.min(100, v.rate * 100))}%` }} />
                       )}
                     </span>
                     <span className="bc-val">{v.label}</span>

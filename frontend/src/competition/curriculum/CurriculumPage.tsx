@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  Alert, Button, Card, Col, Empty, List, Menu, Row, Space, Tag, Typography,
+  Alert, Button, Card, Col, Empty, Input, List, Menu, Row, Space, Tag, Typography,
 } from 'antd';
 import { BookOutlined, FileTextOutlined, LinkOutlined } from '@ant-design/icons';
 import { TOPICS } from '../shared/ids';
@@ -22,7 +22,7 @@ function sourceFromPage(cur: CurriculumIndicator, idx: number): TextbookSource {
     docId: p.material_id,
     docName: `赛方教材切片 ${p.material_id}`,
     page: p.pdf_page,
-    exampleTitle: `${cur.requirement}；${p.anchor}（${p.verified ? '已核对具体页' : '待定位'}）`,
+    exampleTitle: p.anchor,
     pdfUrl: `/api/competition/official-pdf/${p.material_id}`,
     printedPage: p.printed,
     verified: p.verified,
@@ -34,121 +34,127 @@ function sourceFromPage(cur: CurriculumIndicator, idx: number): TextbookSource {
   };
 }
 
-/** 官方数据视图：标准条目 → 对应能力 → 原始出处，一条线连起来。 */
+/** 只格式化真实印刷页，不根据文件页推算教材页码。 */
+function printedPageTitle(printed?: string): string {
+  if (!printed?.trim()) return '教材页码待定位';
+  const match = printed.trim().match(/^(上册|下册)?\s*(\d+)$/);
+  return match ? `教材${match[1] || ''}第${match[2]}页` : `教材${printed}`;
+}
+
 const OfficialView: React.FC<{ focusQuestionId: string | null }> = ({ focusQuestionId }) => {
   const bundle = getBundle();
   const indicators = bundle?.curriculumMap?.indicators ?? [];
   const [textbook, setTextbook] = useState<TextbookSource | null>(null);
-
-  const focusedIndicator = useMemo(() => {
-    if (!focusQuestionId) return null;
-    const q = bundle?.questions.find((x) => x.id === focusQuestionId);
-    return q?.kpId || null;
-  }, [focusQuestionId, bundle]);
-
-  const [indicatorId, setIndicatorId] = useState<string>(() => focusedIndicator || indicators[0]?.indicator_id || '');
+  const [search, setSearch] = useState('');
+  const focusedIndicator = indicators.find((x) =>
+    x.indicator_id === bundle?.questions.find((q) => q.id === focusQuestionId)?.kpId);
+  const [indicatorId, setIndicatorId] = useState(() => focusedIndicator?.indicator_id || indicators[0]?.indicator_id || '');
   const current = indicators.find((x) => x.indicator_id === indicatorId) || indicators[0];
-  const [openTheme, setOpenTheme] = useState<string>(current?.theme_id || TOPICS[0]?.id || '');
+  const [openThemes, setOpenThemes] = useState<string[]>(() => [current?.theme_id || '']);
 
-  if (!current) {
-    return <Empty description="官方课标映射未就绪" />;
-  }
+  const focusedId = focusedIndicator?.indicator_id;
+  const focusedTheme = focusedIndicator?.theme_id;
+  React.useEffect(() => {
+    if (!focusedId || !focusedTheme) return;
+    setIndicatorId(focusedId);
+    setOpenThemes([focusedTheme]);
+    setSearch('');
+  }, [focusQuestionId, focusedId, focusedTheme]);
 
-  const questions = current.questions || [];
-  const cards = current.learning_cards || [];
+  const keyword = search.trim().toLocaleLowerCase();
+  const matching = indicators.filter((x) =>
+    [x.requirement, x.theme_name, ...x.textbook_pages.map((p) => p.anchor)]
+      .join(' ').toLocaleLowerCase().includes(keyword));
+  const themeIds = Array.from(new Set(matching.map((x) => x.theme_id)));
+
+  if (!current) return <Empty description="教材资料尚未就绪" />;
 
   return (
     <>
       {focusQuestionId && (
-        <Alert type="info" showIcon style={{ marginBottom: 12 }}
-          message="从答卷题目反查出处"
-          description={`已定位到题目 ${focusQuestionId} 所属考点（${focusedIndicator || '按首个指标展示'}），下方可打开对应教材原页。`} />
+        <p className="teacher-muted">
+          {focusedIndicator ? '已定位当前题的教材考点，关闭教材后仍停留在当前位置。' : '当前题暂未关联教材考点，可按章节查找。'}
+        </p>
       )}
-      <Row gutter={16}>
-        <Col xs={24} md={7}>
-          <Card size="small" title="三主题 · 九指标" style={{ marginBottom: 12 }}>
-            <Menu
-              mode="inline"
-              selectedKeys={[current.indicator_id]}
-              openKeys={[`theme-${openTheme}`]}
-              onOpenChange={(keys) => {
-                const last = keys[keys.length - 1];
-                if (last?.startsWith('theme-')) setOpenTheme(last.replace('theme-', ''));
-              }}
-              onClick={({ key }) => { if (!key.startsWith('theme-')) setIndicatorId(key); }}
-              items={TOPICS.map((t) => ({
-                key: `theme-${t.id}`, label: t.name,
-                children: indicators.filter((x) => x.theme_id === t.id).map((x) => ({
-                  key: x.indicator_id,
-                  label: `${x.indicator_id} · ${x.requirement}`,
-                })),
-              }))}
-            />
-          </Card>
+      <Row gutter={[24, 16]} className="teacher-resource-layout">
+        <Col xs={24} md={8} lg={7}>
+          <nav className="teacher-resource-nav" aria-label="章节与考点">
+            <h2 className="teacher-section-heading">章节与考点</h2>
+            <Input.Search allowClear placeholder="搜索考点" aria-label="搜索考点"
+              value={search} onChange={(event) => setSearch(event.target.value)} style={{ marginBottom: 12 }} />
+            {matching.length === 0 ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有匹配的考点" /> : (
+              <Menu mode="inline" selectedKeys={[current.indicator_id]}
+                openKeys={(keyword ? themeIds : openThemes).map((id) => `theme-${id}`)}
+                onOpenChange={(keys) => setOpenThemes(keys.map((key) => key.replace('theme-', '')))}
+                onClick={({ key }) => setIndicatorId(key)}
+                items={themeIds.map((id) => ({
+                  key: `theme-${id}`,
+                  label: indicators.find((x) => x.theme_id === id)?.theme_name
+                    || bundle?.topics.find((t) => t.id === id)?.name || '教材章节',
+                  children: matching.filter((x) => x.theme_id === id).map((x) => ({
+                    key: x.indicator_id,
+                    label: <span style={{ whiteSpace: 'normal', lineHeight: 1.6 }}>{x.requirement}</span>,
+                    style: { height: 'auto', minHeight: 40, paddingTop: 8, paddingBottom: 8 },
+                  })),
+                }))} />
+            )}
+          </nav>
         </Col>
-
-        <Col xs={24} md={17}>
-          <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            <Card size="small" title={<Space><BookOutlined />{current.indicator_id} · {current.requirement}</Space>}>
-              <Title level={5} style={{ fontSize: 14, marginBottom: 6 }}>课标要求</Title>
-              <Paragraph style={{ marginBottom: 8 }}>
-                {current.theme_name}：{current.theme_goal || current.requirement}
-              </Paragraph>
-              <Space wrap size={[8, 8]}>
-                <Tag color="blue">课标整理编号 {current.standard.code || '待定位'}</Tag>
-                <Tag>课标文件页 {current.standard.pdf_page ?? '—'}</Tag>
-                <Tag>课标正文页 {current.standard.printed ?? '—'}</Tag>
-                <Tag color={current.locating_status === '已核对具体页' ? 'green' : 'default'}>
-                  教材定位：{current.locating_status}
-                </Tag>
-              </Space>
-              <div style={{ marginTop: 10 }}>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {current.standard.note || '课标来源按官方课程要求表登记'}；教材范围 {current.textbook_range}。
-                </Text>
-              </div>
-            </Card>
-
-            <Card size="small" title="教材具体页（PDF 文件页 / 教材印刷页分开）">
-              {current.textbook_pages.length === 0 ? (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description={`该指标尚未定位到具体教材页，仅有主题范围 ${current.textbook_range}`} />
-              ) : (
-                <List
-                  dataSource={current.textbook_pages}
-                  renderItem={(p, i) => (
-                    <List.Item key={`${p.material_id}-${p.pdf_page}`}
-                      actions={[<Button key="open" size="small" type="link" icon={<FileTextOutlined />}
-                        onClick={() => setTextbook(sourceFromPage(current, i))}>打开教材原页</Button>]}>
-                      <List.Item.Meta
-                        title={`${p.material_id} · PDF 第 ${p.pdf_page} 页 · 教材印刷页 ${p.printed}`}
-                        description={<span>{p.anchor} {p.verified ? '（已逐页核对）' : '（未逐页核对）'}</span>}
-                      />
-                    </List.Item>
-                  )}
-                />
-              )}
-            </Card>
-
-            <Card size="small" title="关联题目与学习材料">
-              {questions.length === 0 && cards.length === 0 ? (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description="官方题目表未把材料关联到该指标（不是数据丢失）" />
-              ) : (
-                <List
-                  dataSource={[...questions, ...cards]}
-                  renderItem={(m, i) => (
-                    <List.Item key={`${m.material_id}-${i}`}>
-                      <Space wrap>
-                        <Tag>{m.material_id}</Tag>
-                        <Text>{m.name}</Text>
-                      </Space>
-                    </List.Item>
-                  )}
-                />
-              )}
-            </Card>
-          </Space>
+        <Col xs={24} md={16} lg={17} style={{ minWidth: 0 }}>
+          <section className="teacher-section" aria-label="教材条目">
+            <h2 className="teacher-section-heading">{current.requirement}</h2>
+            {current.textbook_pages.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={`暂无已定位教材页${current.textbook_range ? `，教材范围：${current.textbook_range}` : ''}`} />
+            ) : (
+              <List dataSource={current.textbook_pages} renderItem={(p, i) => (
+                <List.Item key={`${p.material_id}-${p.pdf_page}`} style={{ display: 'block', padding: '20px 0' }}>
+                  <Title level={4} style={{ margin: '0 0 8px' }}>{printedPageTitle(p.printed)}</Title>
+                  <Paragraph>{p.anchor}</Paragraph>
+                  <div className="teacher-actions">
+                    <Button type="primary" icon={<FileTextOutlined />}
+                      disabled={!Number.isInteger(p.pdf_page) || p.pdf_page < 1}
+                      onClick={() => setTextbook(sourceFromPage(current, i))}>打开教材</Button>
+                  </div>
+                  <details style={{ marginTop: 12 }}>
+                    <summary style={{ cursor: 'pointer' }}>出处详情</summary>
+                    <div className="teacher-muted" style={{ marginTop: 8, lineHeight: 1.9 }}>
+                      <div>教材编号：{p.material_id} · 考点编号：{current.indicator_id}</div>
+                      <div>PDF 文件页：{p.pdf_page > 0 ? p.pdf_page : '待定位'} · 实际印刷页：{p.printed || '待定位'}</div>
+                      <div>核对状态：{p.verified ? '已核对具体页' : '未核对具体页'}</div>
+                    </div>
+                  </details>
+                </List.Item>
+              )} />
+            )}
+          </section>
+          <details key={current.indicator_id} className="teacher-section">
+            <summary className="teacher-section-heading" style={{ cursor: 'pointer' }}>课程要求</summary>
+            <Paragraph style={{ marginTop: 12 }}>{current.theme_goal || current.requirement}</Paragraph>
+            <div className="teacher-muted" style={{ lineHeight: 1.9 }}>
+              <div>课标编号：{current.standard.code || '待定位'}</div>
+              <div>课标文件页：{current.standard.pdf_page ?? '待定位'} · 正文页：{current.standard.printed ?? '待定位'}</div>
+              <div>课标核对状态：{current.standard.verified === true ? '已核对' : current.standard.verified === false ? '未核对' : '未提供'}</div>
+              <div>教材定位：{current.locating_status || '待定位'}</div>
+              {current.standard.note && <div>{current.standard.note}</div>}
+            </div>
+          </details>
+          <section className="teacher-section">
+            <h2 className="teacher-section-heading">相关题目与学习材料</h2>
+            <List locale={{ emptyText: '暂无关联材料' }}
+              dataSource={[...(current.questions || []), ...(current.learning_cards || [])]}
+              renderItem={(m, i) => (
+                <List.Item key={`${m.material_id}-${i}`}>
+                  <div>
+                    <Text>{m.name}</Text>
+                    <details style={{ marginTop: 8 }}>
+                      <summary style={{ cursor: 'pointer' }}>出处详情</summary>
+                      <Text type="secondary">材料编号：{m.material_id}</Text>
+                    </details>
+                  </div>
+                </List.Item>
+              )} />
+          </section>
         </Col>
       </Row>
       <TextbookDrawer open={!!textbook} source={textbook} onClose={() => setTextbook(null)} />
@@ -158,6 +164,7 @@ const OfficialView: React.FC<{ focusQuestionId: string | null }> = ({ focusQuest
 
 /** 演示样例视图：保留原结构供回归使用，但不再自称「官方」，空状态文案改为中性。 */
 const DemoView: React.FC<{ focusQuestionId: string | null }> = ({ focusQuestionId }) => {
+  const [search, setSearch] = useState('');
   const [topicId, setTopicId] = useState(TOPICS[0].id);
   const kps = useMemo(() => listKnowledgePoints(topicId), [topicId]);
   const [kpId, setKpId] = useState<string>(kps[0]?.id || '');
@@ -190,13 +197,20 @@ const DemoView: React.FC<{ focusQuestionId: string | null }> = ({ focusQuestionI
       )}
       <Row gutter={16}>
         <Col xs={24} md={7}>
-          <Card size="small" title="赛题主题与考点" style={{ marginBottom: 12 }}>
-            <Menu mode="inline" selectedKeys={[kpId]} onClick={({ key }) => setKpId(key)}
+          <Card size="small" title="章节与考点" style={{ marginBottom: 12 }}>
+            <Input.Search allowClear placeholder="搜索考点" aria-label="搜索演示考点"
+              value={search} onChange={(event) => setSearch(event.target.value)} style={{ marginBottom: 12 }} />
+            <Menu mode="inline" selectedKeys={[currentKp?.id || '']} onClick={({ key }) => {
+              const topic = TOPICS.find((t) => listKnowledgePoints(t.id).some((k) => k.id === key));
+              if (topic) setTopicId(topic.id);
+              setKpId(key);
+            }}
               items={TOPICS.map((t) => ({
                 key: `topic-${t.id}`, label: t.name,
-                children: listKnowledgePoints(t.id).map((k) => ({ key: k.id, label: k.name })),
-              }))}
-              openKeys={[`topic-${topicId}`]}
+                children: listKnowledgePoints(t.id).filter((k) => k.name.includes(search.trim()))
+                  .map((k) => ({ key: k.id, label: k.name })),
+              })).filter((t) => t.children.length > 0)}
+              openKeys={search.trim() ? TOPICS.map((t) => `topic-${t.id}`) : [`topic-${topicId}`]}
               onOpenChange={(keys) => {
                 const last = keys[keys.length - 1];
                 if (last?.startsWith('topic-')) openTopic(last.replace('topic-', ''));
@@ -207,11 +221,13 @@ const DemoView: React.FC<{ focusQuestionId: string | null }> = ({ focusQuestionI
           {!currentKp ? <Card><Empty description="请选择考点" /></Card> : (
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <Card size="small" title={<Space><BookOutlined />考点：{currentKp.name}</Space>}>
-                <Title level={5} style={{ fontSize: 14 }}>课标要求</Title>
-                {curriculum ? (
-                  <><Tag color="blue">{curriculum.level}</Tag>
-                    <Paragraph style={{ marginTop: 8 }}>{curriculum.requirement}</Paragraph></>
-                ) : <Text type="secondary">该考点暂无课标要求</Text>}
+                <details key={currentKp.id}>
+                  <summary style={{ cursor: 'pointer' }}>课程要求</summary>
+                  {curriculum ? (
+                    <><Text type="secondary">{curriculum.level}</Text>
+                      <Paragraph style={{ marginTop: 8 }}>{curriculum.requirement}</Paragraph></>
+                  ) : <Text type="secondary">该考点暂无课程要求</Text>}
+                </details>
               </Card>
               <Card size="small" title="对应题目与教材出处">
                 {questions.length === 0 ? (
@@ -258,17 +274,9 @@ const CurriculumPage: React.FC = () => {
 
   return (
     <div className="competition-page">
-      <div className="competition-header">
-        <div>
-          <div className="competition-eyebrow">考后分析 · 第三步</div>
-          <Title level={2} className="competition-title">课标与教材</Title>
-          <Text type="secondary">
-            {official
-              ? '三主题九指标：标准条目 → 对应能力 → 原始出处；可从答卷题目反查，关闭抽屉回到原位置。'
-              : '按赛题主题看考点、课标要求与教材出处（当前为演示样例，非赛题数据）。'}
-          </Text>
-        </div>
-        <Tag color={official ? 'green' : 'gold'}>{source}</Tag>
+      <div className="teacher-page-header">
+        <Title level={2} className="competition-title">教材资料</Title>
+        <Text className="teacher-muted">{official ? '正式教材' : '演示样例 · 非正式教材'}</Text>
       </div>
       {official
         ? <OfficialView focusQuestionId={focusQuestionId} />

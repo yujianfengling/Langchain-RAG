@@ -1,0 +1,75 @@
+.student-profile {
+  min-width: 0;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.student-profile .student-profile-intro { margin: 6px 0 18px; }
+.student-profile .student-profile-intro h2 { margin: 0; font-size: 21px; }
+.student-profile p { margin: 6px 0 10px; }
+.student-profile h4 { margin: 0 0 8px; font-size: 16px; }
+.student-profile .student-profile-empty { padding: 12px 0; color: #687582; }
+.student-profile .student-profile-indicators,
+.student-profile .student-profile-list,
+.student-profile .student-profile-records { list-style: none; margin: 0; padding: 0; }
+
+.student-profile .student-profile-table-heading,
+.student-profile .student-profile-indicator,
+.student-profile .student-profile-history-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(250px, 1.65fr) minmax(170px, 1fr);
+  align-items: start;
+  gap: 12px 22px;
+}
+
+.student-profile .student-profile-table-heading { color: #687582; font-size: 13px; padding: 8px 0; border-bottom: 1px solid #e2e6e9; }
+.student-profile .student-profile-indicator,
+.student-profile .student-profile-list > li { padding: 16px 0; border-bottom: 1px solid #e9edf0; }
+.student-profile .student-profile-indicator > div,
+.student-profile .student-profile-history-row > div { min-width: 0; }
+.student-profile .student-profile-list > li:last-child { border-bottom: 0; }
+.student-profile .student-profile-status { display: inline-block; margin-bottom: 2px; color: #334b60; }
+.student-profile .student-profile-status-counts { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.student-profile .student-profile-focused { box-shadow: inset 3px 0 #71899b; padding-left: 12px; }
+.student-profile .student-profile-findings { margin-top: 22px; }
+.student-profile .student-profile-comparison { padding-top: 14px; border-top: 1px solid #e9edf0; }
+
+.student-profile .ant-btn { max-width: 100%; height: auto; min-height: 30px; white-space: normal; text-align: left; }
+.student-profile .student-profile-link { padding: 2px 0; min-height: 28px; justify-content: flex-start; }
+.student-profile .student-profile-indicator-title { font-weight: 600; font-size: 15px; }
+.student-profile .ant-btn > span { min-width: 0; overflow-wrap: anywhere; }
+.student-profile .ant-btn:focus-visible,
+.student-profile summary:focus-visible { outline: 2px solid #285c85; outline-offset: 3px; }
+.student-profile details { margin-top: 8px; }
+.student-profile summary { cursor: pointer; color: #526273; padding: 4px 0; }
+.student-profile .student-profile-records { font-size: 13px; }
+.student-profile .student-profile-records > li { padding: 6px 0; border-bottom: 1px dotted #e2e6e9; }
+.student-profile .student-profile-records > li > span { display: block; }
+.student-profile .student-profile-records > li:last-child { border-bottom: 0; }
+.student-profile .student-profile-expressions { display: flex; flex-wrap: wrap; gap: 10px 36px; margin: 8px 0; white-space: pre-wrap; }
+.student-profile .teacher-actions { margin-top: 10px; }
+
+.student-profile .student-profile-practice-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 20px; }
+.student-profile .student-profile-practice-heading time { font-size: 13px; color: #687582; }
+.student-profile .student-profile-practice-inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 24px; margin: 10px 0; }
+.student-profile .student-profile-practice-inputs dt { color: #687582; font-size: 13px; }
+.student-profile .student-profile-practice-inputs dd { margin: 3px 0 0; white-space: pre-wrap; }
+
+@media (max-width: 900px) {
+  .student-profile .student-profile-table-heading { display: none; }
+  .student-profile .student-profile-indicator,
+  .student-profile .student-profile-history-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); }
+  .student-profile .student-profile-indicator > div:last-child,
+  .student-profile .student-profile-history-row > div:last-child { grid-column: 1 / -1; }
+}
+
+@media (max-width: 540px) {
+  .student-profile .teacher-section { padding: 16px 12px; }
+  .student-profile .student-profile-indicator,
+  .student-profile .student-profile-history-row,
+  .student-profile .student-profile-practice-inputs { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .student-profile .student-profile-intro h2 { font-size: 19px; }
+  .student-profile .teacher-section-heading h3 { font-size: 18px; }
+  .student-profile .student-profile-records > li { padding: 8px 0; }
+  .student-profile .student-profile-link { min-height: 34px; }
+}

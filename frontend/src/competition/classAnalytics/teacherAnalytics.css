@@ -1,0 +1,63 @@
+.teacher-analysis-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+}
+.teacher-analysis-grid > .teacher-section {
+  padding: 18px;
+  margin-bottom: 0;
+  min-width: 0;
+}
+.teacher-analysis-grid .teacher-section-heading { gap: 8px; margin-bottom: 10px; }
+.teacher-analysis-grid .teacher-plan-scope,
+.teacher-kp-panel .teacher-kp-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.teacher-kp-panel .teacher-kp-controls label { display: flex; align-items: center; gap: 6px; }
+.teacher-analysis-grid [data-testid="review-plan"] > .teacher-list-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 4px 10px;
+  padding: 12px 0;
+  align-items: start;
+}
+.teacher-analysis-grid [data-testid="review-plan"] > .teacher-list-row > div > div {
+  font-size: 14px;
+  line-height: 1.55;
+  margin-bottom: 4px;
+}
+.teacher-analysis-grid [data-testid="review-plan"] > .teacher-list-row > .ant-btn {
+  grid-column: 2;
+  justify-self: start;
+  padding: 0;
+  height: auto;
+  margin-left: 0;
+  white-space: normal;
+  text-align: left;
+}
+.teacher-analysis-grid .teacher-muted { line-height: 1.55; }
+.teacher-kp-panel .bc-legend { flex-wrap: wrap; gap: 4px 12px; }
+.teacher-kp-panel .bc-row { gap: 6px; padding: 4px 0; }
+.teacher-kp-panel .bc-kpname { flex: 0 0 105px; padding: 3px 0; overflow-wrap: anywhere; }
+.teacher-kp-panel .bc-kpname:focus-visible { outline: 2px solid var(--comp-accent, #285c85); outline-offset: 2px; }
+.teacher-kp-panel .bc-bar { min-height: 23px; gap: 6px; }
+.teacher-kp-panel .bc-track { height: 14px; }
+.teacher-kp-panel .bc-val { min-width: 48px; max-width: 110px; font-size: 12px; }
+.teacher-kp-panel .teacher-kp-footnote { margin: 10px 0; }
+.teacher-kp-panel .ant-table-cell { overflow-wrap: anywhere; }
+.teacher-kp-panel .ant-table-cell .ant-btn { white-space: normal; height: auto; padding: 2px; }
+.teacher-kp-panel .ant-collapse-content-box { padding: 8px; }
+@media (max-width: 960px) {
+  .teacher-analysis-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+}
+@media (max-width: 480px) {
+  .teacher-analysis-grid > .teacher-section { padding: 14px; }
+  .teacher-kp-panel .bc-kpname { flex-basis: 90px; font-size: 12px; }
+  .teacher-kp-panel .bc-val { max-width: 90px; }
+  .teacher-kp-panel .teacher-kp-controls .ant-radio-group { display: flex; flex-wrap: wrap; gap: 4px 0; }
+}

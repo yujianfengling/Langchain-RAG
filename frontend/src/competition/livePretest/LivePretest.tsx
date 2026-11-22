@@ -1,15 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Alert, Button, Card, Col, Collapse, Input, List, Modal, Row, Space, Tag, Typography } from 'antd';
-import { DeleteOutlined, ExperimentOutlined, RedoOutlined, RollbackOutlined } from '@ant-design/icons';
+import { Alert, Button, Input, Modal } from 'antd';
 import { getBundle } from '../dataSource';
 import type { Diagnosis as OfficialDiagnosis } from '../dataSource';
+import { getStudentName } from '../shared/ids';
+import { analysisReturnPath, questionLabel } from '../shared/teacherContext';
 import { diffTerms, parseLinear, sameLinear, stripPrefix } from './expr';
 import type { Linear } from './expr';
 
-const { Text, Paragraph, Title } = Typography;
-
-/** 现场作答证据：单独保存、单独标注，不写回官方答卷/评分/统计 */
 export interface LiveEvidenceEntry {
   at: string;
   studentId: string; nodeId: string; indicatorId: string; questionId: string;
@@ -30,19 +28,16 @@ export function readLiveEvidence(s: string, n: string, i: string): LiveEvidenceE
 }
 
 function writeLiveEvidence(s: string, n: string, i: string, entries: LiveEvidenceEntry[]): void {
-  try {
-    const all = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') as Record<string, LiveEvidenceEntry[]>;
-    if (entries.length) all[scopeKey(s, n, i)] = entries; else delete all[scopeKey(s, n, i)];
-    localStorage.setItem(STORE_KEY, JSON.stringify(all));
-  } catch { /* 隐私模式不持久化 */ }
+  const all = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') as Record<string, LiveEvidenceEntry[]>;
+  if (entries.length) all[scopeKey(s, n, i)] = entries; else delete all[scopeKey(s, n, i)];
+  localStorage.setItem(STORE_KEY, JSON.stringify(all));
 }
 
 interface SuitQuestion {
   id: string; stem: string; mid: Linear; final: Linear; done: boolean;
 }
 
-/** 选题规则：同指标、整式化简、含括号、参考解析可解析为两个不同规范形；优先截至本测验未做过 */
-function pickQuestion(ind: string, d: OfficialDiagnosis): SuitQuestion | undefined {
+export function pickQuestion(ind: string, d: OfficialDiagnosis): SuitQuestion | undefined {
   const qs = (getBundle()?.questions || [])
     .filter((q) => q.kpId === ind && (q.materialType || '题目') === '题目'
       && q.stem.includes('化简') && q.stem.includes('(') && q.referenceAnalysis
@@ -55,7 +50,7 @@ function pickQuestion(ind: string, d: OfficialDiagnosis): SuitQuestion | undefin
     const finRaw = stripPrefix(segs[segs.length - 1]);
     const mid = parseLinear(midRaw);
     const fin = parseLinear(finRaw);
-    // 参考的两步必须等价（化简正确）但写法不同（展开式 vs 合并式），才值得两步观察
+    // 参考过程必须等价但写法不同，才能观察展开和合并两个阶段。
     if (!mid || !fin || !sameLinear(mid, fin)) continue;
     if (midRaw.replace(/\s/g, '') === finRaw.replace(/\s/g, '')) continue;
     const done = d.candidates.find((c) => c.material_id === q.id)?.done ?? false;
@@ -130,40 +125,24 @@ export function judgeInputs(midRaw: string, finalRaw: string, q: SuitQuestion, c
 }
 
 const KIND_LABEL: Record<LiveEvidenceEntry['kind'], string> = {
-  mid_wrong: '中间变形出错', combine_wrong: '合并同类项有差异',
-  transcription_wrong: '过程正确·最终填答不一致',
-  final_wrong: '中间正确·填答有误', manual: '待人工核对', correct: '两步正确',
+  mid_wrong: '去括号需要复查', combine_wrong: '合并同类项需要复查',
+  transcription_wrong: '合并正确，请核对最终填答', final_wrong: '请补充合并后的过程末行',
+  manual: '请核对输入的写法', correct: '本次输入核对通过',
 };
 
-/** 判定第一句：老师最该记住的话（技术判定保留在下一行，便于核对口径）。 */
-const VERDICT_HEADLINE: Record<LiveEvidenceEntry['kind'], string> = {
-  mid_wrong: '去括号这一步需要复查',
-  combine_wrong: '合并这一步需要复查',
-  transcription_wrong: '合并正确，核对最终填答',
-  final_wrong: '最终填答需要核对',
-  manual: '超出自动判断范围，待人工核对',
-  correct: '现场作答全部等价',
-};
-
-/**
- * 现场补测（首版聚焦整式化简）：评委现场输入两步答案，程序判定并给出
- * 提示 / 新增证据 / 后续安排；作答单独标注保存，可清除重来。
- */
 const LivePretest: React.FC<{
   studentId: string; nodeId: string; indicatorId: string;
   diagnosis: OfficialDiagnosis;
-  /** 主建议卡的「现场补测」按钮递增此值即可直接打开弹层 */
   openSignal?: number;
-  /** 只渲染弹层不渲染外层卡（答卷页右栏已有一个补测入口时用，避免双入口） */
   hideCard?: boolean;
   onEvidence?: (entries: LiveEvidenceEntry[]) => void;
 }> = ({ studentId, nodeId, indicatorId, diagnosis, openSignal, hideCard, onEvidence }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  // 老师正在查看的答卷题（可能与系统选出的补测题不同，弹层需写明两者的关系）
-  const viewedQuestionId = searchParams.get('questionId') || undefined;
+  const viewedQuestionId = searchParams.get('questionId');
   const [open, setOpen] = useState(false);
-  // 主建议卡递增 openSignal 时直接打开（跳过初始渲染的那次）
+  const [ready, setReady] = useState(false);
+  const resultRef = useRef<HTMLElement | null>(null);
   const lastSignal = useRef(openSignal ?? 0);
   useEffect(() => {
     if (openSignal != null && openSignal !== lastSignal.current) {
@@ -171,8 +150,6 @@ const LivePretest: React.FC<{
       setOpen(true);
     }
   }, [openSignal]);
-  // 导航「现场补测」入口带 pretest=1 时直接打开；同一路由内只改查询参数时
-  // 组件不会重挂载，所以必须监听参数本身，用完立即从 URL 移除避免反复打开。
   const pretestRequested = searchParams.get('pretest') === '1';
   useEffect(() => {
     if (!pretestRequested) return;
@@ -185,182 +162,122 @@ const LivePretest: React.FC<{
   const [finalInput, setFinalInput] = useState('');
   const [combinedInput, setCombinedInput] = useState('');
   const [result, setResult] = useState<ReturnType<typeof judgeInputs> | null>(null);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (result) resultRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [result, saved]);
+  const [saveError, setSaveError] = useState('');
   const [version, setVersion] = useState(0);
   void version;
-
   const question = useMemo(() => pickQuestion(indicatorId, diagnosis), [indicatorId, diagnosis]);
   const entries = readLiveEvidence(studentId, nodeId, indicatorId);
-  // 本次提交已写入 entries，取倒数第二条作为「上一次」，只对照真实改动的那一栏。
-  const prevSubmitted = result && entries.length > 1 ? entries[entries.length - 2] : null;
-  const changed = prevSubmitted ? {
-    mid: prevSubmitted.intermediate !== midInput,
-    combined: (prevSubmitted.combined || '') !== combinedInput,
-    final: prevSubmitted.final !== finalInput,
-  } : { mid: false, combined: false, final: false };
-  const changedLabels = [
-    changed.mid ? '① 去括号后的式子' : '',
-    changed.combined ? '② 合并后过程末行' : '',
-    changed.final ? '③ 最终填答' : '',
-  ].filter(Boolean);
+  const previous = result && saved && entries.length > 1 ? entries[entries.length - 2] : null;
+  const changed = previous ? [
+    previous.intermediate !== midInput ? '去括号后' : '',
+    (previous.combined || '') !== combinedInput ? '合并后' : '',
+    previous.final !== finalInput ? '最终答案' : '',
+  ].filter(Boolean) : [];
 
-  if (!question) {
-    // 无合适补测题也要给可见反馈：导航「现场补测」打开弹层说明，不再无声无息
-    return (
-      <>
-        <Card size="small" title={<Space><ExperimentOutlined />现场补测</Space>}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            该考点暂无适合两步观察的整式化简题（需参考解析可解析为「去括号后」与「最终结果」两个不同式子），待教师补充资源。
-          </Text>
-          <div style={{ marginTop: 8 }}>
-            <Button size="small" onClick={() => setOpen(true)}>查看说明</Button>
-          </div>
-        </Card>
-        <Modal open={open} onCancel={() => setOpen(false)} footer={null} width={640}
-               title={<Space><ExperimentOutlined />现场补测<Tag>{studentId} / {nodeId} / {indicatorId}</Tag></Space>}>
-          <Alert type="info" showIcon
-                 message="该考点暂无适合两步观察的补测题"
-                 description={`${studentId} 在 ${nodeId}/${indicatorId} 下没有可自动判定的两步观察题。可换一名学生或其他考点；若有纸质题目，可先线下补测再人工记录。`} />
-        </Modal>
-      </>
-    );
-  }
+  if (!question) return hideCard && !open ? null : (
+    <Modal open={open} title="同类题练习" onCancel={() => setOpen(false)} footer={<Button onClick={() => setOpen(false)}>返回答卷</Button>}>
+      <p>当前考点暂无可在线核对的同类题，请教师自行选题。</p>
+    </Modal>
+  );
 
   const submit = () => {
-    const r = judgeInputs(midInput, finalInput, question, combinedInput);
-    setResult(r);
+    const nextResult = judgeInputs(midInput, finalInput, question, combinedInput);
+    setResult(nextResult);
+    setSaveError('');
+    setSaved(false);
     const entry: LiveEvidenceEntry = {
       at: new Date().toISOString(), studentId, nodeId, indicatorId, questionId: question.id,
-      id: `LIVE-${crypto.randomUUID()}`,
-      intermediate: midInput, combined: combinedInput, final: finalInput,
-      kind: r.kind, supports: r.supports, followUp: r.follow,
+      id: `LIVE-${crypto.randomUUID()}`, intermediate: midInput, combined: combinedInput, final: finalInput,
+      kind: nextResult.kind, supports: nextResult.supports, followUp: nextResult.follow,
     };
-    const next = [...entries, entry];
-    writeLiveEvidence(studentId, nodeId, indicatorId, next);
-    onEvidence?.(next);
-    setVersion((v) => v + 1);
+    try {
+      const next = [...entries, entry];
+      writeLiveEvidence(studentId, nodeId, indicatorId, next);
+      onEvidence?.(next);
+      setSaved(true);
+      setVersion((v) => v + 1);
+    } catch {
+      setSaveError('本次结果尚未保存。请允许浏览器本地存储后重新查看结果，再带回讲评方案。');
+    }
   };
 
-  return (
-    <>
-      {!hideCard && (
-        <Card size="small" title={<Space><ExperimentOutlined />现场补测</Space>}>
-          <Paragraph style={{ fontSize: 12, marginBottom: 8 }}>
-            {question.id} · 同指标 {indicatorId}；官方成绩不变。
-          </Paragraph>
-          <Button type="primary" size="small" onClick={() => setOpen(true)}>开始补测</Button>
-        </Card>
-      )}
-      <Modal open={open} onCancel={() => setOpen(false)} width={1100} centered footer={null}
-        title={<Space><ExperimentOutlined />现场补测<Tag>{studentId} / {nodeId} / {question.id}</Tag><Tag color="cyan">现场输入·演示证据，非官方成绩</Tag></Space>}
-        styles={{ body: { maxHeight: 'calc(100dvh - 160px)', overflowY: 'auto' } }}>
-        <div data-testid="live-pretest" data-question-id={question.id}>
-          <Title level={4} style={{ margin: '8px 0' }}>{question.id} · {question.stem}</Title>
-          {viewedQuestionId && viewedQuestionId !== question.id && (
-            <Alert type="info" showIcon style={{ marginBottom: 10 }}
-                   message={`你正在查看的答卷题是 ${viewedQuestionId}；系统实际选出的补测题是 ${question.id}`}
-                   description="本次补测的作答与记录都记在补测题名下。两题同考点，观察结论适用于同一能力点。" />
-          )}
-          <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 14 }}>
-            为什么选这道题：{question.done ? '复练观察' : '截至本测验未做'}；未填合并末行时，暂不能区分合并错误与填答不一致。只判等价，不猜原因。
-            现场记录请以本弹层的题号（{question.id}）为准——系统按考点自动选了最适合两步观察的题。
-          </Paragraph>
-          <Row gutter={20}>
-            <Col xs={24} md={12}>
-              <Card size="small" title="输入过程与最终填答" style={{ background: '#f8fafc' }}>
-                <Space direction="vertical" size={14} style={{ width: '100%' }}>
-                  <div style={{ width: '100%' }} className={changed.mid ? 'comp-field-changed' : ''}>
-                    <Text>① 去括号后的式子</Text>
-                    <span className="comp-field-help">学生去括号后、未合并的式子。</span>
-                    <Input aria-label="去括号后的式子" placeholder="填写不含括号的展开式" maxLength={512}
-                      value={midInput} onChange={(e) => { setMidInput(e.target.value); setResult(null); }} />
-                  </div>
-                  <div style={{ width: '100%' }} className={changed.combined ? 'comp-field-changed' : ''}>
-                    <Text>② 合并后过程末行（选填）</Text>
-                    <span className="comp-field-help">过程最后一行的合并结果；可留空。</span>
-                    <Input aria-label="合并后过程末行" placeholder="记录合并同类项后得到的式子" maxLength={512}
-                      value={combinedInput} onChange={(e) => { setCombinedInput(e.target.value); setResult(null); }} />
-                  </div>
-                  <div style={{ width: '100%' }} className={changed.final ? 'comp-field-changed' : ''}>
-                    <Text>③ 最终填答</Text>
-                    <span className="comp-field-help">学生最终写进答案栏的式子。</span>
-                    <Input aria-label="最终填答" placeholder="填写最终提交的式子" maxLength={512}
-                      value={finalInput} onChange={(e) => { setFinalInput(e.target.value); setResult(null); }} />
-                  </div>
-                  <Space><Button type="primary" onClick={submit}>提交判断</Button>
-                    <Button icon={<RedoOutlined />} onClick={() => {
-                      setMidInput(''); setCombinedInput(''); setFinalInput(''); setResult(null);
-                    }}>重新输入</Button>
-                  </Space>
-                </Space>
-              </Card>
-            </Col>
-            <Col xs={24} md={12}>
-              <div data-testid="pretest-result">
-                {result ? (
-                  <>
-                    <div className="comp-diff-note">
-                      {prevSubmitted
-                        ? (changedLabels.length === 0
-                          ? '三处输入与上一次完全相同，判定和安排不变。'
-                          : changedLabels.length === 1 && changed.combined
-                            ? '只改了合并末行，去括号与填答没变。'
-                            : `这次改了：${changedLabels.join('、')}；其余输入保持一致。`)
-                        : '首次提交。只改其中一处再提交一次，这里会写明是哪一个输入带来了不同的后续安排。'}
-                    </div>
-                    <Alert type={result.kind === 'correct' ? 'success' : result.kind === 'manual' ? 'info' : 'warning'} showIcon
-                      message={<>
-                        <div className="comp-verdict">
-                          {result.kind === 'correct' && combinedInput.trim() ? '三处输入均等价' : VERDICT_HEADLINE[result.kind]}
-                        </div>
-                        <div className="comp-verdict-sub">
-                          判定：{result.kind === 'correct' && combinedInput.trim() ? '三处输入均等价' : KIND_LABEL[result.kind]}
-                        </div>
-                      </>}
-                      description={result.hint} />
-                    <div className="comp-pretest-two" style={{ marginTop: 10 }}>
-                      <div><Tag color="green">发现</Tag><Text style={{ fontSize: 12.5 }}>{result.supports}</Text></div>
-                      <div style={{ marginTop: 4 }}><Tag color="blue">下一步</Tag><Text style={{ fontSize: 12.5 }}>{result.follow}</Text></div>
-                      {result.kind === 'correct' && (
-                        <div style={{ marginTop: 4 }}><Text type="secondary" style={{ fontSize: 12 }}>{diagnosis.coverage.note}</Text></div>
-                      )}
-                    </div>
-                  </>
-                ) : <Alert type="info" showIcon message="等待本次提交" description="提交后这里给出判定与下一步安排；改输入后需重新提交。" />}
-              </div>
-            </Col>
-          </Row>
-          {entries.length > 0 && <Collapse size="small" style={{ marginTop: 12 }} items={[{
-            key: 'history', label: `现场作答记录（${entries.length} 条，单独保存）`,
-            children: <List size="small" dataSource={entries} style={{ maxHeight: 180, overflowY: 'auto' }} renderItem={(e) => (
-              <List.Item><Text style={{ fontSize: 12 }}>{e.questionId} · {KIND_LABEL[e.kind]} · 输入[{e.intermediate} / {e.combined || '未记录合并过程'} / {e.final}] · {e.supports}</Text></List.Item>
-            )} />,
-          }]} />}
-          <Space style={{ marginTop: 12 }} wrap>
-            <Button onClick={() => setOpen(false)}>关闭补测，返回答卷</Button>
-            {entries.length > 0 && (
-              <Button icon={<RollbackOutlined />} onClick={() => {
-                // 带回讲评方案：回原筛选的班级页，方案区自动用现场证据重算并展示变化
-                sessionStorage.setItem('competition.plan.autoRecompute', '1');
-                setOpen(false);
-                const classId = getBundle()?.students.find((s) => s.id === studentId)?.classId || 'DC01';
-                const sp = new URLSearchParams({ quizId: nodeId, classId, kpId: indicatorId });
-                const source = new URLSearchParams(window.location.search).get('source');
-                if (source) sp.set('source', source);
-                navigate({ pathname: '/class-analytics', search: sp.toString() });
-              }}>
-                带回讲评方案
-              </Button>
-            )}
-            {entries.length > 0 && <Button danger icon={<DeleteOutlined />} onClick={() => {
-              writeLiveEvidence(studentId, nodeId, indicatorId, []);
-              setMidInput(''); setCombinedInput(''); setFinalInput(''); setResult(null);
-              setVersion((v) => v + 1); onEvidence?.([]);
-            }}>清除现场作答</Button>}
-          </Space>
+  const headline = result?.kind === 'combine_wrong'
+    ? (result.diffs.some((d) => d.includes('常数')) ? '合并同类项时，常数项需要复查' : '合并同类项时，请复查各项系数')
+    : result ? KIND_LABEL[result.kind] : '';
+  const clearInputs = () => { setMidInput(''); setCombinedInput(''); setFinalInput(''); setResult(null); setSaved(false); setSaveError(''); };
+
+  return <>
+    {!hideCard && <Button onClick={() => setOpen(true)}>做一道同类题</Button>}
+    <Modal open={open} onCancel={() => setOpen(false)} afterOpenChange={setReady} width={720} footer={null} className="teacher-practice-modal"
+      title={<span>同类题练习 <span className="teacher-muted" style={{ marginLeft: 16 }}>{getStudentName(studentId)}</span></span>}
+      styles={{ body: { maxHeight: 'calc(100dvh - 128px)', overflowY: 'auto' } }}>
+      <div data-testid="live-pretest" data-question-id={question.id} data-ready={ready && open ? 'true' : 'false'}>
+        <div className="teacher-practice-question">
+          <span className="teacher-muted">{questionLabel(question.id)}</span>
+          <h2>{question.stem}</h2>
+          {viewedQuestionId && viewedQuestionId !== question.id && <p className="teacher-muted">本题为{questionLabel(viewedQuestionId)}的同类练习</p>}
         </div>
-      </Modal>
-    </>
-  );
+        <p>请学生做完这道题，再照着作答录入。</p>
+        <form onSubmit={(e) => { e.preventDefault(); submit(); }} className="teacher-practice-form">
+          <label htmlFor="practice-expanded">去括号后</label>
+          <Input id="practice-expanded" aria-label="去括号后" maxLength={512} value={midInput}
+            onChange={(e) => { setMidInput(e.target.value); setResult(null); setSaved(false); }} />
+          <label htmlFor="practice-combined">合并后（可选）</label>
+          <Input id="practice-combined" aria-label="合并后（可选）" maxLength={512} value={combinedInput}
+            onChange={(e) => { setCombinedInput(e.target.value); setResult(null); setSaved(false); }} />
+          <label htmlFor="practice-final">最终答案</label>
+          <Input id="practice-final" aria-label="最终答案" maxLength={512} value={finalInput}
+            onChange={(e) => { setFinalInput(e.target.value); setResult(null); setSaved(false); }} />
+          <div className="teacher-actions"><Button type="primary" htmlType="submit">查看结果</Button><Button type="text" onClick={clearInputs}>重新输入</Button></div>
+        </form>
+        <p className="teacher-muted teacher-practice-disclaimer">练习记录，不计入原测验成绩</p>
+        {result && <section ref={resultRef} data-testid="pretest-result" className="teacher-practice-result" aria-live="polite">
+          <h3>{headline}</h3>
+          {result.kind === 'manual' || result.kind === 'final_wrong' ? <p>{result.hint}</p> : null}
+          {result.kind === 'correct' && <p className="teacher-muted">{combinedInput.trim() ? '三处输入均等价。' : '未记录合并过程，仅核对了两处输入。'}原有补充观察安排继续保留。</p>}
+          {previous && <p className="teacher-muted">{changed.length ? `与上次相比，只改了${changed.join('、')}。` : '与上次输入相同，判断不变。'}</p>}
+          {saveError && <Alert type="error" message={saveError} />}
+          {saved && <div className="teacher-actions teacher-practice-return-actions">
+            <Button type="primary" onClick={() => {
+              sessionStorage.setItem('competition.plan.autoRecompute', '1');
+              sessionStorage.setItem('competition.plan.practiceReturn', JSON.stringify({ studentId, nodeId, indicatorId, questionId: question.id }));
+              setOpen(false);
+              navigate(analysisReturnPath(searchParams));
+            }}>带回讲评方案</Button>
+            <Button onClick={() => {
+              const next = new URLSearchParams(searchParams);
+              next.set('tab', 'profile');
+              next.delete('pretest');
+              const latest = entries[entries.length - 1];
+              if (latest?.id) next.set('practiceRecord', latest.id);
+              // 结果提示留在档案里时，用户可能再切题；把这次练习对应的原题与记录号
+              // 一并带上，「查看原答卷」才不会跳到切换后的新题。
+              if (viewedQuestionId) {
+                next.set('practiceOriginalQuestion', viewedQuestionId);
+                next.set('practiceOriginalRecord', searchParams.get('recordId') || '');
+              }
+              setOpen(false);
+              navigate({ pathname: '/student-answers', search: next.toString() });
+            }}>返回个人档案</Button>
+          </div>}
+          <details><summary>查看判断依据</summary><p>{result.hint}</p><p>{result.supports}</p><p>{result.follow}</p>
+            <p className="teacher-muted">仅核对线性表达式是否等价，不据此判断稳定掌握；本题{question.done ? '为已做题复练' : '截至本测验未做过'}。</p>
+          </details>
+        </section>}
+        {entries.length > 0 && <details className="teacher-practice-history"><summary>练习记录（{entries.length} 条）</summary>
+          {entries.map((e, i) => <p key={e.id || `${e.at}-${i}`}>{questionLabel(e.questionId)} · {KIND_LABEL[e.kind]}<br />{e.intermediate} → {e.combined || '未记录合并过程'} → {e.final}</p>)}
+          <Button danger size="small" onClick={() => {
+            try { writeLiveEvidence(studentId, nodeId, indicatorId, []); clearInputs(); setVersion((v) => v + 1); onEvidence?.([]); }
+            catch { setSaveError('未能清除记录，请检查浏览器本地存储。'); }
+          }}>清除本人的练习记录</Button>
+        </details>}
+      </div>
+    </Modal>
+  </>;
 };
 
 export default LivePretest;

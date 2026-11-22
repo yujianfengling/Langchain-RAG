@@ -17,7 +17,6 @@ class ErrorBoundary extends React.Component<
 
   componentDidCatch(error: Error) {
     // 控制台留痕便于排查；不吞掉页面其余部分
-    // eslint-disable-next-line no-console
     console.error('[competition] 页面渲染异常：', error);
   }
 
