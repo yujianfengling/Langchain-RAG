@@ -142,7 +142,9 @@ const StudentAnswersPage: React.FC = () => {
     kpId={question.kpId} studentId={studentId} questionId={questionId} nodeId={quizId}
     recordId={recordId || answer?.sourceRecordId || event?.recordId} onOpenTextbook={setTextbook} /> : null;
   const openProfileAnswer = (id: string, node: string, record?: string) => {
-    patchParams({ tab: 'answers', questionId: id, quizId: node, recordId: record || null, kpId: getQuestion(id)?.kpId || null, practiceRecord: null });
+    // 保留 practiceRecord / practiceOriginal*：切到别的题后回档案时，练习提示与
+    // 「查看原答卷」要仍指向这次练习的原题，而不是被清掉或直接跳到新题。
+    patchParams({ tab: 'answers', questionId: id, quizId: node, recordId: record || null, kpId: getQuestion(id)?.kpId || null });
     document.querySelector('.comp-main')?.scrollTo({ top: 0 });
   };
 
@@ -184,7 +186,7 @@ const StudentAnswersPage: React.FC = () => {
         <button type="button" id="student-profile-tab" role="tab" aria-selected={activeTab === 'profile'} aria-controls="student-profile-panel"
           onClick={() => { patchParams({ tab: 'profile', pretest: null }); setTextbook(null); }}>个人档案</button>
         <button type="button" id="student-answers-tab" role="tab" aria-selected={activeTab === 'answers'} aria-controls="student-answers-panel"
-          onClick={() => { patchParams({ tab: 'answers', practiceRecord: null }); setTextbook(null); }}>答卷</button>
+          onClick={() => { patchParams({ tab: 'answers' }); setTextbook(null); }}>答卷</button>
       </div>}
       {!studentId ? <section className="teacher-section"><Empty description="搜索或选择学生，查看个人档案和真实答卷" /></section> : activeTab === 'profile' ? (
         <div role="tabpanel" id="student-profile-panel" aria-labelledby="student-profile-tab">

@@ -61,8 +61,11 @@ const BarCompare: React.FC<{
     const c = cellOf(row, classId);
     if (!c) return { label: '无数据', rate: null, muted: true, title: '该班此考点无统计数据' };
     if (scope === 'common') {
+      // 「本次未测」是测验范围未覆盖该考点，不是两班题目不同；先按真实状态显示，
+      // 避免老师把「本次未测」误读成共同题口径下才出现的可比性问题。
+      if (c.status === '本次未测') return { label: '本次未测', rate: null, muted: true, title: '本次测验范围未覆盖此考点，不是学生缺记录，也不是两班题目不同' };
+      if (c.status === '记录不足') return { label: `记录不足（${c.validAttempts} 条）`, rate: null, muted: true, title: `仅 ${c.validAttempts} 条有效作答，不按零分处理` };
       if (!c.common) return { label: '无法同题比较', rate: null, muted: true, title: '两班没有共同的有效作答题目' };
-      if (c.status === '记录不足' || c.status === '本次未测') return { label: c.status, rate: null, muted: true, title: `${c.status}；共同题 ${c.common.events} 条有效作答，不按零分处理` };
       return { label: pct(c.common.rate), rate: c.common.rate, muted: false, title: `共同题得分率 ${pct(c.common.rate)} = ${c.common.score}÷${c.common.full}（${c.common.events} 条有效 · ${c.common.items} 道共同题）` };
     }
     if (c.status === '本次未测') return { label: '本次未测', rate: null, muted: true, title: '本次测验未考此考点' };

@@ -258,7 +258,9 @@ const LivePretest: React.FC<{
               // 一并带上，「查看原答卷」才不会跳到切换后的新题。
               if (viewedQuestionId) {
                 next.set('practiceOriginalQuestion', viewedQuestionId);
-                next.set('practiceOriginalRecord', searchParams.get('recordId') || '');
+                const viewedRecord = searchParams.get('recordId');
+                if (viewedRecord) next.set('practiceOriginalRecord', viewedRecord);
+                else next.delete('practiceOriginalRecord');
               }
               setOpen(false);
               navigate({ pathname: '/student-answers', search: next.toString() });

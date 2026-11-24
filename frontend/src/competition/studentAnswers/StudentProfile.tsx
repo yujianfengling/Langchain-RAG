@@ -91,6 +91,12 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ studentId, quizId, focu
   const className = bundle?.classes.find((c) => c.id === profile.student?.classId)?.name || profile.student?.classId;
   const studentName = profile.student?.name || studentId;
   const returnedPractice = practice.find((entry) => entry.id === params.get('practiceRecord'));
+  // 原答卷记录号：优先用进入练习时的原题记录；若该参数为空（例如从案例入口进来时
+  // 没有 recordId），按学生+测验+题目从已构建的正式档案里查，绝不回退到切换后的新题。
+  const originalQuestionId = params.get('practiceOriginalQuestion') || focusQuestionId || '';
+  const originalRecordId = params.get('practiceOriginalRecord')
+    || profile.history.find((q) => q.id === quizId)?.records.find((r) => r.questionId === originalQuestionId)?.recordId
+    || undefined;
   const viewPractice = () => document.querySelector('[data-testid="student-profile-practice"]')?.scrollIntoView({ block: 'start' });
 
   return <div className="student-profile" data-testid="student-profile" data-student-id={studentId} data-quiz-id={quizId}>
@@ -109,11 +115,7 @@ const StudentProfile: React.FC<StudentProfileProps> = ({ studentId, quizId, focu
         已记录{questionLabel(returnedPractice.questionId)}同类练习：{PRACTICE_LABELS[returnedPractice.kind]}。练习不计入原测验成绩。
         {focusQuestionId && <Button type="link" size="small" style={{ marginLeft: 12 }}
           data-testid="profile-open-original-answer"
-          onClick={() => onOpenAnswer(
-            params.get('practiceOriginalQuestion') || focusQuestionId,
-            quizId,
-            params.get('practiceOriginalRecord') || params.get('recordId') || undefined,
-          )}>查看原答卷</Button>}
+          onClick={() => onOpenAnswer(originalQuestionId, quizId, originalRecordId || '')}>查看原答卷</Button>}
       </p>}
     </header>
 

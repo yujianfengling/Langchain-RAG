@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Collapse, Drawer, Empty, Radio, Select, Space, Table, Tag, Typography } from 'antd';
 import { CLASSES, TOPICS, QUIZZES, getStudentName } from '../shared/ids';
-import { listKnowledgePoints, getKpStat } from './data';
+import { listKnowledgePoints, getKpStat, getShowcaseCases } from './data';
+import type { ShowcaseCase } from './data';
 import { getQuestion, listAnswersByQuestion } from '../studentAnswers/data';
 import { getSourceByQuestion } from '../curriculum/data';
 import type { KnowledgePoint, KpClassStat, StudentAnswer, TextbookSource } from '../shared/types';
@@ -30,7 +31,13 @@ function sumBreakdown(stat: KpClassStat | undefined | null, ids: string[]) {
 const StatusTag: React.FC<{ stat: KpClassStat }> = ({ stat }) => <Tag color={stat.status === '真实零分' ? 'red' : stat.status === '正常' ? 'green' : 'default'}>{stat.status === '正常' ? '有效' : stat.status}</Tag>;
 const RateCell: React.FC<{ stat?: KpClassStat; scope?: CompareScope; common?: ReturnType<typeof sumBreakdown> }> = ({ stat, scope = 'all', common }) => {
   if (!stat) return <Text type="secondary">无数据</Text>;
-  if (scope === 'common') return common?.items && common.full > 0 ? <Space direction="vertical" size={0}><Text strong>{stat.status === '记录不足' || stat.status === '本次未测' ? stat.status : `${Math.round(common.score / common.full * 100)}%`}</Text><Text type="secondary">{common.events} 条有效作答 · {common.items} 道共同题</Text></Space> : <Text type="secondary">无法同题比较</Text>;
+  if (scope === 'common') {
+    if (stat.status === '本次未测') return <Text type="secondary">本次未测（正式题目范围未覆盖，不是两班题目不同）</Text>;
+    if (stat.status === '记录不足') return <Text type="secondary">记录不足（{stat.validAttempts} 条有效作答）</Text>;
+    return common?.items && common.full > 0
+      ? <Space direction="vertical" size={0}><Text strong>{`${Math.round(common.score / common.full * 100)}%`}</Text><Text type="secondary">{common.events} 条有效作答 · {common.items} 道共同题</Text></Space>
+      : <Text type="secondary">无法同题比较</Text>;
+  }
   return <Space direction="vertical" size={0}><Text strong>{stat.scoreRate == null ? stat.status : `${Math.round(stat.scoreRate * 100)}%`}</Text><Text type="secondary">{stat.validAttempts} 条有效作答</Text></Space>;
 };
 interface SavedView { drawerOpen?: boolean; compareOpen?: boolean; compareEnabled?: boolean; tableOpen?: boolean; kpId?: string; selectedClass?: string; questionKeys?: string[]; scroll?: number; drawerScroll?: number }
@@ -164,8 +171,34 @@ const ClassAnalyticsPage: React.FC = () => {
     } })),
   ];
   const reconciliation = bundle?.reconciliation;
+  const showcaseCases = getShowcaseCases();
+  const goShowcase = (c: ShowcaseCase) => {
+    const sp = new URLSearchParams({
+      studentId: c.studentId, questionId: c.questionId, quizId: c.nodeId,
+      classId: c.classId, kpId: c.indicatorId, tab: 'profile', returnTo: rememberReturn(),
+    });
+    const source = params.get('source');
+    if (source) sp.set('source', source);
+    navigate({ pathname: '/student-answers', search: sp.toString() });
+  };
   return <div className="competition-page" style={{ paddingTop: 10 }}>
     <header className="teacher-page-header" data-testid="class-context"><Title level={3} style={{ margin: 0 }}>考试分析</Title><Space wrap><Select aria-label="当前测验" value={quizId} style={{ width: 240 }} options={QUIZZES.map((q) => ({ value: q.id, label: `${q.name}（${q.date}）` }))} onChange={(id) => { setContext({ quizId: id }); setSelected(null); setDrawerOpen(false); }} /><Text>本班</Text><Select aria-label="讲评班级" value={classA} style={{ width: 130 }} options={CLASSES.map((c) => ({ value: c.id, label: c.name }))} onChange={(id) => { setContext({ classId: id }); setSelected(null); setDrawerOpen(false); }} /></Space></header>
+    {/* 赛题硬要求：三名代表性学生案例（部分得分/表现较好/记录不足），首屏可见 */}
+    {showcaseCases.length > 0 && (
+      <section className="teacher-section teacher-showcase" aria-label="三类代表性学生案例" data-testid="showcase-cases">
+        <div className="teacher-section-heading"><Title level={5} style={{ margin: 0 }}>三类代表性学生案例</Title><Text className="teacher-muted">点击看答题证据、判断依据与下一步安排</Text></div>
+        <div className="teacher-showcase-list">
+          {showcaseCases.map((c) => (
+            <Button key={`${c.studentId}|${c.indicatorId}`} type="text" className="teacher-showcase-case"
+                    data-case-name={c.caseName} onClick={() => goShowcase(c)}>
+              <span className="teacher-showcase-kind">{c.caseName}</span>
+              <strong>{c.studentId} · {c.nodeId}/{c.indicatorId}</strong>
+              <span className="teacher-muted">考点覆盖：{c.coverageVerdict} · {c.score}/{c.fullScore}</span>
+            </Button>
+          ))}
+        </div>
+      </section>
+    )}
     <div className="teacher-analysis-grid">
       <ReviewPlanPanel quizId={quizId} classId={classA} planTheme={planTheme} onPlanThemeChange={(id) => setContext({ planTheme: id })} onGoStudent={(sid, qid, ind, recordId) => goStudent(sid, qid, ind, classA, undefined, recordId)} />
       <section className="teacher-section teacher-kp-panel" aria-label="考点得分率">

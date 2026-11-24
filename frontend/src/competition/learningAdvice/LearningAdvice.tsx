@@ -20,6 +20,19 @@ import type {
 const { Text, Paragraph, Title } = Typography;
 
 /**
+ * 分步提示的标题来自官方诊断，个别标题会直接写出学生的正确过程末行与填答式。
+ * 赛题要求提示不直接给答案：展示层把这类表达式改为引导语，原始表达式仍保留在
+ * 同页「观察到的事实 / 评分证据」中，不修改官方 bundle 或统计。
+ */
+function safeHintTitle(title: string): string {
+  return title
+    .replace(/官方『解答过程』末行得到\s*[^\s，,；;。]+，?/g, '官方过程末行的结果，')
+    .replace(/『学生最终作答』栏填\s*[^\s，,；;。]+/g, '学生填在最终作答栏的结果')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
  * 教师调整 v2：整套任务更换（材料+依据+步骤+提示+复查条件是一整套）。
  * 只记录选择，不写回原始答卷 / 官方评分 / 班级统计。
  */
@@ -438,7 +451,7 @@ const LearningAdvice: React.FC<{
               <Title level={5} style={{ fontSize: 13, marginTop: 10 }}>分步提示（一次一条）</Title>
               {currentHint ? (
                 <Card size="small" style={{ background: '#fffbeb', marginBottom: 8 }}>
-                  <Text strong>第 {currentHint.order} 步 · {currentHint.title}</Text>
+                  <Text strong>第 {currentHint.order} 步 · {safeHintTitle(currentHint.title)}</Text>
                   <div style={{ marginTop: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>卡住时：{currentHint.when_stuck}</Text>
                   </div>
@@ -543,7 +556,7 @@ const LearningAdvice: React.FC<{
             {!onlineQuestion && <Paragraph className="teacher-muted">本任务由教师安排，当前材料不提供在线作答入口。</Paragraph>}
             <ol style={{ paddingLeft: 24 }}>
               {effective.steps.map((step) => <li key={step.order} value={step.order} style={{ marginBottom: 12 }}>
-                <div>{step.title}</div>
+                <div>{safeHintTitle(step.title)}</div>
                 <details style={{ marginTop: 4 }}><summary style={{ cursor: 'pointer' }}>需要提示时展开</summary>
                   <Text className="teacher-muted">{step.when_stuck}</Text>
                 </details>
