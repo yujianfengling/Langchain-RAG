@@ -136,4 +136,9 @@ export interface QuestionBankItem {
   kpId: string;
   stem: string;
   fullScore: number;
+  questionType?: string;
+  materialType?: string;
+  referenceAnalysis?: string;
+  referenceAnswer?: string;
+  sourceLocation?: string;
 }

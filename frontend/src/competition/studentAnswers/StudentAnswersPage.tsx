@@ -3,7 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Empty, Input, Select, Space, Tooltip, Typography } from 'antd';
 import {
-  ArrowLeftOutlined, BarChartOutlined, CheckSquareOutlined, EditOutlined, FallOutlined, FileTextOutlined,
+  ArrowLeftOutlined, BarChartOutlined, CheckSquareOutlined, DiffOutlined, EditOutlined, FallOutlined, FileTextOutlined,
   IdcardOutlined, LeftOutlined, PercentageOutlined, QuestionCircleOutlined, RightOutlined, RiseOutlined,
   RobotOutlined, TeamOutlined, WarningOutlined,
 } from '@ant-design/icons';
@@ -16,6 +16,7 @@ import LearningAdvice from '../learningAdvice/LearningAdvice';
 import StudentProfile from './StudentProfile';
 import TeachingSourceLink from '../curriculum/TeachingSourceLink';
 import TextbookDrawer from '../shared/TextbookDrawer';
+import StepDiffDrawer from './StepDiffDrawer';
 import { getBundle, isRealData } from '../dataSource';
 import type { AnswerEvent, RealAnswer } from '../dataSource';
 import type { TextbookSource } from '../shared/types';
@@ -56,6 +57,7 @@ const StudentAnswersPage: React.FC = () => {
   const activeTab = params.get('tab') === 'profile' ? 'profile' : 'answers';
   const [keyword, setKeyword] = useState('');
   const [textbook, setTextbook] = useState<TextbookSource | null>(null);
+  const [diffOpen, setDiffOpen] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState('');
@@ -315,7 +317,11 @@ const StudentAnswersPage: React.FC = () => {
                   <div>
 
                   <section style={{ marginTop: 20 }} aria-label="学生步骤和最终答案">
-                    <h3 className="teacher-section-heading"><EditOutlined aria-hidden /> 学生作答</h3>
+                    <h3 className="teacher-section-heading"><EditOutlined aria-hidden /> 学生作答
+                      {question?.questionType === '解答题' && (
+                        <Button size="small" icon={<DiffOutlined aria-hidden />} style={{ marginLeft: 10 }} onClick={() => setDiffOpen(true)}>步骤 diff</Button>
+                      )}
+                    </h3>
                     {answer.stepsUnavailable || !steps.length ? <Paragraph className="teacher-muted">未记录解题步骤</Paragraph> : visibleSteps.length > 0 ? (
                       <ol className="competition-steps" style={{ paddingLeft: 0, listStyle: 'none' }}>
                         {visibleSteps.map((step) => <li key={step.step} style={{ whiteSpace: 'pre-wrap' }}>{step.text}</li>)}
@@ -386,6 +392,7 @@ const StudentAnswersPage: React.FC = () => {
         </div>
       )}
       <TextbookDrawer open={!!textbook} source={textbook} onClose={() => setTextbook(null)} />
+      <StepDiffDrawer open={diffOpen} onClose={() => setDiffOpen(false)} questionId={questionId} answer={answer || null} onOpenTextbook={setTextbook} />
     </div>
   );
 };

@@ -1,0 +1,30 @@
+.stepdiff-head { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.stepdiff-cols, .stepdiff-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) minmax(0, 1fr) 92px; gap: 10px; align-items: start; }
+.stepdiff-cols { font-size: 12px; font-weight: 600; color: #7a8291; padding: 0 10px 4px; }
+.stepdiff-rows { display: flex; flex-direction: column; gap: 6px; }
+.stepdiff-row {
+  width: 100%; text-align: left; padding: 8px 10px; border: 1px solid #e3e8f0; border-radius: 8px;
+  background: #fff; cursor: pointer; font-size: 13.5px; line-height: 1.6;
+}
+.stepdiff-row:hover { border-color: #b9c6e4; }
+.stepdiff-row.is-active { border-color: var(--comp-accent, #2f5cff); box-shadow: 0 0 0 1px var(--comp-accent, #2f5cff); }
+.stepdiff-row.is-match { background: #f6fbf7; }
+.stepdiff-row.is-first { border-color: #cf1322; background: #fff1f0; }
+.stepdiff-row.is-missing, .stepdiff-row.is-extra { background: #fffbe6; }
+.stepdiff-row.is-after { opacity: 0.6; }
+.stepdiff-idx { font-weight: 700; color: #4b5261; }
+.stepdiff-cell { word-break: break-word; white-space: pre-wrap; }
+.stepdiff-note { font-size: 12px; margin: 10px 0; }
+.stepdiff-hint { border: 1px solid #d6e4ff; background: #f0f5ff; border-radius: 10px; padding: 12px 14px; }
+.stepdiff-hint-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.stepdiff-hint-head span { display: inline-flex; gap: 6px; }
+.stepdiff-hint p { margin: 4px 0; font-size: 13.5px; line-height: 1.7; }
+.stepdiff-diffs { color: #cf1322; font-size: 12.5px; }
+.stepdiff-result-only { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.stepdiff-result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%; }
+.stepdiff-result-grid .stepdiff-cell { border: 1px solid #e3e8f0; border-radius: 8px; padding: 8px 10px; margin-top: 4px; }
+@media (max-width: 700px) {
+  .stepdiff-cols, .stepdiff-row { grid-template-columns: 26px minmax(0, 1fr); }
+  .stepdiff-cols span:nth-child(3), .stepdiff-row .stepdiff-cell:nth-child(3) { grid-column: 2; }
+  .stepdiff-row .ant-tag { grid-column: 2; justify-self: start; }
+}
