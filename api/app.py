@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 
 from config import settings, APP_VERSION
 from api.routes import (
-    agent, agent_run, audio, auth, chat, competition, conversations, education, knowledge, learning,
+    agent, agent_run, assistant, audio, auth, chat, competition, conversations, education, knowledge, learning,
     memory, models, notes, plan_agent, quiz, student, subjects, teacher, tutor,
 )
 from api.middleware import RequestIDMiddleware, get_request_id
@@ -57,6 +57,7 @@ app.add_middleware(RequestIDMiddleware)
 # 注册路由
 app.include_router(chat.router, prefix="/api", tags=["聊天"])
 app.include_router(competition.router, prefix="/api", tags=["比赛版受控数据"])
+app.include_router(assistant.router, prefix="/api", tags=["比赛版AI助手"])
 app.include_router(knowledge.router, prefix="/api", tags=["知识库"])
 app.include_router(subjects.router, prefix="/api", tags=["学科"])
 app.include_router(models.router, prefix="/api", tags=["模型"])

@@ -32,6 +32,13 @@ function safeHintTitle(title: string): string {
     .trim();
 }
 
+function studentFacingText(text: string): string {
+  return text
+    .replace(/\b[QL]\d{2,3}\b/g, '对应材料')
+    .replace(/\bT\d+I\d+\b/g, '当前考点')
+    .replace(/\b(?:DR|LIVE-)[A-Za-z0-9-]+\b/g, '本次记录');
+}
+
 /**
  * 教师调整 v2：整套任务更换（材料+依据+步骤+提示+复查条件是一整套）。
  * 只记录选择，不写回原始答卷 / 官方评分 / 班级统计。
@@ -208,7 +215,7 @@ const LearningAdvice: React.FC<{
       && scopedAnswer.score >= 0 && scopedAnswer.score <= scopedAnswer.fullScore ? scopedAnswer : undefined;
     const currentFinding = currentAnswer ? official.question_findings.find((f) => f.item_id === questionId
       && f.record_id === currentAnswer.sourceRecordId && f.kind === '过程与填答不一致') : undefined;
-    const currentCase = currentAnswer ? (currentAnswer.score >= currentAnswer.fullScore ? '满分' : '部分得分') : null;
+    const currentCase = currentAnswer ? (currentAnswer.score >= currentAnswer.fullScore ? '满分' : currentAnswer.score === 0 ? '未得分' : '部分得分') : null;
     const candidates = official.candidates.filter((c) => c.node_available);
     const textbook = diagnosisTextbook(official);
     // 调整为指定材料后，在线入口也必须打开该材料，而非悄悄执行原推荐题。
@@ -231,16 +238,25 @@ const LearningAdvice: React.FC<{
       setHintIndex(0); setManualError(''); setVersion((v) => v + 1);
     };
 
+    const missingSteps = currentAnswer && (currentAnswer.stepsUnavailable || !currentAnswer.steps.length);
+    const evidenceInsufficient = official.case === '记录不足' || !official.coverage.sufficient;
+    const stem = bundle?.questions.find(q => q.id === questionId)?.stem || '';
+    const needsSubstitution = /代入|(?:当|若)?\s*[a-z]\s*[=＝].*?(?:值|求|计算)/i.test(stem);
     /** 主建议一句话：老师看完就知道现在做什么（依据在下方按需展开） */
     const mainAction = choice
       ? `请按调整后的「${effective.type}」安排 ${questionLabel(effective.material_id)}${onlineQuestion ? '。' : '（由教师安排）。'}`
       : currentFinding
         ? '请学生核对最后一步和填答栏。'
-        : currentCase === '满分'
-          ? (onlineQuestion ? '本题已满分，可做一道同类题观察迁移。' : '本题已满分，可由教师自行选拓展题。')
-          : currentAnswer
-            ? (onlineQuestion ? '请学生订正失分步骤，再做一道同类题。' : '请学生核对失分步骤，再由教师安排订正。')
-            : '请先核对本题作答状态，再安排补充观察。';
+        : evidenceInsufficient
+          ? (onlineQuestion ? '这个考点的有效记录不足，先做一道同类题补充观察，再判断掌握情况。'
+            : '这个考点的有效记录不足，请先补充同指标作答记录，再判断是否需要迁移练习。')
+          : currentCase === '满分'
+            ? (onlineQuestion ? '本题已满分，可做一道同类题观察迁移。' : '本题已满分，可由教师自行选拓展题。')
+            : missingSteps
+              ? needsSubstitution ? '请学生写出代入后的算式，再核对计算。' : '请学生补写解题过程，再对照评分标准核对。'
+              : currentAnswer
+                ? (onlineQuestion ? '请学生订正失分步骤，再做一道同类题。' : '请学生核对失分步骤，再由教师安排订正。')
+                : '请先核对本题作答状态，再安排补充观察。';
     const factIsCurrentDifference = (text: string) => !!currentFinding && (
       text === currentFinding.fact || text.includes(currentFinding.fact)
       || [currentFinding.last_expr, currentFinding.final_answer].some((expr) => !!expr && text.includes(expr))
@@ -306,6 +322,7 @@ const LearningAdvice: React.FC<{
             <Button size="small" type="link" icon={<EditOutlined />} aria-expanded={adjustOpen}
               onClick={() => setAdjustOpen((v) => !v)}>调整建议</Button>
           </div>
+          {missingSteps && currentCase !== '满分' && <p className="teacher-muted">只记录了最终填答，具体失分步骤待核实。</p>}
           <Space wrap style={{ marginTop: 12 }}>
             {onlineQuestion && <Button type="primary" onClick={() => setPretestSignal((v) => v + 1)}>做一道同类题</Button>}
             {textbook && <Button icon={<BookOutlined />} onClick={() => onOpenTextbook(textbook)}>看教材</Button>}
@@ -551,19 +568,19 @@ const LearningAdvice: React.FC<{
           <section className="teacher-section" aria-label="学生内容预览" style={{ marginTop: 8 }}>
             <h3 className="teacher-section-heading">学生内容预览 · {getStudentName(studentId)}</h3>
             <Paragraph className="teacher-muted">{choice ? '教师调整后的任务' : '系统任务'} · 仅展示当前学生的内容</Paragraph>
-            <Paragraph><Text strong>{effective.type} · {effective.material_id}</Text></Paragraph>
-            <Paragraph>{effective.reason}</Paragraph>
+            <Paragraph><Text strong>{effective.type}</Text></Paragraph>
+            <Paragraph>{studentFacingText(effective.reason)}</Paragraph>
             {!onlineQuestion && <Paragraph className="teacher-muted">本任务由教师安排，当前材料不提供在线作答入口。</Paragraph>}
             <ol style={{ paddingLeft: 24 }}>
               {effective.steps.map((step) => <li key={step.order} value={step.order} style={{ marginBottom: 12 }}>
-                <div>{safeHintTitle(step.title)}</div>
+                <div>{studentFacingText(safeHintTitle(step.title))}</div>
                 <details style={{ marginTop: 4 }}><summary style={{ cursor: 'pointer' }}>需要提示时展开</summary>
-                  <Text className="teacher-muted">{step.when_stuck}</Text>
+                  <Text className="teacher-muted">{studentFacingText(step.when_stuck)}</Text>
                 </details>
               </li>)}
             </ol>
             <Text strong>复查条件</Text>
-            <Paragraph style={{ marginTop: 4, marginBottom: 0 }}>{effective.review}</Paragraph>
+            <Paragraph style={{ marginTop: 4, marginBottom: 0 }}>{studentFacingText(effective.review)}</Paragraph>
           </section>
         )}
       </Space>

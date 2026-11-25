@@ -1,0 +1,51 @@
+.teacher-lecture-heading {
+  margin: 18px 0 8px;
+  scroll-margin-top: 64px;
+  font-size: 1rem;
+}
+
+.teacher-lecture-status {
+  margin: 6px 0 0;
+}
+
+.teacher-lecture-editor {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 16px;
+  background: #f6f9fb;
+  border: 1px solid #dce8f0;
+  border-radius: 8px;
+}
+
+.teacher-lecture-editor h4,
+.teacher-lecture-preview p:first-child {
+  margin: 0;
+}
+
+.teacher-lecture-editor label {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.teacher-lecture-editor textarea {
+  font-weight: 400;
+}
+
+.teacher-lecture-stem {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f1f6fa;
+}
+
+.teacher-lecture-preview dt {
+  font-weight: 600;
+}
+
+.teacher-lecture-preview dd,
+.source-draft-result dd {
+  margin: 2px 0 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

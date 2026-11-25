@@ -25,6 +25,7 @@ export interface ClassInfo {
 
 /** 测验 */
 export interface Quiz {
+  description?: string;
   id: string;
   name: string;
   date: string;

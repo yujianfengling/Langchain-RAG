@@ -1,0 +1,92 @@
+.profile-evidence-map {
+  --map-ink: #25435b;
+  --map-line: #d8e4eb;
+  --map-surface: #f5f9fb;
+}
+.profile-evidence-map h3,
+.profile-evidence-map h4 { margin: 0; }
+.profile-map-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.profile-map-heading p { margin: 4px 0 12px; }
+.profile-map-question {
+  border: 1px solid #bfd3e2;
+  border-radius: 10px;
+  padding: 12px 16px;
+  color: var(--map-ink);
+  background: #eaf3f9;
+}
+.profile-map-question > div {
+  display: flex;
+  align-items: baseline;
+  gap: 5px 12px;
+  flex-wrap: wrap;
+}
+.profile-map-question p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.profile-map-stages,
+.profile-map-branches ul { list-style: none; margin: 0; padding: 0; }
+.profile-map-stages {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding-top: 16px;
+}
+.profile-map-stages::before {
+  content: '';
+  position: absolute;
+  inset: 0 16.66% auto;
+  height: 8px;
+  background: linear-gradient(var(--map-line), var(--map-line)) center / 1px 100% no-repeat;
+  border-bottom: 1px solid var(--map-line);
+}
+.profile-map-stages > li,
+.profile-map-branches li {
+  border: 1px solid var(--map-line);
+  border-radius: 8px;
+  padding: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  background: var(--map-surface);
+}
+.profile-map-stages > li { position: relative; }
+.profile-map-stages > li::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -9px;
+  height: 8px;
+  border-left: 1px solid var(--map-line);
+}
+.profile-map-stages h4 { color: var(--map-ink); }
+.profile-map-status {
+  display: inline-block;
+  border-radius: 100px;
+  padding: 1px 7px;
+  font-size: .8rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.profile-map-status.is-observed { color: #265c45; background: #e4f2e8; }
+.profile-map-status.is-pending { color: #785019; background: #fff0d7; }
+.profile-map-stages p,
+.profile-map-branches p { margin: 7px 0; }
+.profile-map-stages button,
+.profile-map-branches button { padding: 0 4px 0 0; white-space: normal; text-align: left; height: auto; min-height: 32px; }
+.profile-map-stages a { margin-right: 6px; }
+.profile-map-branches { margin-top: 16px; }
+.profile-map-branches ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 8px; }
+.profile-map-direction { margin-right: .5rem; color: #466480; font-size: .85rem; }
+.profile-map-related-links { display: flex; flex-wrap: wrap; column-gap: 12px; }
+.profile-map-note { margin-bottom: 0; }
+@media (max-width: 650px) {
+  .profile-map-stages,
+  .profile-map-branches ul { grid-template-columns: minmax(0, 1fr); }
+  .profile-map-stages { padding-top: 10px; padding-left: 12px; }
+  .profile-map-stages::before { inset: 0 auto 0 3px; height: auto; width: 1px; border: 0; }
+  .profile-map-stages > li::before { left: -9px; top: 20px; width: 8px; height: 0; border: 0; border-top: 1px solid var(--map-line); }
+}

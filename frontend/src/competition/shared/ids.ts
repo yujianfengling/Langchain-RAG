@@ -81,3 +81,8 @@ export function applyRealIds(payload: {
   QUIZZES.splice(0, QUIZZES.length, ...payload.quizzes);
   STUDENTS.splice(0, STUDENTS.length, ...payload.students);
 }
+
+export function quizLabel(quiz: Quiz): string {
+  const title = quiz.name === quiz.id && quiz.description?.split('：')[0];
+  return title ? title + '（' + quiz.id + '）' : quiz.name;
+}

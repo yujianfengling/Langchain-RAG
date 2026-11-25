@@ -78,9 +78,10 @@ const BarCompare: React.FC<{
   return (
     <div className="bc-wrap" data-testid="bar-compare">
       <div className="bc-legend">
-        <span className="bc-legend-item"><i className="bc-swatch is-lecture" />{lectureClassName}（讲评班）</span>
+        {compareClassId && <span className="bc-legend-item"><i className="bc-swatch is-lecture" />{lectureClassName}（讲评班）</span>}
         {compareClassId && <span className="bc-legend-item"><i className="bc-swatch is-compare" />{compareClassName}（对照班）</span>}
-        {scope === 'common' && <span className="bc-legend-note">口径：仅比较两班共同题目</span>}
+        {compareClassId && scope === 'common' && <span className="bc-legend-note">口径：仅比较两班共同题目</span>}
+        <span className="bc-legend-note bc-target-note"><i className="bc-target-swatch" aria-hidden="true" />目标60%</span>
       </div>
       {rows.map((row) => {
         const short = KP_SHORT_NAME[row.indicatorId] || row.name.replace(/^T\d+I\d+ · /, '');
@@ -112,6 +113,7 @@ const BarCompare: React.FC<{
                         <span className={'bc-fill' + (kind === 'lecture' ? ' is-lecture' : ' is-compare')}
                               style={{ width: `${Math.max(0, Math.min(100, v.rate * 100))}%` }} />
                       )}
+                      <i className="bc-target" aria-hidden="true" />
                     </span>
                     <span className="bc-val">{v.label}</span>
                   </button>

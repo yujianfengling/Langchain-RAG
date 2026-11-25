@@ -19,6 +19,7 @@ import { getToken, subscribe as subscribeAuth } from '../api/authState';
 export interface BundleManifest {
   mode: 'real';
   source: 'sample' | 'official';
+  independentEvaluation?: boolean;
   generated_at: string;
   counts: Record<string, number>;
   note?: string;
@@ -45,7 +46,7 @@ export interface AnswerEvent {
 export interface AnomalyRecord {
   record_id: string; event_id: string; student_id: string; class_id: string;
   item_id: string; node_id: string; indicator_id: string;
-  kind: 'quarantined' | 'out_of_scope';
+  kind: 'quarantined' | 'out_of_scope' | 'conflict' | 'dangling_student' | 'dangling_item' | 'missing_event' | 'load_isolated';
   score: number | null; full_score: number | null; status: string; reason: string;
 }
 
@@ -59,6 +60,7 @@ export interface Reconciliation {
   raw_rows: number; merged_events: number;
   raw_status: Record<string, number>;
   included_scored_events: number; quarantined_events: number; out_of_scope_events: number;
+  load_isolated_records?: number;
 }
 
 export interface Bundle {
@@ -231,6 +233,9 @@ export interface ReviewPlans {
 
 let _bundle: Bundle | null = null;
 let _loaded = false;
+let _datasetId = 'official';
+/** 当前页面数据集合标识：官方或某次导入的 eval 编号；教师留存记录的隔离维度。 */
+export const getDatasetId = (): string => _datasetId;
 let _retrySubscribed = false;
 let _notice: string | null = null;
 
@@ -249,7 +254,12 @@ export function getBundle(): Bundle | null {
 
 export function getSourceLabel(): string {
   if (!_bundle) return '演示样例数据';
+  if (_bundle.manifest.independentEvaluation) return '独立评测数据';
   return _bundle.manifest.source === 'official' ? '官方赛题数据' : 'CSV样例数据（非官方）';
+}
+
+export function isPrivateCompetitionData(): boolean {
+  return _bundle?.manifest.source === 'official';
 }
 
 /**
@@ -264,16 +274,22 @@ export async function initDataSource(): Promise<void> {
   if (typeof window === 'undefined') return;
   const mode = new URLSearchParams(window.location.search).get('source') || 'official';
   if (mode === 'demo') return;
-  if (mode !== 'real' && mode !== 'official') return;
+  if (mode !== 'real' && mode !== 'official' && mode !== 'imported') return;
 
   try {
     let bundle: Bundle;
-    if (mode === 'official') {
+    if (mode === 'official' || mode === 'imported') {
       // 受控接口：教师登录后可访问；服务端从本地私有目录读取，不进公开静态资源。
       const token = getToken();
       // 未登录时不要发请求（否则控制台会留一条 401）。登录后由 subscribeAuth 整页重载再取。
       if (!token) throw new Error('尚未登录，登录后自动加载官方赛题数据');
-      const res = await fetch('/api/competition/official-bundle', {
+      const importedId = mode === 'imported' ? localStorage.getItem('competition.importedId') : null;
+      _datasetId = mode === 'imported' ? (importedId || '') : 'official';
+      if (mode === 'imported' && !importedId) throw new Error('尚未导入评测数据，请先在顶栏「导入评测数据」');
+      const url = mode === 'imported'
+        ? `/api/competition/eval-bundle?id=${encodeURIComponent(importedId || '')}`
+        : '/api/competition/official-bundle';
+      const res = await fetch(url, {
         cache: 'no-store',
         headers: token ? { 'X-User-Token': token } : undefined,
       });
@@ -315,7 +331,7 @@ export async function initDataSource(): Promise<void> {
     console.warn('[competition] 数据源加载失败，继续使用演示样例：', e);
     window.dispatchEvent(new CustomEvent('competition:source-failed', { detail: _notice }));
     // 官方模式常见于「先打开页面 → 再登录」：登录拿到 token 后重新加载一次即可读到受控接口。
-    if (mode === 'official' && !_retrySubscribed && !getToken()) {
+    if ((mode === 'official' || mode === 'imported') && !_retrySubscribed && !getToken()) {
       _retrySubscribed = true;
       subscribeAuth(() => {
         // 登录拿到 token 后整页重载：确保已渲染的组件也拿到官方 bundle。

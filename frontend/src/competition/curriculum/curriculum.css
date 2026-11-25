@@ -1,0 +1,202 @@
+.source-context,
+.source-search {
+  margin-bottom: 20px;
+}
+
+.source-context {
+  padding: 16px 22px;
+  background: #eef5fa;
+  border: 1px solid #d6e4ef;
+  border-radius: 10px;
+}
+
+.source-context-top,
+.source-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.source-context-top {
+  justify-content: space-between;
+  color: #355576;
+  font-size: 0.9rem;
+}
+
+.source-context p {
+  margin: 8px 0;
+}
+
+.source-answer {
+  font-weight: 600;
+  color: #355576;
+}
+
+.source-search {
+  max-width: 560px;
+}
+
+.source-layout .source-main {
+  min-width: 0;
+}
+
+.source-primary {
+  border-top: 3px solid #275d89;
+}
+
+.source-eyebrow {
+  margin: 0 0 6px;
+  color: #355576;
+  font-size: 0.875rem;
+}
+
+.source-reference.ant-list-item {
+  display: block;
+  padding: 16px 0;
+}
+
+.source-standard :where(p, .ant-typography) {
+  margin-bottom: 8px;
+}
+
+.source-sequence ul {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.source-sequence li {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 10px 12px;
+  background: #f4f8fb;
+  border-radius: 8px;
+}
+
+.source-sequence-kind {
+  flex: 0 0 auto;
+  color: #355576;
+  font-weight: 600;
+}
+
+.source-sequence li .ant-btn {
+  padding: 0;
+  height: auto;
+  text-align: left;
+  white-space: normal;
+  font-weight: 600;
+}
+
+.source-sequence li p {
+  margin: 4px 0 0;
+  color: #52667b;
+}
+
+.teacher-source-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  color: #215f93;
+  font-weight: 600;
+}
+
+.teacher-source-link:hover {
+  text-decoration: underline;
+}
+
+.source-draft {
+  margin-top: 10px;
+}
+
+.source-draft > .ant-alert {
+  margin-top: 12px;
+}
+
+.source-draft-result {
+  margin-top: 16px;
+  padding: 16px 20px;
+  border: 1px solid #cddfee;
+  border-radius: 8px;
+  background: #f4f8fc;
+  overflow-wrap: anywhere;
+}
+
+.source-draft-result h3 {
+  margin: 0 0 6px;
+}
+
+.source-draft-result dt {
+  font-weight: 650;
+}
+
+.source-draft-result dd {
+  margin: 3px 0 12px;
+}
+
+.source-evidence-note {
+  color: #765317;
+}
+
+.source-audit {
+  padding: 12px 0;
+  color: #52667b;
+}
+
+.source-audit summary {
+  cursor: pointer;
+}
+
+@media (max-width: 767px) {
+  .source-layout-focused .source-sidebar {
+    order: 2;
+  }
+}
+
+/* 溯源工作台：结论先行 + 三栏证据链 + 按失分排序导航 */
+.source-workbench-head { margin-bottom: 14px; }
+.source-conclusion { margin: 0 0 10px; padding: 14px 18px; border-left: 4px solid var(--comp-accent, #285c85); background: #f5f8fb; border-radius: 0 8px 8px 0; font-size: 15px; line-height: 1.7; color: #24364b; }
+.source-conclusion strong { color: #174f79; }
+.source-cite { margin-left: 8px; padding: 1px 7px; border: 1px solid #b5cfdf; border-radius: 10px; background: #fff; color: #174f79; font-size: 11px; cursor: pointer; vertical-align: super; }
+.source-cite:hover { background: #eaf3f9; }
+.source-nav-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.source-nav-item { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; padding: 8px 10px; border: 1px solid transparent; border-radius: 8px; background: none; text-align: left; cursor: pointer; color: #334155; line-height: 1.5; }
+.source-nav-item:hover { background: #f1f5f9; }
+.source-nav-item.is-active { border-color: var(--comp-accent, #285c85); background: #eaf3f9; color: #174f79; font-weight: 600; }
+.source-nav-item em { font-style: normal; font-size: 12px; color: #64748b; }
+.source-nav-item em.is-low { color: #b91c1c; font-weight: 700; }
+.source-tree-fold { margin-top: 10px; }
+.source-tree-fold summary { cursor: pointer; color: #64748b; font-size: 13px; padding: 4px 0; }
+.source-evidence { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 12px; }
+.source-ev-col { min-width: 0; padding: 12px 14px; border: 1px solid #e3e8ef; border-radius: 10px; background: #fff; }
+.source-ev-col h3 { margin: 0 0 8px; font-size: 13px; color: #46506a; letter-spacing: .02em; }
+.source-ev-col .ant-list-item { padding: 8px 0; }
+.source-q-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+/* 热条行：flex 允许换行，track 保底 96px，窄窗（1000px 三栏）不再被挤成几像素 */
+.source-q-item { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; width: 100%; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px; background: none; cursor: pointer; text-align: left; }
+.source-q-item:hover { background: #f1f5f9; border-color: #dce8f0; }
+.source-q-item span { font-size: 12px; color: #334155; flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.source-q-heat { display: block; flex: 1 1 120px; min-width: 96px; height: 6px; border-radius: 4px; background: #edf1f5; overflow: hidden; }
+.source-q-heat em { display: block; height: 100%; border-radius: inherit; background: #d62728; }
+.source-q-item b { font-size: 12px; color: #b91c1c; flex: 0 0 auto; }
+.source-q-item small { font-size: 11px; color: #94a3b8; flex: 0 0 auto; }
+.source-lost { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.source-actions-row { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 12px; }
+.source-sequence ul { display: grid; gap: 8px; }
+@media (max-width: 991px) { .source-evidence { grid-template-columns: minmax(0, 1fr); } }
+
+/* 考点导航统一为「主题分组 + 组内失分排序」单一样式 */
+.source-nav-groups { display: grid; gap: 6px; }
+.source-nav-group { border: 1px solid #e3e8ef; border-radius: 8px; background: #fff; }
+.source-nav-group > summary { cursor: pointer; padding: 8px 12px; font-size: 13px; font-weight: 600; color: #174f79; list-style: none; display: flex; align-items: center; gap: 6px; }
+.source-nav-group > summary::before { content: '▸'; color: #94a3b8; font-size: 11px; }
+.source-nav-group[open] > summary::before { content: '▾'; }
+.source-nav-group .source-nav-list { padding: 0 6px 6px; }
+.source-related .ant-list-item { padding: 6px 0; }
+/* 评委/答辩复核明细：默认折叠、视觉弱化，教师可忽略 */
+.source-audit-judge { margin-top: 10px; border: 1px dashed #d8dee6; border-radius: 8px; padding: 6px 10px; background: #fafbfc; }
+.source-audit-judge > summary { cursor: pointer; font-size: 12px; color: #8a94a3; }
+.source-audit-judge p { font-size: 12px; color: #8a94a3; margin: 4px 0; }

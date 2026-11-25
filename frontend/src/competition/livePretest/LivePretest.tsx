@@ -1,45 +1,109 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { Alert, Button, Input, Modal } from 'antd';
 import { getBundle } from '../dataSource';
+import { getUser } from '../../api/authState';
 import type { Diagnosis as OfficialDiagnosis } from '../dataSource';
 import { getStudentName } from '../shared/ids';
 import { analysisReturnPath, questionLabel } from '../shared/teacherContext';
 import { diffTerms, parseLinear, sameLinear, stripPrefix } from './expr';
 import type { Linear } from './expr';
+import PracticeHints from './PracticeHints';
 
 export interface LiveEvidenceEntry {
   at: string;
   studentId: string; nodeId: string; indicatorId: string; questionId: string;
-  id?: string;
+  id: string;
+  originalQuestionId?: string; originalRecordId?: string;
   intermediate: string; combined?: string; final: string;
   kind: 'mid_wrong' | 'combine_wrong' | 'transcription_wrong' | 'final_wrong' | 'manual' | 'correct';
   supports: string; followUp: string;
 }
 
-const STORE_KEY = 'competition.live.pretest.v1';
+const STORE_KEY = 'competition.live.pretest.v2';
+const STORE_VERSION = 2;
 const scopeKey = (s: string, n: string, i: string) => `${s}|${n}|${i}`;
+const KINDS = new Set<LiveEvidenceEntry['kind']>([
+  'mid_wrong', 'combine_wrong', 'transcription_wrong', 'final_wrong', 'manual', 'correct',
+]);
+
+type EvidenceStore = {
+  version: number; teacherId: string; datasetId: string;
+  entries: Record<string, LiveEvidenceEntry[]>;
+};
+
+function currentScope() {
+  const manifest = getBundle()?.manifest;
+  return {
+    teacherId: getUser()?.id || 'anonymous',
+    datasetId: manifest ? `${manifest.source}|${manifest.generated_at}` : 'unloaded',
+  };
+}
+
+function isEvidence(value: unknown, key: string): value is LiveEvidenceEntry {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entry = value as Partial<LiveEvidenceEntry>;
+  const text = (field: keyof LiveEvidenceEntry) => typeof entry[field] === 'string' && (entry[field] as string).length > 0;
+  const stringField = (field: keyof LiveEvidenceEntry) => typeof entry[field] === 'string';
+  const optionalText = (field: keyof LiveEvidenceEntry) => entry[field] === undefined || typeof entry[field] === 'string';
+  return text('id') && text('at') && !Number.isNaN(Date.parse(entry.at as string))
+    && text('studentId') && text('nodeId') && text('indicatorId') && text('questionId')
+    && scopeKey(entry.studentId as string, entry.nodeId as string, entry.indicatorId as string) === key
+    && stringField('intermediate') && optionalText('combined') && stringField('final')
+    && optionalText('originalQuestionId') && optionalText('originalRecordId')
+    && KINDS.has(entry.kind as LiveEvidenceEntry['kind'])
+    && stringField('supports') && stringField('followUp');
+}
+
+function readStore(): EvidenceStore {
+  const scope = currentScope();
+  const empty = { version: STORE_VERSION, ...scope, entries: {} };
+  try {
+    const value = JSON.parse(localStorage.getItem(STORE_KEY) || 'null') as Partial<EvidenceStore> | null;
+    if (!value || value.version !== STORE_VERSION || value.teacherId !== scope.teacherId
+      || value.datasetId !== scope.datasetId || !value.entries || typeof value.entries !== 'object'
+      || Array.isArray(value.entries)) return empty;
+    const entries: Record<string, LiveEvidenceEntry[]> = {};
+    for (const [key, rows] of Object.entries(value.entries)) {
+      if (!Array.isArray(rows)) continue;
+      const seen = new Set<string>();
+      entries[key] = rows.filter((row): row is LiveEvidenceEntry => {
+        if (!isEvidence(row, key) || seen.has(row.id as string)) return false;
+        seen.add(row.id as string);
+        return true;
+      }).filter((row) => row.id);
+    }
+    return { version: STORE_VERSION, ...scope, entries };
+  } catch {
+    return empty;
+  }
+}
 
 export function readLiveEvidence(s: string, n: string, i: string): LiveEvidenceEntry[] {
-  try {
-    const all = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') as Record<string, LiveEvidenceEntry[]>;
-    return all[scopeKey(s, n, i)] || [];
-  } catch { return []; }
+  return readStore().entries[scopeKey(s, n, i)] || [];
 }
 
 function writeLiveEvidence(s: string, n: string, i: string, entries: LiveEvidenceEntry[]): void {
-  const all = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') as Record<string, LiveEvidenceEntry[]>;
-  if (entries.length) all[scopeKey(s, n, i)] = entries; else delete all[scopeKey(s, n, i)];
-  localStorage.setItem(STORE_KEY, JSON.stringify(all));
+  const store = readStore();
+  const key = scopeKey(s, n, i);
+  const seen = new Set<string>();
+  const valid = entries.filter((entry): entry is LiveEvidenceEntry => {
+    if (!isEvidence(entry, key) || seen.has(entry.id as string)) return false;
+    seen.add(entry.id as string);
+    return true;
+  });
+  if (valid.length) store.entries[key] = valid;
+  else delete store.entries[key];
+  localStorage.setItem(STORE_KEY, JSON.stringify(store));
 }
 
 interface SuitQuestion {
   id: string; stem: string; mid: Linear; final: Linear; done: boolean;
 }
 
-export function pickQuestion(ind: string, d: OfficialDiagnosis): SuitQuestion | undefined {
+export function pickQuestion(ind: string, d: OfficialDiagnosis, requestedId?: string): SuitQuestion | undefined {
   const qs = (getBundle()?.questions || [])
-    .filter((q) => q.kpId === ind && (q.materialType || '题目') === '题目'
+    .filter((q) => q.kpId === ind && (!requestedId || q.id === requestedId) && (q.materialType || '题目') === '题目'
       && q.stem.includes('化简') && q.stem.includes('(') && q.referenceAnalysis
       && d.candidates.some((c) => c.material_id === q.id && c.node_available));
   const cands: SuitQuestion[] = [];
@@ -138,8 +202,13 @@ const LivePretest: React.FC<{
   onEvidence?: (entries: LiveEvidenceEntry[]) => void;
 }> = ({ studentId, nodeId, indicatorId, diagnosis, openSignal, hideCard, onEvidence }) => {
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const viewedQuestionId = searchParams.get('questionId');
+  const requestedPractice = searchParams.get('followupPractice') || undefined;
+  const practiceHint = requestedPractice && typeof location.state?.practiceHint === 'string'
+    ? location.state.practiceHint : undefined;
+  const viewedRecordId = searchParams.get('recordId');
   const [open, setOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const resultRef = useRef<HTMLElement | null>(null);
@@ -156,22 +225,28 @@ const LivePretest: React.FC<{
     setOpen(true);
     const next = new URLSearchParams(searchParams);
     next.delete('pretest');
-    setSearchParams(next, { replace: true });
-  }, [pretestRequested, searchParams, setSearchParams]);
+    setSearchParams(next, { replace: true, state: location.state });
+  }, [pretestRequested, searchParams, setSearchParams, location.state]);
   const [midInput, setMidInput] = useState('');
   const [finalInput, setFinalInput] = useState('');
   const [combinedInput, setCombinedInput] = useState('');
   const [result, setResult] = useState<ReturnType<typeof judgeInputs> | null>(null);
   const [saved, setSaved] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const lastSubmission = useRef<{ signature: string; id: string; saved: boolean } | null>(null);
   useEffect(() => {
     if (result) resultRef.current?.scrollIntoView({ block: 'nearest' });
   }, [result, saved]);
   const [saveError, setSaveError] = useState('');
   const [version, setVersion] = useState(0);
   void version;
-  const question = useMemo(() => pickQuestion(indicatorId, diagnosis), [indicatorId, diagnosis]);
+  const question = useMemo(() => pickQuestion(indicatorId, diagnosis, requestedPractice), [indicatorId, diagnosis, requestedPractice]);
   const entries = readLiveEvidence(studentId, nodeId, indicatorId);
-  const previous = result && saved && entries.length > 1 ? entries[entries.length - 2] : null;
+  const previous = result && saved ? entries.slice(0, -1).reverse().find((entry) =>
+    entry.questionId === question?.id
+    && entry.originalQuestionId === (viewedQuestionId || undefined)
+    && entry.originalRecordId === (viewedRecordId || undefined)) : null;
   const changed = previous ? [
     previous.intermediate !== midInput ? '去括号后' : '',
     (previous.combined || '') !== combinedInput ? '合并后' : '',
@@ -185,30 +260,52 @@ const LivePretest: React.FC<{
   );
 
   const submit = () => {
-    const nextResult = judgeInputs(midInput, finalInput, question, combinedInput);
-    setResult(nextResult);
-    setSaveError('');
-    setSaved(false);
-    const entry: LiveEvidenceEntry = {
-      at: new Date().toISOString(), studentId, nodeId, indicatorId, questionId: question.id,
-      id: `LIVE-${crypto.randomUUID()}`, intermediate: midInput, combined: combinedInput, final: finalInput,
-      kind: nextResult.kind, supports: nextResult.supports, followUp: nextResult.follow,
-    };
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    const signature = JSON.stringify([
+      studentId, nodeId, indicatorId, question.id, viewedQuestionId || '', viewedRecordId || '',
+      midInput, combinedInput, finalInput,
+    ]);
     try {
-      const next = [...entries, entry];
+      const nextResult = judgeInputs(midInput, finalInput, question, combinedInput);
+      setResult(nextResult);
+      setSaveError('');
+      setSaved(false);
+      if (lastSubmission.current?.signature === signature && lastSubmission.current.saved) {
+        setSaved(true);
+        return;
+      }
+      const repeated = lastSubmission.current?.signature === signature ? lastSubmission.current : null;
+      const entry: LiveEvidenceEntry = {
+        at: repeated ? entries.find((item) => item.id === repeated.id)?.at || new Date().toISOString() : new Date().toISOString(),
+        studentId, nodeId, indicatorId, questionId: question.id,
+        id: repeated?.id || `LIVE-${crypto.randomUUID()}`, intermediate: midInput, combined: combinedInput, final: finalInput,
+        originalQuestionId: viewedQuestionId || undefined, originalRecordId: viewedRecordId || undefined,
+        kind: nextResult.kind, supports: nextResult.supports, followUp: nextResult.follow,
+      };
+      const next = entries.some((item) => item.id === entry.id) ? entries : [...entries, entry];
       writeLiveEvidence(studentId, nodeId, indicatorId, next);
+      lastSubmission.current = { signature, id: entry.id, saved: true };
       onEvidence?.(next);
       setSaved(true);
       setVersion((v) => v + 1);
     } catch {
+      lastSubmission.current = null;
       setSaveError('本次结果尚未保存。请允许浏览器本地存储后重新查看结果，再带回讲评方案。');
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   };
 
   const headline = result?.kind === 'combine_wrong'
     ? (result.diffs.some((d) => d.includes('常数')) ? '合并同类项时，常数项需要复查' : '合并同类项时，请复查各项系数')
     : result ? KIND_LABEL[result.kind] : '';
-  const clearInputs = () => { setMidInput(''); setCombinedInput(''); setFinalInput(''); setResult(null); setSaved(false); setSaveError(''); };
+  const clearInputs = () => {
+    lastSubmission.current = null;
+    setMidInput(''); setCombinedInput(''); setFinalInput(''); setResult(null); setSaved(false); setSaveError('');
+  };
 
   return <>
     {!hideCard && <Button onClick={() => setOpen(true)}>做一道同类题</Button>}
@@ -222,17 +319,18 @@ const LivePretest: React.FC<{
           {viewedQuestionId && viewedQuestionId !== question.id && <p className="teacher-muted">本题为{questionLabel(viewedQuestionId)}的同类练习</p>}
         </div>
         <p>请学生做完这道题，再照着作答录入。</p>
+        {open && <PracticeHints key={requestedPractice || question.id} text={practiceHint} />}
         <form onSubmit={(e) => { e.preventDefault(); submit(); }} className="teacher-practice-form">
           <label htmlFor="practice-expanded">去括号后</label>
           <Input id="practice-expanded" aria-label="去括号后" maxLength={512} value={midInput}
-            onChange={(e) => { setMidInput(e.target.value); setResult(null); setSaved(false); }} />
+            onChange={(e) => { lastSubmission.current = null; setMidInput(e.target.value); setResult(null); setSaved(false); setSaveError(''); }} />
           <label htmlFor="practice-combined">合并后（可选）</label>
           <Input id="practice-combined" aria-label="合并后（可选）" maxLength={512} value={combinedInput}
-            onChange={(e) => { setCombinedInput(e.target.value); setResult(null); setSaved(false); }} />
+            onChange={(e) => { lastSubmission.current = null; setCombinedInput(e.target.value); setResult(null); setSaved(false); setSaveError(''); }} />
           <label htmlFor="practice-final">最终答案</label>
           <Input id="practice-final" aria-label="最终答案" maxLength={512} value={finalInput}
-            onChange={(e) => { setFinalInput(e.target.value); setResult(null); setSaved(false); }} />
-          <div className="teacher-actions"><Button type="primary" htmlType="submit">查看结果</Button><Button type="text" onClick={clearInputs}>重新输入</Button></div>
+            onChange={(e) => { lastSubmission.current = null; setFinalInput(e.target.value); setResult(null); setSaved(false); setSaveError(''); }} />
+          <div className="teacher-actions"><Button type="primary" htmlType="submit" loading={submitting}>查看结果</Button><Button type="text" onClick={clearInputs}>重新输入</Button></div>
         </form>
         <p className="teacher-muted teacher-practice-disclaimer">练习记录，不计入原测验成绩</p>
         {result && <section ref={resultRef} data-testid="pretest-result" className="teacher-practice-result" aria-live="polite">
@@ -252,6 +350,8 @@ const LivePretest: React.FC<{
               const next = new URLSearchParams(searchParams);
               next.set('tab', 'profile');
               next.delete('pretest');
+              next.delete('followupPractice');
+              if (requestedPractice) next.set('followup', indicatorId);
               const latest = entries[entries.length - 1];
               if (latest?.id) next.set('practiceRecord', latest.id);
               // 结果提示留在档案里时，用户可能再切题；把这次练习对应的原题与记录号

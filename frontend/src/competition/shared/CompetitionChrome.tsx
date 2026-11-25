@@ -1,15 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Dropdown } from 'antd';
-import { DownOutlined, LogoutOutlined } from '@ant-design/icons';
+import { Button, Dropdown } from 'antd';
+import { DownOutlined, LogoutOutlined, UploadOutlined } from '@ant-design/icons';
 import { useAuth } from '../../context/AuthContext';
-import { getSourceLabel, getSourceNotice } from '../dataSource';
+import { getBundle, getSourceLabel, getSourceNotice, isPrivateCompetitionData } from '../dataSource';
 import { analysisReturnPath } from './teacherContext';
 import ErrorBoundary from './ErrorBoundary';
+import ImportPanel from './ImportPanel';
 
 const NAV = [
   { path: '/class-analytics', label: '考试分析' },
-  { path: '/student-answers', label: '学生答卷' },
+  { path: '/student-answers', label: '学生学情' },
+  { path: '/curriculum', label: '课标与教材' },
+  { path: '/assistant', label: 'AI 助手' },
 ];
 
 const CompetitionChrome: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -17,8 +20,9 @@ const CompetitionChrome: React.FC<{ children: React.ReactNode }> = ({ children }
   const navigate = useNavigate();
   const { logout } = useAuth();
   const source = getSourceLabel();
-  const official = source === '官方赛题数据';
+  const official = isPrivateCompetitionData();
   const [notice, setNotice] = useState<string | null>(getSourceNotice());
+  const [importOpen, setImportOpen] = useState(false);
   useEffect(() => {
     const onFail = (e: Event) => setNotice((e as CustomEvent<string>).detail || null);
     const onReady = () => setNotice(null);
@@ -65,23 +69,24 @@ const CompetitionChrome: React.FC<{ children: React.ReactNode }> = ({ children }
           ))}
         </nav>
         <div className="comp-right">
-          <button type="button" className="teacher-text-link" aria-current={location.pathname === '/curriculum' ? 'page' : undefined}
-            onClick={() => go('/curriculum')}>教材资料</button>
-          {!official && <button type="button" className="comp-source is-demo"
-            onClick={() => window.location.assign('/class-analytics?source=official')}>
-            {source} · 切换官方数据
-          </button>}
+          <Button size="small" type="text" icon={<UploadOutlined />} onClick={() => setImportOpen(true)}>导入评测数据</Button>
           <Dropdown trigger={['click']} menu={{ items: [{ key: 'logout', icon: <LogoutOutlined />,
             label: '退出登录', onClick: () => { void logout(); } }] }}>
             <button type="button" className="comp-account" aria-label="账号菜单">教师 <DownOutlined /></button>
           </Dropdown>
         </div>
       </header>
+      {getBundle()?.manifest.independentEvaluation && <div className="comp-source">{source}</div>}
+      {!official && <button type="button" className="comp-source is-demo"
+        onClick={() => window.location.assign('/class-analytics?source=official')}>
+        {source} · 切换官方数据
+      </button>}
       {notice && <div className="comp-notice" role="status">
         官方数据暂未就绪，当前显示演示样例：{notice}
         <button type="button" onClick={() => window.location.reload()}>重试</button>
       </div>}
       <main className="comp-main"><ErrorBoundary>{children}</ErrorBoundary></main>
+      <ImportPanel open={importOpen} onClose={() => setImportOpen(false)} />
     </div>
   );
 };

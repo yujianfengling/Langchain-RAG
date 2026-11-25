@@ -1,11 +1,17 @@
+import { questionLabel } from '../shared/teacherContext';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Collapse, Drawer, Empty, Input, List, Modal, Radio, Select, Space, Spin, Table, Typography } from 'antd';
-import { useSearchParams } from 'react-router-dom';
-import { getBundle } from '../dataSource';
+import { Alert, Button, Collapse, Drawer, Empty, Input, List, Modal, Radio, Select, Space, Spin, Table, Tooltip, Typography } from 'antd';
+import { AimOutlined, BulbOutlined, CheckCircleOutlined, InfoCircleOutlined, RobotOutlined } from '@ant-design/icons';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { listAllQuestions, listAnswersByQuestion } from '../studentAnswers/data';
+import { getBundle, getDatasetId } from '../dataSource';
 import type { PlanComparison, ReviewPlan, ReviewPlans } from '../dataSource';
 import { readLiveEvidence } from '../livePretest/LivePretest';
 import { getToken } from '../../api/authState';
 import { getStudentName } from '../shared/ids';
+import { printedPageLabel } from '../shared/textbookPage';
+import TeachingSourceLink from '../curriculum/TeachingSourceLink';
+import './reviewPlanEnhance.css';
 
 const { Text, Paragraph, Title } = Typography;
 const APPLIED_KEY = 'competition.reviewplan.applied.v1';
@@ -29,6 +35,17 @@ const assignments = (p: ReviewPlan) => [
   ...p.pretest_tasks.flatMap((x) => x.students.map((student) => ({ student, item_id: x.item_id, type: 'pretest' }))),
 ];
 const taskKey = (a: { student: string; item_id: string; type: string }) => `${a.student}|${a.item_id}|${a.type}`;
+/** 讲评规划结论层：一个薄弱考点 = 一个讲评环节（讲什么 / 怎么讲 / 怎么确认），全部由当前方案与 bundle 现算 */
+interface ReviewSegment {
+  indicator: string; name: string; rate: number | null; rateText: string; lostCount: number;
+  typicalId: string; itemIds: string[]; reasons: string[]; mismatchFact: string;
+  textbook: string; suggestion: string;
+  pretest: { itemId: string; count: number; observe: string } | null;
+  wrongFacts: string[]; sampleStems: string[];
+  fallback: { id: string; stem: string }[];
+}
+interface AiQuestion { stem: string; answer: string; analysis: string; difficulty: string }
+interface AiState { busy: boolean; error: string; questions: AiQuestion[] | null }
 /** The server's base is official data, not necessarily the session plan already on screen. */
 function compareApplied(before: ReviewPlan, after: ReviewPlan): PlanComparison {
   const a = new Map(assignments(before).map((x) => [taskKey(x), x]));
@@ -58,11 +75,13 @@ const ReviewPlanPanel: React.FC<{
   quizId: string; classId: string; planTheme: string;
   onPlanThemeChange: (themeId: string) => void;
   onGoStudent: (studentId: string, questionId: string, indicator: string, recordId?: string) => void;
-}> = ({ quizId, classId, planTheme, onPlanThemeChange, onGoStudent }) => {
+  onFollowUp: (studentId: string, questionId: string, indicator: string, recordId?: string) => void;
+}> = ({ quizId, classId, planTheme, onPlanThemeChange, onGoStudent, onFollowUp }) => {
   const bundle = getBundle();
   const rp = bundle?.reviewPlans;
   const topics = bundle?.topics || [];
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
   const readUi = () => {
     try { return JSON.parse(sessionStorage.getItem(PLAN_UI_KEY) || '{}'); } catch { return {}; }
   };
@@ -72,7 +91,7 @@ const ReviewPlanPanel: React.FC<{
   });
   const [budget, setBudget] = useState<number>(() => {
     const url = params.get('reviewBudget');
-    return url === '2' ? 2 : url === '3' ? 3 : readUi().budget === 2 ? 2 : 3;
+    return url === '2' ? 2 : url === '3' ? 3 : readUi().budget === 3 ? 3 : 2;
   });
   const paramsRef = useRef(params); paramsRef.current = params;
   useEffect(() => {
@@ -83,7 +102,7 @@ const ReviewPlanPanel: React.FC<{
     if (next.toString() !== paramsRef.current.toString()) setParams(next, { replace: true });
   }, [budget, strategy, planTheme, quizId, classId, setParams]);
 
-  const scopeKey = `${quizId}|${classId}|${planTheme}`;
+  const scopeKey = `${getDatasetId()}|${quizId}|${classId}|${planTheme}`;
   const requestKey = `${scopeKey}|${budget}|${strategy}`;
   const requestKeyRef = useRef(requestKey); requestKeyRef.current = requestKey;
   const sequence = useRef(0);
@@ -96,6 +115,8 @@ const ReviewPlanPanel: React.FC<{
   const [applied, setApplied] = useState<Applied | undefined>(readApplied);
   const [recomputed, setRecomputed] = useState<Recomputed | null>(() => readAudit(requestKey));
   const [notice, setNotice] = useState('');
+  const [ai, setAi] = useState<Record<string, AiState>>({});
+  const aiSeq = useRef<Record<string, number>>({});
   const viewKey = `competition.plan.view:${scopeKey}`;
   const savedView = () => {
     if (sessionStorage.getItem('competition.plan.autoRecompute') === '1') return {};
@@ -103,6 +124,7 @@ const ReviewPlanPanel: React.FC<{
   };
   const [studentsOpen, setStudentsOpen] = useState(() => !!savedView().studentsOpen);
   const [questionOpen, setQuestionOpen] = useState<string | null>(() => savedView().questionOpen || null);
+  const [choosingFollowUp, setChoosingFollowUp] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(() => !!savedView().detailsOpen);
   const [search, setSearch] = useState('');
   useEffect(() => {
@@ -133,14 +155,14 @@ const ReviewPlanPanel: React.FC<{
     const token = getToken();
     const res = await fetch('/api/competition/review-plan/recompute', {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { 'X-User-Token': token } : {}) },
-      body: JSON.stringify({ node_id: quizId, class_id: classId, theme: planTheme, budget, strategy, extra_evidence: withEvidence ? collectLive() : [] }),
+      body: JSON.stringify({ node_id: quizId, class_id: classId, theme: planTheme, budget, strategy, dataset: getDatasetId(), extra_evidence: withEvidence ? collectLive() : [] }),
     });
     if (!res.ok) { const body = await res.json().catch(() => ({})); throw new Error(body.detail || `HTTP ${res.status}`); }
     return res.json() as Promise<{ plans: ReviewPlans; new_plans: ReviewPlans; base: ReviewPlan; new: ReviewPlan; changes: string[]; audit: PlanComparison }>;
   };
   useEffect(() => {
     const id = ++sequence.current;
-    setBusy(false); setError(''); setNotice(''); setRecomputed(readAudit(requestKey)); setLoading(false);
+    setBusy(false); setError(''); setNotice(''); setRecomputed(readAudit(requestKey)); setLoading(false); setAi({});
     if (bundled || !rp || live?.key === scopeKey) return;
     let cancelled = false;
     const key = requestKey;
@@ -205,7 +227,7 @@ const ReviewPlanPanel: React.FC<{
   const currentTasks = plan ? [...new Map(assignments(plan).map((a) => [taskKey(a), a])).values()] : [];
   const assignedStudents = new Set(currentTasks.map((a) => a.student));
   const emptied = [...removedStudents].filter((s) => !assignedStudents.has(s));
-  const impactLine = removedIds.length ? `少${strategy === 'common' ? '讲' : '测'} ${removedIds.join('、')}，${emptied.length ? `${emptied.join('、')} 需要另作安排` : `${removedStudents.size} 人仍有安排`}` : '';
+  const impactLine = removedIds.length ? `少${strategy === 'common' ? '讲' : '测'} ${removedIds.map(questionLabel).join('、')}，${emptied.length ? `${emptied.join('、')} 需要另作安排` : `${removedStudents.size} 人仍有安排`}` : '';
   const impactAnswers = (plan3?.lecture_items || []).filter((item) => removedIds.includes(item.item_id)).flatMap((item) =>
     [...new Set(item.lost_students)].filter((student) => (emptied.length ? emptied.includes(student) : removedStudents.has(student))).flatMap((student) => {
       const point = item.lost_points.find((p) => p.student === student && p.record_id);
@@ -221,31 +243,187 @@ const ReviewPlanPanel: React.FC<{
   const choices = strategy === 'common' ? (plan?.lecture_items || []).map((x) => ({ id: x.item_id, students: x.lost_students, reason: [...new Set(x.lost_points.map((p) => p.label))].slice(0, 2).join('；') || displayReason(x.rank_reason) }))
     : (plan?.pretest_tasks || []).map((x) => ({ id: x.item_id, students: x.students, reason: x.observe || displayReason(x.rank_reason || '') }));
   const cmp = sourceData?.comparison[String(budget)];
+  // 讲评环节：按本次薄弱考点（得分率低→高）排序，最多 3 个；数字与名单全部现算，不写死。
+  const segments = useMemo<ReviewSegment[]>(() => {
+    if (!plan || !bundle) return [];
+    const classStudents = new Set(bundle.students.filter((s) => s.classId === classId).map((s) => s.id));
+    const indIds = [...new Set([...plan.lecture_items.map((x) => x.indicator), ...plan.pretest_tasks.map((x) => x.indicator)])].filter(Boolean);
+    const usedIds = new Set([...plan.lecture_items.map((x) => x.item_id), ...plan.pretest_tasks.map((x) => x.item_id)]);
+    const segs = indIds.map((ind): ReviewSegment => {
+      const lecture = plan.lecture_items.filter((x) => x.indicator === ind);
+      const pretests = plan.pretest_tasks.filter((x) => x.indicator === ind);
+      const indQuestions = bundle.questions.filter((q) => q.kpId === ind);
+      const qIds = new Set(indQuestions.map((q) => q.id));
+      const answers = bundle.answers.filter((a) => a.quizId === quizId && qIds.has(a.questionId) && classStudents.has(a.studentId));
+      const lost = new Set(lecture.flatMap((x) => x.lost_students));
+      answers.forEach((a) => { if (a.score < a.fullScore) lost.add(a.studentId); });
+      const kp = bundle.kps.find((k) => {
+        const withQuiz = k as typeof k & { quizId?: string };
+        return (k.id === ind || k.id === `${quizId}-${ind}`) && (!withQuiz.quizId || withQuiz.quizId === quizId);
+      });
+      const stat = kp?.stats.find((s) => s.classId === classId);
+      let rate = stat?.scoreRate ?? null;
+      if (rate == null && answers.length) {
+        const full = answers.reduce((t, a) => t + a.fullScore, 0);
+        rate = full ? answers.reduce((t, a) => t + a.score, 0) / full : null;
+      }
+      const rateText = rate != null ? `${(rate * 100).toFixed(1)}%` : (stat?.status || '记录不足');
+      const indicator = bundle.curriculumMap?.indicators.find((i) => i.indicator_id === ind);
+      const name = kp?.name || indicator?.requirement || ind;
+      const reasons = [...new Set(lecture.flatMap((x) => x.lost_points.map((p) => p.label)))].slice(0, 2);
+      const mismatch = (bundle.diagnoses?.diagnoses || [])
+        .filter((d) => d.node_id === quizId && d.indicator_id === ind && classStudents.has(d.student_id))
+        .flatMap((d) => d.question_findings.filter((f) => f.kind === '过程与填答不一致'))[0];
+      const itemIds = (lecture.length ? lecture.map((x) => x.item_id) : pretests.map((x) => x.item_id));
+      const typicalId = itemIds[0] || indQuestions[0]?.id || '';
+      const pageRef = indicator?.textbook_pages?.[0];
+      const textbook = pageRef ? printedPageLabel(pageRef.printed) : (bundle.questions.find((q) => q.id === typicalId)?.sourceLocation || '教材页待定位');
+      const suggestion = mismatch
+        ? `先对照${questionLabel(mismatch.item_id)}的过程末行与填答栏，再回到教材例页规范书写。`
+        : reasons[0]
+          ? `围绕「${reasons[0]}」板演${questionLabel(typicalId)}，让学生说清每一步依据。`
+          : '结合教材例页重讲基本步骤，再让学生独立完成同型题。';
+      const pretest = pretests[0] ? { itemId: pretests[0].item_id, count: new Set(pretests[0].students).size, observe: pretests[0].observe } : null;
+      const wrongFacts = [...reasons, ...(mismatch ? [mismatch.fact] : []), ...lecture.map((x) => displayReason(x.rank_reason))].filter(Boolean).slice(0, 5);
+      const sampleStems = [...new Set([typicalId, ...indQuestions.map((q) => q.id)])]
+        .map((id) => bundle.questions.find((q) => q.id === id)?.stem || '').filter(Boolean).slice(0, 3);
+      const unused = indQuestions.filter((q) => !usedIds.has(q.id));
+      const fallback = (unused.length ? unused : indQuestions).slice(0, 3).map((q) => ({ id: q.id, stem: q.stem }));
+      return { indicator: ind, name, rate, rateText, lostCount: lost.size, typicalId, itemIds, reasons,
+        mismatchFact: mismatch?.fact || '', textbook, suggestion, pretest, wrongFacts, sampleStems, fallback };
+    });
+    return segs.sort((a, b) => (a.rate ?? 1.01) - (b.rate ?? 1.01) || b.lostCount - a.lostCount).slice(0, 3);
+  }, [plan, bundle, quizId, classId]);
+  const generateVariants = async (seg: ReviewSegment) => {
+    const key = seg.indicator; const scope = requestKey;
+    const id = (aiSeq.current[key] || 0) + 1; aiSeq.current[key] = id;
+    setAi((m) => ({ ...m, [key]: { busy: true, error: '', questions: null } }));
+    const fresh = () => requestKeyRef.current === scope && aiSeq.current[key] === id;
+    try {
+      const res = await fetch('/api/competition/ai-questions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-User-Token': getToken() || '' },
+        body: JSON.stringify({ indicator_id: seg.indicator, indicator_name: seg.name, quiz_id: quizId, class_id: classId,
+          wrong_facts: seg.wrongFacts, sample_stems: seg.sampleStems, count: 2 }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json() as { questions?: AiQuestion[] };
+      const questions = (data.questions || []).filter((q) => q && q.stem);
+      if (!questions.length) throw new Error('模型返回为空');
+      if (fresh()) setAi((m) => ({ ...m, [key]: { busy: false, error: '', questions } }));
+    } catch (e) {
+      if (fresh()) setAi((m) => ({ ...m, [key]: { busy: false, error: e instanceof Error ? e.message : String(e), questions: null } }));
+    }
+  };
   const selectedQuestion = plan?.lecture_items.find((x) => x.item_id === questionOpen);
-  if (!rp) return <section className="teacher-section" data-testid="review-plan"><Title level={4}>建议先讲</Title><Text type="secondary">当前演示数据没有讲评方案；可在下方查看易错题与答卷，不调用官方重算。</Text></section>;
+  if (!rp) {
+    const examples = listAllQuestions().flatMap(question => {
+      const answers = listAnswersByQuestion(question.id, { quizId, classId }).filter(a => a.score < a.fullScore);
+      return answers.length ? [{ question, answers }] : [];
+    }).sort((a, b) => new Set(b.answers.map(x => x.studentId)).size - new Set(a.answers.map(x => x.studentId)).size);
+    return <section className="teacher-section" data-testid="review-plan">
+      <Title level={4}>本次讲评</Title>
+      <Text type="secondary">按当前班级已有失分答卷选题</Text>
+      <div><Text type="secondary">环节按考点组织（顺序号非题号）；本节课讲哪几道以下方题单为准（预算 {budget} 道）。</Text></div>
+      {examples.slice(0, budget).map(({ question, answers }) => <details key={question.id}>
+        <summary>{question.stem} · {new Set(answers.map(a => a.studentId)).size} 人失分</summary>
+        {answers.map(a => <Button key={a.id} type="link" onClick={() => onGoStudent(a.studentId, question.id, question.kpId)}>
+          {getStudentName(a.studentId)} · 得分 {a.score}/{a.fullScore}
+        </Button>)}
+      </details>)}
+      {!examples.length && <Empty description="当前测验和班级没有可供讲评的失分答卷" />}
+    </section>;
+  }
   return <section className="teacher-section" data-testid="review-plan">
-    <div className="teacher-section-heading"><Title level={4} style={{ margin: 0 }}>建议先讲</Title><Space><Text>{strategy === 'common' ? '讲评题量' : '补测题量'}</Text><Radio.Group aria-label="方案题目预算" value={budget} onChange={(e) => setBudget(e.target.value)} options={[{ label: '2 道', value: 2 }, { label: '3 道', value: 3 }]} optionType="button" size="small" /></Space></div>
-    <div className="teacher-plan-scope"><Text type="secondary">仅讲评所选主题：</Text><Select aria-label="讲评主题" value={planTheme} onChange={onPlanThemeChange} options={topics.map((t) => ({ value: t.id, label: t.name }))} style={{ width: 170 }} />{usingApplied && <Text type="secondary">含本次练习记录</Text>}</div>
+    <div className="teacher-section-heading"><Title level={4} style={{ margin: 0 }}>本次讲评</Title><Space><Text>{strategy === 'common' ? '讲评题量' : '补测题量'}</Text><Radio.Group aria-label="方案题目预算" value={budget} onChange={(e) => setBudget(e.target.value)} options={[{ label: '2 道', value: 2 }, { label: '3 道', value: 3 }]} optionType="button" size="small" /></Space></div>
+    <div className="teacher-plan-scope"><Text type="secondary">讲评主题 </Text><Select aria-label="讲评主题" value={planTheme} onChange={onPlanThemeChange} options={topics.map((t) => ({ value: t.id, label: t.name }))} style={{ width: 170 }} />{usingApplied && <Text type="secondary">含本次练习记录</Text>}</div>
     {notice && <p className="teacher-result-note" role="status">{notice}</p>}
     {error && <Alert type="error" showIcon message={error} action={<Button onClick={() => { if (plan) void recompute(sessionStorage.getItem('competition.plan.autoRecompute') === '1'); else setRetry((n) => n + 1); }}>重试</Button>} />}
     {(loading || busy) && <Space role="status"><Spin size="small" /><Text>{busy ? '正在重算安排…' : '正在生成该范围方案…'}</Text></Space>}
     {!loading && !plan && !error && <Empty description="该范围暂无可用方案" />}
     {plan && <>
+      {segments.length > 0 && <div className="rp-segments" data-testid="review-plan-segments">
+        <div className="rp-segments-head">
+          <Title level={5} style={{ margin: 0 }}>讲评规划 · 这节课讲什么</Title>
+          <Tooltip title="得分率 = 本班该考点有效作答得分 ÷ 满分；失分人数按方案名单与答卷去重；环节按得分率从低到高排序，最多 3 个。数据来自本次测验记录与当前方案，下方题组为预算明细。">
+            <InfoCircleOutlined className="rp-segments-info" tabIndex={0} aria-label="讲评规划口径说明" />
+          </Tooltip>
+          <Button size="small" type="primary" ghost icon={<RobotOutlined />} onClick={() => navigate(`/assistant?prompt=${encodeURIComponent(`请根据班级 ${classId} 测验 ${quizId} 的薄弱考点生成40分钟讲评教案，含分层任务与教材出处。`)}&autosend=1`)} data-testid="jump-assistant-plan">AI 生成教案</Button>
+        </div>
+        {segments.map((s, i) => {
+          const st = ai[s.indicator];
+          return <article className="rp-segment" key={s.indicator} data-testid={`review-segment-${s.indicator}`}>
+            <header className="rp-segment-head">
+              <span className="rp-segment-index" title="讲评环节顺序，不是题号；题号见「典型错题」">环节 {i + 1}</span>
+              <AimOutlined className="rp-segment-icon" />
+              <div className="rp-segment-title">
+                <Text strong>{s.name}</Text>
+                <span className="rp-segment-meta">本班得分率 <b>{s.rateText}</b> · {s.lostCount} 人失分</span>
+              </div>
+            </header>
+            <div className="rp-segment-body">
+              <div className="rp-segment-point"><BulbOutlined /><div>
+                <span className="rp-point-label">怎么讲</span>
+                <span>典型错题 </span>
+                {s.itemIds.map((id) => <Button key={id} type="link" size="small" onClick={() => { setChoosingFollowUp(false); setQuestionOpen(id); }}>{questionLabel(id)}</Button>)}
+                {s.reasons.length > 0 && <div>错因：{s.reasons.join('；')}</div>}
+                {s.mismatchFact && <div>过程与填答差异：{s.mismatchFact}</div>}
+                <div>教材出处：{s.textbook}{s.typicalId && <> · <TeachingSourceLink questionId={s.typicalId} quizId={quizId} classId={classId} /></>}</div>
+                <div className="rp-segment-suggestion">讲法建议：{s.suggestion}</div>
+              </div></div>
+              <div className="rp-segment-point"><CheckCircleOutlined /><div>
+                <span className="rp-point-label">怎么确认</span>
+                <div>当堂追问：请学生复述{questionLabel(s.typicalId)}的关键步骤并说明依据{s.typicalId && <Button type="link" size="small" onClick={() => { setChoosingFollowUp(false); setQuestionOpen(s.typicalId); }}>看典型答卷</Button>}</div>
+                <div>分层补测：{s.pretest
+                  ? <>{questionLabel(s.pretest.itemId)} · {s.pretest.count} 人（{s.pretest.observe}）<Button type="link" size="small" onClick={() => setStudentsOpen(true)}>分层补测名单</Button></>
+                  : '本环节暂无补测分组，可在分析详情中用现场证据重算后补充'}</div>
+              </div></div>
+            </div>
+            <footer className="rp-segment-foot">
+              <Button size="small" icon={<RobotOutlined />} loading={st?.busy} onClick={() => void generateVariants(s)}>AI 出变式题</Button>
+              {st?.busy && <span className="rp-ai-busy" role="status"><Spin size="small" />AI 出题中…</span>}
+              {st?.questions && <div className="rp-ai-result" data-testid={`ai-variants-${s.indicator}`}>
+                <span className="rp-ai-note">AI 生成 · 需教师核对</span>
+                <Collapse size="small" items={st.questions.map((q, qi) => ({
+                  key: String(qi), label: `变式 ${qi + 1}${q.difficulty ? ` · ${q.difficulty}` : ''}`,
+                  children: <div className="rp-ai-q"><Paragraph className="rp-ai-q-stem">{q.stem}</Paragraph><Paragraph>答案：{q.answer}</Paragraph><Paragraph type="secondary">解析：{q.analysis}</Paragraph></div>,
+                }))} />
+              </div>}
+              {st?.error && <div className="rp-ai-fallback" data-testid={`ai-fallback-${s.indicator}`}>
+                <Alert type="warning" showIcon message="模型暂不可用，可改用题库同考点题" />
+                {s.fallback.length > 0
+                  ? <ul className="rp-ai-fallback-list">{s.fallback.map((q) => <li key={q.id}><Text strong>{questionLabel(q.id)}</Text> {q.stem}</li>)}</ul>
+                  : <Text type="secondary">题库暂无同考点候选题</Text>}
+              </div>}
+            </footer>
+          </article>;
+        })}
+      </div>}
       {choices.length === 0 && <Empty description="该主题没有可安排的题目" />}
-      {choices.map((x) => <div className="teacher-list-row" key={x.id} data-testid={`${strategy === 'common' ? 'lecture' : 'pretest'}-choice-${x.id}`}>
-        <Text strong>{x.id}</Text><div style={{ flex: 1, minWidth: 0 }}><div>{bundle?.questions.find((q) => q.id === x.id)?.stem || '暂无题干'}</div><Text type="secondary">{strategy === 'common' ? '重点讲：' : '补观察：'}{x.reason}</Text></div>
-        <Button type="link" onClick={() => setQuestionOpen(x.id)}>{new Set(x.students).size} 人{strategy === 'common' ? '失分' : '待观察'} · 看失分情况</Button>
+      {choices.map((x) => <div className="teacher-list-row rp-choice-row" key={x.id} data-testid={`${strategy === 'common' ? 'lecture' : 'pretest'}-choice-${x.id}`}>
+        <Text strong>{questionLabel(x.id)}</Text><div className="rp-choice-main" style={{ flex: 1, minWidth: 0 }}><div>{bundle?.questions.find((q) => q.id === x.id)?.stem || '暂无题干'}</div><Text type="secondary">{strategy === 'common' ? '重点讲：' : '补观察：'}{x.reason}</Text></div>
+        <div className="teacher-plan-question-actions">
+          <Button className="teacher-answer-trigger" onClick={() => { setChoosingFollowUp(false); setQuestionOpen(x.id); }}>{new Set(x.students).size} 人{strategy === 'common' ? '失分' : '待观察'} · 看答卷</Button>
+          {strategy === 'common' && <Button type="link" onClick={() => {
+            setChoosingFollowUp(true); setQuestionOpen(x.id);
+          }}>课后五分钟补测</Button>}
+        </div>
       </div>)}
-      {impactLine && <div data-testid="budget-tradeoff" className="teacher-muted">{impactLine}{impactAnswers.map((a) => <Button key={`${a.student}|${a.itemId}|${a.recordId}`} type="link" aria-label={`查看答卷 ${a.student} ${quizId} ${a.itemId}`} onClick={() => onGoStudent(a.student, a.itemId, a.indicator, a.recordId)}>查看答卷{impactAnswers.length > 1 ? ` · ${getStudentName(a.student)} ${a.itemId}` : ''}</Button>)}</div>}
+      {impactLine && <div data-testid="budget-tradeoff" className="teacher-muted">{impactLine}{impactAnswers.map((a) => <Button key={`${a.student}|${a.itemId}|${a.recordId}`} type="link" aria-label={`查看答卷 ${a.student} ${quizId} ${a.itemId}`} onClick={() => onGoStudent(a.student, a.itemId, a.indicator, a.recordId)}>看学生 {a.student} 的{questionLabel(a.itemId)}答卷</Button>)}</div>}
       <div className="teacher-actions"><Button onClick={() => setStudentsOpen(true)}>看学生安排（{assignedStudents.size} 人）</Button><Button type="text" onClick={() => setDetailsOpen(true)}>分析详情</Button></div>
     </>}
     {!plan && <Button onClick={() => setDetailsOpen(true)}>分析详情</Button>}
-    <Drawer title="看失分情况" open={!!questionOpen} onClose={() => setQuestionOpen(null)} width={620}
+    <Drawer title={choosingFollowUp ? '课后五分钟补测 · 选择学生' : '看失分情况'} open={!!questionOpen} onClose={() => setQuestionOpen(null)} width={620}
       extra={<Button type="text" onClick={() => setQuestionOpen(null)}>返回题单</Button>}>
-      <Title level={5}>{questionOpen} · {bundle?.questions.find((q) => q.id === questionOpen)?.stem}</Title>
+      <Title level={5}>{questionLabel(questionOpen || '')} · {bundle?.questions.find((q) => q.id === questionOpen)?.stem}</Title>
+      {questionOpen && <Space wrap>
+        <TeachingSourceLink questionId={questionOpen} quizId={quizId} classId={classId} />
+        <TeachingSourceLink questionId={questionOpen} quizId={quizId} classId={classId} view="lecture" />
+      </Space>}
       {selectedQuestion ? <List dataSource={[...new Set(selectedQuestion.lost_points.map((p) => p.student))]} locale={{ emptyText: '暂无可定位的失分观察项' }} renderItem={(student) => {
         const points = selectedQuestion.lost_points.filter((p) => p.student === student);
-        return <List.Item><Button type="link" onClick={() => onGoStudent(student, selectedQuestion.item_id, selectedQuestion.indicator, points[0]?.record_id)}>{getStudentName(student)}</Button><span>{[...new Set(points.map((p) => p.label))].join('；')}</span></List.Item>;
+        const response = bundle?.answers.find(a => a.studentId === student && a.questionId === questionOpen && a.quizId === quizId && a.sourceRecordId === points[0]?.record_id);
+        return <List.Item><Button type="link" onClick={() => onGoStudent(student, selectedQuestion.item_id, selectedQuestion.indicator, points[0]?.record_id)}>{getStudentName(student)}</Button><div>{response && <div>填答 {response.finalAnswer || '未单独记录'} · 得分 {response.score}/{response.fullScore}</div>}<span>{[...new Set(points.map((p) => p.label))].join('；')}</span></div><Button size="small" onClick={() => onFollowUp(student, selectedQuestion.item_id, selectedQuestion.indicator, points[0]?.record_id)} aria-label={`安排学生 ${student} 的课后补测`}>安排补测</Button></List.Item>;
       }} />
         : <List dataSource={plan?.pretest_tasks.find((x) => x.item_id === questionOpen)?.students || []} renderItem={(s) => <List.Item><Button type="link" onClick={() => onGoStudent(s, questionOpen || '', indicatorOf(questionOpen || ''))}>{getStudentName(s)} · 查看现有答卷</Button></List.Item>} />}
     </Drawer>

@@ -1,14 +1,15 @@
 import React, { Suspense, lazy } from 'react';
-import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, useLocation, useNavigate, Navigate } from 'react-router-dom';
 import { Alert, Layout, ConfigProvider, Button, Spin } from 'antd';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { ReloadOutlined } from '@ant-design/icons';
+import { ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import LoginRequired from './components/LoginRequired';
 import CompetitionChrome from './competition/shared/CompetitionChrome';
 import { CourseProvider } from './context/CourseContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { themeConfig } from './theme';
+import './competition/assistant/assistant.css';
 
 /**
  * 路由级懒加载（首屏只留框架与公共依赖）
@@ -18,6 +19,7 @@ import { themeConfig } from './theme';
 const ClassAnalyticsPage = lazy(() => import('./competition/classAnalytics/ClassAnalyticsPage'));
 const StudentAnswersPage = lazy(() => import('./competition/studentAnswers/StudentAnswersPage'));
 const CurriculumPage = lazy(() => import('./competition/curriculum/CurriculumPage'));
+const AssistantPage = lazy(() => import('./competition/assistant/AssistantPage'));
 
 /** 比赛版统一落点：班级学情（老师看完一次测验的第一步）。 */
 const COMPETITION_HOME = '/class-analytics';
@@ -80,6 +82,8 @@ const AppRoutes: React.FC = () => {
               <Route path="/class-analytics" element={<Protected><ClassAnalyticsPage /></Protected>} />
               <Route path="/student-answers" element={<Protected><StudentAnswersPage /></Protected>} />
               <Route path="/curriculum" element={<Protected><CurriculumPage /></Protected>} />
+              {/* AI 助手：独立聊天页，支持 ?prompt=...&autosend=1 深链；不进主导航三入口。 */}
+              <Route path="/assistant" element={<Protected><AssistantPage /></Protected>} />
               {/* 学生端「我的主页 / 设置」不属于比赛版：一并回收，避免老师误入空白个人页。 */}
               <Route path="/me" element={<Navigate to={COMPETITION_HOME} replace />} />
               <Route path="/settings" element={<Navigate to={COMPETITION_HOME} replace />} />
@@ -101,6 +105,24 @@ const AppRoutes: React.FC = () => {
         </motion.div>
       </AnimatePresence>
     </div>
+  );
+};
+
+/**
+ * AI 助手入口：固定右下角悬浮按钮（页面级）。
+ * 特意不加进 CompetitionChrome 的 comp-nav —— 主导航三入口
+ * ['考试分析','学生学情','课标与教材'] 的契约必须保持。
+ * 默认 52px 圆形仅图标（少遮内容），hover / focus-visible 展开为带文字胶囊。
+ */
+const AssistantEntry: React.FC = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  if (location.pathname === '/assistant') return null;
+  return (
+    <button type="button" className="assistant-entry-fab" aria-label="AI 助手" onClick={() => navigate('/assistant')}>
+      <RobotOutlined aria-hidden />
+      <span className="assistant-entry-fab-label" aria-hidden>AI 助手</span>
+    </button>
   );
 };
 
@@ -141,6 +163,7 @@ const App: React.FC = () => {
   return (
     <CompetitionChrome>
       <AppRoutes />
+      <AssistantEntry />
     </CompetitionChrome>
   );
 };

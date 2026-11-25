@@ -391,6 +391,9 @@ def compute(loaded: LoadResult, events: Dict[str, dict], insufficient: int = INS
         "included_scored_events": included_scored_events,
         "quarantined_events": quarantined_events,
         "out_of_scope_events": out_of_scope_events,
+        "load_isolated_records": sum(
+            1 for i in loaded.issues
+            if i.table == "作答记录" and i.action.startswith("隔离")),
     }
 
     # 可信期望集合（供 export_package.verify 独立核对主键与对账）

@@ -322,6 +322,35 @@ def build(src: Path, csv_dir: Path, out: Path, source_label: str = "sample") -> 
             })
     anomalies.sort(key=lambda a: (a["record_id"], a["kind"]))
 
+    # 加载阶段隔离（同版本冲突/失效引用/越界）也要进页面异常清单，否则教师只看到
+    # 学生变「无记录」却无处查原因；行级依据与 data_quality.csv 同源。
+    dq = src / "data_quality.csv"
+    if dq.is_file():
+        import csv as _csv
+        kind_map = {"同版本冲突": "conflict", "学生不存在": "dangling_student",
+                    "题目不存在": "dangling_item", "缺事件编号": "missing_event",
+                    "分数越界": "quarantined"}
+        seen = {a["record_id"] for a in anomalies}
+        with open(dq, encoding="utf-8-sig", newline="") as f:
+            for row in _csv.DictReader(f):
+                if row.get("table") != "作答记录" or "隔离" not in (row.get("action") or ""):
+                    continue
+                rid = row.get("record_id", "")
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                parts = (row.get("event_id") or "").split("-")
+                sid, nid, iid = parts if len(parts) == 3 else ("", "", "")
+                anomalies.append({
+                    "record_id": rid, "event_id": row.get("event_id", ""),
+                    "student_id": sid, "class_id": student_class.get(sid, ""),
+                    "item_id": iid, "node_id": nid, "indicator_id": item_ind.get(iid, ""),
+                    "kind": kind_map.get(row.get("issue", ""), "load_isolated"),
+                    "score": None, "full_score": None, "status": "隔离待核",
+                    "reason": f"{row.get('issue', '')}：{row.get('detail', '')}",
+                })
+        anomalies.sort(key=lambda a: (a["record_id"], a["kind"]))
+
     payload = {
         "manifest.json": manifest,
         "classes.json": classes, "topics.json": topics, "quizzes.json": quizzes,

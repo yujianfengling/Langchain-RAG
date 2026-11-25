@@ -1,0 +1,74 @@
+/* 讲评规划结论层 + 题组行内对齐修复（仅本面板使用，单一强调色 --comp-accent） */
+
+[data-testid="review-plan"] .rp-segments { display: grid; gap: 12px; margin: 4px 0 16px; }
+.rp-segments-head { display: flex; align-items: center; gap: 8px; }
+.rp-segments-info { color: var(--comp-ink-2, #46506a); cursor: help; }
+
+.rp-segment {
+  padding: 12px 14px; background: #fff;
+  border: 1px solid var(--comp-line, #e3e8ef);
+  border-left: 3px solid var(--comp-accent, #285c85);
+  border-radius: 10px;
+}
+.rp-segment-head { display: flex; align-items: flex-start; gap: 10px; }
+.rp-segment-index {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  height: 22px; padding: 0 9px; margin-top: 1px; border-radius: 11px;
+  background: var(--comp-accent, #285c85); color: #fff; font-size: 11px; font-weight: 600;
+  white-space: nowrap;
+}
+.rp-segment-icon { margin-top: 4px; color: var(--comp-accent, #285c85); }
+.rp-segment-title { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.rp-segment-meta { color: #52667b; font-size: 12px; }
+.rp-segment-meta b { color: var(--comp-accent, #285c85); }
+
+.rp-segment-body { display: grid; gap: 6px; margin-top: 8px; }
+.rp-segment-point { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.7; color: #24364b; }
+.rp-segment-point > .anticon { flex: 0 0 auto; margin-top: 5px; color: var(--comp-accent, #285c85); }
+.rp-segment-point > div { min-width: 0; }
+.rp-point-label { margin-right: 6px; font-weight: 600; color: var(--comp-ink-1, #1f2430); }
+.rp-segment-point .ant-btn-link { height: auto; padding-inline: 4px; }
+.rp-segment-suggestion { color: var(--comp-ink-1, #1f2430); }
+
+.rp-segment-foot {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--comp-line, #e3e8ef);
+}
+.rp-ai-busy { display: inline-flex; align-items: center; gap: 6px; color: #52667b; font-size: 12px; }
+.rp-ai-result, .rp-ai-fallback { flex-basis: 100%; min-width: 0; }
+.rp-ai-note {
+  display: inline-block; margin-bottom: 6px; padding: 1px 8px;
+  border: 1px solid #b5cfdf; border-radius: 4px; background: #f3f8fb;
+  color: #174f79; font-size: 11.5px;
+}
+.rp-segment .ant-collapse { background: #fff; }
+.rp-segment .ant-collapse-content-box { font-size: 12.5px; line-height: 1.7; }
+.rp-ai-q-stem { white-space: pre-wrap; word-break: break-word; }
+.rp-ai-fallback-list { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; line-height: 1.7; color: #24364b; }
+
+/* 错位修复：「N 人失分 · 看答卷」不再脱离文档流。
+   teacherAnalytics.css 把题组行设为两列 grid，操作区会被自动摆到 65px 窄列里溢出压字；
+   这里用更高优先级选择器把行改回行内 flex，操作区正常流靠右、窄屏换行到下方。 */
+[data-testid="review-plan"] > .teacher-list-row.rp-choice-row,
+.teacher-analysis-grid [data-testid="review-plan"] > .teacher-list-row.rp-choice-row {
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 14px; padding: 12px 0;
+}
+[data-testid="review-plan"] > .teacher-list-row.rp-choice-row > strong { flex: 0 0 56px; }
+.rp-choice-row > .rp-choice-main { flex: 1 1 220px; min-width: 0; }
+.rp-choice-row .teacher-plan-question-actions {
+  position: static; flex: 0 1 auto; margin-left: auto;
+  flex-direction: row; align-items: center; flex-wrap: wrap; gap: 4px 10px;
+}
+.rp-choice-row .teacher-plan-question-actions .teacher-answer-trigger { margin: 0; white-space: nowrap; }
+@media (max-width: 620px) {
+  .rp-choice-row .teacher-plan-question-actions { flex-basis: 100%; margin-left: 70px; justify-content: flex-start; }
+}
+/* AI 讲评教案 */
+.lesson-plan section { margin: 12px 0; }
+.lesson-plan h4 { margin: 0 0 6px; font-size: 14px; color: #174f79; }
+.lesson-plan ul { margin: 0; padding-left: 20px; }
+.lesson-stage { padding: 12px 14px; border: 1px solid #e3e8ef; border-left: 3px solid #2878b8; border-radius: 8px; margin-bottom: 10px; background: #fbfcfe; }
+.lesson-stage-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lesson-tiered { display: grid; gap: 4px; margin: 6px 0; }
+.lesson-tiered > div { display: flex; gap: 6px; align-items: baseline; font-size: 13px; }
+.lesson-refs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }

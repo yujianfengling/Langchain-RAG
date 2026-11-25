@@ -95,6 +95,7 @@ def build_facts(ctx: dict, class_members: List[str], extra: Optional[List[dict]]
         "combine_wrong": ("LIVE-COMBINE", "合并同类项（现场观察）"),
         "transcription_wrong": ("LIVE-TRANSCRIPTION", "过程末行与最终填答不一致（现场观察）"),
     }
+    seen_live: set[str] = set()
     for x in extra or []:
         sid, iid = x.get("student_id"), x.get("item_id")
         if sid not in class_members:
@@ -102,6 +103,11 @@ def build_facts(ctx: dict, class_members: List[str], extra: Optional[List[dict]]
         ind = item_ind.get(iid, "")
         if ind not in inds:
             continue
+        record_id = x.get("record_id")
+        if isinstance(record_id, str) and record_id:
+            if record_id in seen_live:
+                continue
+            seen_live.add(record_id)
         kind = x.get("kind")
         if kind == "correct":
             scored_count[(sid, ind)] += 1

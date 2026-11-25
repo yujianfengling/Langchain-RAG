@@ -485,7 +485,7 @@ a:hover { color: var(--color-primary-hover); }
    白底、深灰文字；两班用蓝/青绿辅助区分；失分用琥珀；记录不足灰色。
    ============================================================ */
 .competition-page {
-  max-width: 1440px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 22px 26px 48px;
   color: #263041;
@@ -620,7 +620,10 @@ a:hover { color: var(--color-primary-hover); }
   background: var(--comp-accent-soft); color: var(--comp-ink-2);
   border-bottom: 1px solid var(--comp-line); font-size: 12px; line-height: 1.6;
 }
-.comp-main { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+/* 底部留白 84px：滚动到底时内容不落在右下角 AI 助手 FAB（52px + 24px 边距）下。
+   聊天页按 comp-main.clientHeight 定高且无 FAB，用 :has 排除，避免多出一段空滚动。 */
+.comp-main { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-bottom: 84px; scroll-padding-top: 76px; }
+.comp-main:has(.assistant-shell) { padding-bottom: 0; }
 .comp-stage, .comp-route { min-height: 100%; }
 .comp-route { display: block; }
 .login-scroll > .comp-stage,
@@ -811,12 +814,35 @@ a:hover { color: var(--color-primary-hover); }
 .teacher-shell .comp-nav-item.is-current { background: none; border-bottom-color: var(--comp-accent); }
 .teacher-text-link { border: 0; background: transparent; cursor: pointer; font: inherit; color: #526273; padding: 8px 0; }
 .teacher-text-link:hover, .teacher-text-link[aria-current="page"] { color: var(--comp-accent); }
-.teacher-shell .competition-page { max-width: 1160px; padding: 28px 24px 64px; font-size: 14px; line-height: 1.65; }
+/* 满宽工作台：1366/1920 屏利用两侧空白，窄屏由下方媒体查询回落 */
+.teacher-shell .competition-page { max-width: 1600px; padding: 28px 32px 64px; font-size: 14px; line-height: 1.65; }
 .teacher-page-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px 28px; margin-bottom: 24px; }
 .teacher-page-header h1, .teacher-page-header h2 { margin: 0; font-size: 25px; font-weight: 650; color: #263340; }
 .teacher-section { background: #fff; border: 1px solid #e2e6e9; border-radius: 8px; padding: 22px 26px; margin-bottom: 24px; min-width: 0; }
 .teacher-section-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
 .teacher-section-heading h2, .teacher-section-heading h3 { font-size: 19px; margin: 0; font-weight: 650; }
+/* 区块标题语义图标：统一强调色，图标+文字替代纯文字堆叠 */
+.teacher-section-heading h2 > .anticon,
+.teacher-section-heading h3 > .anticon,
+.teacher-section-heading .ant-typography > .anticon,
+.teacher-page-header .ant-typography > .anticon,
+h3.teacher-section-heading > .anticon,
+.teacher-learning-block h3 > .anticon,
+.student-profile h4 > .anticon { margin-right: 8px; color: var(--comp-accent, #285c85); font-size: 0.92em; }
+/* h3 本身即 heading 容器时（答卷页小节），图标与文字左对齐而非两端撑开 */
+h3.teacher-section-heading { justify-content: flex-start; gap: 0; }
+/* 口径说明收进折叠：默认一行小字触发器，不占正文视觉 */
+.teacher-note-fold { margin: 10px 0 0; }
+.teacher-note-fold > summary {
+  display: inline-flex; align-items: center; gap: 6px; width: fit-content;
+  color: #8a93a3; font-size: 12.5px; cursor: pointer; padding: 2px 0; list-style: none;
+}
+.teacher-note-fold > summary::-webkit-details-marker { display: none; }
+.teacher-note-fold > summary:hover { color: var(--comp-accent, #285c85); }
+.teacher-note-fold > summary .anticon { font-size: 13px; }
+.teacher-note-fold > p { margin: 6px 0 0; max-width: 920px; }
+.teacher-note-hint { color: #9aa3b2; font-size: 13px; cursor: help; margin-left: 6px; }
+.teacher-note-hint:hover { color: var(--comp-accent, #285c85); }
 .teacher-muted { color: #687582; font-size: 13px; font-weight: 400; }
 .teacher-result-note { color: #305a42; border-left: 3px solid #588467; padding: 4px 12px; margin: 10px 0; }
 .teacher-list-row { padding: 16px 0; border-bottom: 1px solid #e9edf0; }
@@ -837,6 +863,7 @@ a:hover { color: var(--color-primary-hover); }
 .teacher-shell summary:hover, .teacher-practice-modal summary:hover { color: var(--comp-accent, #285c85); }
 .teacher-shell .ant-card { box-shadow: none; }
 .teacher-shell .ant-table { font-size: 13px; }
+.teacher-shell .ant-table-tbody > tr > td { line-height: 1.5; }
 .teacher-answer-layout { display: grid; grid-template-columns: 160px minmax(0, 1fr); align-items: start; gap: 24px; }
 .teacher-question-nav { position: sticky; top: 16px; min-width: 0; max-height: calc(100dvh - 150px); overflow-y: auto; }
 .teacher-question-nav button { width: 100%; text-align: left; }
@@ -907,3 +934,22 @@ a:hover { color: var(--color-primary-hover); }
   .teacher-practice-modal .ant-modal-content { padding: 20px; }
   .teacher-practice-question h2 { font-size: 20px; }
 }
+
+.teacher-shell .teacher-page-header { position: sticky; top: 0; z-index: 4; background: #f5f7f8; padding: 8px 0; }
+.teacher-current-context { flex: 1; color: #45566b; }
+.teacher-short-answer .teacher-evidence-advice { margin-top: 16px; padding: 10px 0 0; border: 0; border-top: 1px solid #e1e7ed; }
+.teacher-shell > .comp-source { align-self: flex-start; }
+@media (max-width: 640px) {
+  .teacher-shell .teacher-page-header { gap: 6px; }
+  .teacher-current-context { flex-basis: 100%; order: 3; }
+}
+
+/* 对比度/层级打磨：正文与标题加深、次要文字不再发灰、卡片边界更清晰 */
+.comp-main { color: #243040; }
+.teacher-muted { color: #556070; }
+.comp-shell .ant-typography-secondary, .comp-shell .ant-typography.ant-typography-secondary { color: #5a6472; }
+.teacher-section-heading h2, .teacher-section-heading h3 { color: #17203a; font-weight: 700; }
+.competition-title.ant-typography { color: #101828; }
+.teacher-section { border-color: #d8dee6; box-shadow: 0 1px 2px rgba(16, 24, 40, .04); }
+.teacher-exam-verdict-text { color: #101828; font-weight: 600; }
+h2.teacher-section-heading { justify-content: flex-start; gap: 8px; }

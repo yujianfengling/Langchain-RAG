@@ -1,0 +1,21 @@
+.followup-comparison { margin: 12px 0; }
+.followup-comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.followup-answer-box { min-width: 0; padding: 12px 14px; background: #fff; border: 1px solid #dce8f0; border-radius: 8px; }
+.followup-answer-box dl { margin: 8px 0 0; }
+.followup-answer-box dl > div { display: grid; grid-template-columns: minmax(72px, auto) 1fr; gap: 8px; align-items: baseline; }
+.followup-answer-box dt { color: #51677a; }
+.followup-answer-box dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.followup-next { margin-top: 10px; }
+.followup-next > p { margin: 5px 0; }
+.followup-next .ant-btn, .practice-hints .ant-btn { padding-inline: 0; }
+.followup-ai-note { white-space: pre-wrap; }
+.followup-card-questions { padding: 0; list-style: none; }
+.followup-card-questions > li { padding: 12px 0; border-bottom: 1px solid #dce8f0; }
+.followup-card-questions .ant-btn { margin-top: 8px; }
+.followup-card-response { margin-top: 10px; }
+.followup-date { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin: 8px 0 12px; }
+.followup-date .ant-input { width: auto; }
+.followup-pending-response { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 620px) {
+  .followup-comparison-grid { grid-template-columns: minmax(0, 1fr); }
+}

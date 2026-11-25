@@ -1,6 +1,6 @@
 .teacher-analysis-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
   align-items: start;
   gap: 18px;
 }
@@ -21,7 +21,7 @@
 .teacher-kp-panel .teacher-kp-controls label { display: flex; align-items: center; gap: 6px; }
 .teacher-analysis-grid [data-testid="review-plan"] > .teacher-list-row {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-columns: 65px minmax(0, 1fr);
   gap: 4px 10px;
   padding: 12px 0;
   align-items: start;
@@ -80,3 +80,172 @@
   .teacher-kp-panel .bc-val { max-width: 90px; }
   .teacher-kp-panel .teacher-kp-controls .ant-radio-group { display: flex; flex-wrap: wrap; gap: 4px 0; }
 }
+
+.teacher-analysis-grid [data-testid="review-plan"] { border-top: 3px solid var(--comp-accent); }
+.teacher-analysis-grid .teacher-list-row > strong { white-space: nowrap; }
+.teacher-showcase { margin: 14px 0; }
+.teacher-showcase summary, .teacher-untested summary { cursor: pointer; padding: 8px 0; }
+.teacher-showcase-list { margin-top: 8px; }
+.teacher-untested { margin: 8px 0; }
+.teacher-exam-overview { padding: 18px; }
+.teacher-exam-classes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.teacher-exam-class { padding: 16px; border: 1px solid var(--comp-line, #e3e8ef); border-radius: 10px; background: #fff; }
+.teacher-exam-class-title { display: flex; justify-content: space-between; gap: 12px; color: var(--comp-ink-2, #46506a); }
+.teacher-exam-class-title span, .teacher-exam-highlow { color: #64748b; font-size: 13px; }
+.teacher-exam-rate { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-top: 12px; color: #24364b; }
+.teacher-exam-rate strong { font-size: 30px; line-height: 1.2; }
+.teacher-exam-rate span { color: #52667b; font-size: 13px; }
+.teacher-exam-track { height: 10px; margin: 8px 0 12px; overflow: hidden; border-radius: 6px; background: #edf1f5; }
+.teacher-exam-track i { display: block; height: 100%; border-radius: inherit; }
+.teacher-exam-highlow { display: flex; align-items: center; flex-wrap: wrap; gap: 0 4px; }
+.teacher-exam-highlow .ant-btn { padding: 2px 6px; }
+.teacher-exam-note { margin: 12px 0 0; }
+.teacher-exam-distribution { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:14px; }
+.teacher-exam-distribution>div { display:grid; grid-template-columns:1fr auto; gap:4px; color:#64748b; font-size:11px; }
+.teacher-exam-distribution i { grid-column:1/-1; height:6px; overflow:hidden; border-radius:4px; background:#edf1f5; }
+.teacher-exam-distribution em { display:block; height:100%; border-radius:inherit; background:#90a9bd; }
+@media (max-width: 620px) { .teacher-exam-classes { grid-template-columns: minmax(0, 1fr); } }
+
+.teacher-plan-question-actions { display: flex; flex-direction: column; align-items: flex-end; flex: 0 0 auto; }
+.teacher-plan-question-actions .ant-btn-link { padding-inline: 0; }
+.teacher-analysis-grid [data-testid="review-plan"] .teacher-answer-trigger {
+  color: #174f79;
+  border-color: #b5cfdf;
+  background: #f3f8fb;
+  padding: 3px 10px;
+  margin: 4px 0;
+}
+
+/* 考试总览仪表盘：KPI 卡 + 图表 */
+.teacher-exam-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-bottom: 16px; }
+.teacher-exam-kpi { padding: 14px 16px; border: 1px solid var(--comp-line, #e3e8ef); border-top: 3px solid #2878b8; border-radius: 10px; background: #fff; }
+.teacher-exam-kpi-head { display: flex; justify-content: space-between; gap: 10px; color: var(--comp-ink-2, #46506a); font-size: 13px; }
+.teacher-exam-kpi-head strong { font-size: 14px; color: var(--comp-ink-1, #1f2430); }
+.teacher-exam-kpi-head strong .anticon { margin-right: 6px; color: inherit; opacity: .75; }
+.teacher-exam-kpi-rate { display: flex; align-items: baseline; gap: 8px; margin: 8px 0 10px; }
+.teacher-exam-kpi-rate b { font-size: 30px; line-height: 1.1; color: #24364b; }
+.teacher-exam-kpi-rate span { color: #52667b; font-size: 12px; }
+.teacher-exam-kpi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 8px; }
+.teacher-exam-kpi-grid > div { padding: 0; background: none; }
+.teacher-exam-kpi-grid span { display: block; color: #64748b; font-size: 11px; }
+.teacher-exam-kpi-grid span .anticon { margin-right: 4px; color: #94a3b8; }
+.teacher-exam-kpi-grid strong { font-size: 18px; color: #24364b; }
+.teacher-exam-kpi-grid small { color: #94a3b8; font-size: 11px; margin-left: 4px; }
+.teacher-exam-highlow > span:first-child .anticon { margin-right: 4px; }
+.teacher-exam-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: 4px; }
+.teacher-exam-chart { margin: 0; padding: 0; border: none; background: none; min-width: 0; }
+.teacher-exam-chart figcaption { font-size: 13px; font-weight: 600; color: var(--comp-ink-2, #46506a); margin-bottom: 4px; }
+.teacher-exam-chart figcaption .anticon { margin-right: 6px; color: var(--comp-accent, #285c85); }
+.teacher-item-detail { padding: 18px; }
+/* 逐题表扫读优化：紧凑行高、表头弱化、数值列不换行 */
+.teacher-item-detail .ant-table-thead > tr > th { font-size: 12.5px; padding: 8px 10px; }
+.teacher-item-detail .ant-table-tbody > tr > td { padding: 7px 10px; line-height: 1.5; }
+/* 题干列：单行 ellipsis 在窄窗（1000px）只剩一两个字，改为两行 line-clamp。
+   选择器带 .ant-table-wrapper 以压过 antd 运行时注入的 ellipsis 样式。 */
+.teacher-item-detail .ant-table-wrapper .ant-table-tbody > tr > td.ant-table-cell-ellipsis {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow: clip;
+  overflow-clip-margin: content-box;
+  white-space: normal;
+  word-break: break-all;
+  text-overflow: clip;
+}
+/* 窄窗重平衡固定列宽：table-layout:fixed 下题干列只拿剩余宽度（1000px 时仅 38px），
+   压缩数值/出处列把宽度让给题干，两行 clamp 才真正可读。col 内联 width 需 !important 覆盖。 */
+@media (max-width: 1100px) {
+  .teacher-item-detail .ant-table colgroup col:nth-child(1) { width: 60px !important; }
+  .teacher-item-detail .ant-table colgroup col:nth-child(2) { width: 132px !important; }
+  .teacher-item-detail .ant-table colgroup col:nth-child(4) { width: 110px !important; }
+  .teacher-item-detail .ant-table colgroup col:nth-child(5) { width: 76px !important; }
+  .teacher-item-detail .ant-table colgroup col:nth-child(6) { width: 48px !important; }
+  .teacher-item-detail .ant-table colgroup col:nth-child(7) { width: 70px !important; }
+  .teacher-item-detail .ant-table colgroup col:nth-child(8) { width: 48px !important; }
+  .teacher-item-detail .ant-table colgroup col:nth-child(9) { width: 70px !important; }
+  .teacher-item-detail .ant-table colgroup col:nth-child(10) { width: 70px !important; }
+  .teacher-item-detail .ant-table-thead > tr > th { padding: 8px 6px; }
+  .teacher-item-detail .ant-table-tbody > tr > td { padding: 7px 6px; }
+}
+/* 讲评方案是本页主区块：占主列、用唯一强调色，不再做次级弱化 */
+.teacher-review-primary { border-top: 3px solid var(--comp-accent, #285c85); }
+
+/* 结论先行横幅：一句判断 + 显眼的 AI 诊断入口（本页唯一强调块） */
+.teacher-exam-verdict {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 10px 20px; margin: 0 0 18px; padding: 16px 20px;
+  border-left: 4px solid var(--comp-accent, #285c85);
+  background: var(--comp-accent-soft, #eef4f9); border-radius: 0 8px 8px 0;
+}
+.teacher-exam-verdict-text {
+  flex: 1 1 320px; margin: 0; font-size: 17px; font-weight: 600;
+  line-height: 1.65; color: var(--comp-ink-1, #1f2430);
+}
+.teacher-exam-verdict-text > .anticon { color: var(--comp-accent, #285c85); margin-right: 10px; }
+.teacher-exam-verdict-action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; flex: 0 1 auto; }
+.teacher-exam-verdict-action .ant-typography { font-size: 12px; max-width: 260px; }
+
+/* 逐题明细：得分率红色热力条（低分更红）+ <50% 行高亮 */
+.teacher-rate-heat { display: inline-flex; align-items: center; gap: 8px; min-width: 96px; }
+.teacher-rate-heat-track { flex: 1 1 48px; height: 8px; border-radius: 4px; background: #f1f3f6; overflow: hidden; }
+.teacher-rate-heat-track i { display: block; height: 100%; border-radius: inherit; background: #d62728; }
+.teacher-item-detail .ant-table-wrapper .ant-table-tbody > tr.teacher-item-low > td { background: #fdf2f2; }
+.teacher-item-detail .ant-table-wrapper .ant-table-tbody > tr.teacher-item-low:hover > td { background: #fae7e7; }
+/* 题干 td 变为 -webkit-box 后会被匿名 table-cell 包裹，td 背景只画自身盒子高度，
+   低分行会在题干列露出白底条。改为把行底色/悬停色画在 tr 上、td 透明，整行均匀着色。 */
+.teacher-item-detail .ant-table-wrapper .ant-table-tbody > tr > td { background: transparent !important; }
+.teacher-item-detail .ant-table-wrapper .ant-table-tbody > tr:hover { background: #fafafa; }
+.teacher-item-detail .ant-table-wrapper .ant-table-tbody > tr.teacher-item-low { background: #fdf2f2; }
+.teacher-item-detail .ant-table-wrapper .ant-table-tbody > tr.teacher-item-low:hover { background: #fae7e7; }
+
+/* BarCompare 60% 目标参考线：给 51–68% 的差异一个判断基准 */
+.bc-wrap .bc-track { position: relative; }
+.bc-target {
+  position: absolute; left: 60%; top: 0; bottom: 0; width: 0;
+  border-left: 2px dashed var(--comp-ink-2, #46506a); opacity: 0.55; pointer-events: none;
+}
+.bc-target-note { display: inline-flex; align-items: center; gap: 5px; }
+.bc-target-swatch { display: inline-block; width: 0; height: 12px; border-left: 2px dashed var(--comp-ink-2, #46506a); opacity: 0.75; }
+.teacher-exam-ai { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0 0 16px; }
+.teacher-exam-ai-error { color: #b91c1c; width: 100%; }
+.teacher-exam-ai-result { width: 100%; margin-top: 10px; padding: 12px 14px; border: 1px solid #dce8f0; border-radius: 8px; background: #f6f9fb; }
+.teacher-exam-ai-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.teacher-exam-ai-head strong .anticon { margin-right: 6px; color: var(--comp-accent, #285c85); }
+.teacher-exam-ai-text { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 13px; line-height: 1.7; color: #24364b; }
+@media (max-width: 900px) { .teacher-exam-charts { grid-template-columns: minmax(0, 1fr); } }
+
+/* AI 出卷面板 */
+.paper-options { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+.paper-options label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #46506a; }
+.paper-preview { margin-top: 12px; padding: 14px 16px; border: 1px solid #e3e8ef; border-radius: 10px; background: #fbfcfe; }
+.paper-preview h3 { margin: 8px 0 4px; }
+.paper-preview h4 { margin: 12px 0 6px; color: #174f79; }
+.paper-q { padding: 8px 0; border-bottom: 1px dashed #e3e8ef; }
+.paper-q p { margin: 0 0 4px; line-height: 1.7; }
+.paper-q-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* 学生案例：紧凑、明确动作，去掉不明空白 */
+.teacher-showcase { padding: 14px 18px; }
+.teacher-showcase-case { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; height: auto; min-height: 0; padding: 10px 12px; text-align: left; }
+.teacher-showcase-case .teacher-muted { font-size: 12px; line-height: 1.5; }
+.teacher-showcase-go { color: var(--comp-accent, #285c85); font-size: 12px; font-weight: 600; }
+
+/* 成绩排名：默认单列跟随所选班级；全部班级对比时按班数自适应（支持 3+ 班） */
+.teacher-ranking-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.teacher-ranking-grid.is-single { grid-template-columns: minmax(0, 1fr); }
+.teacher-ranking-bar { height: 8px; min-width: 120px; border-radius: 4px; background: #edf1f5; overflow: hidden; }
+.teacher-ranking-bar i { display: block; height: 100%; border-radius: 4px; }
+.teacher-ranking-col-head { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; font-size: 13px; }
+.teacher-ranking-top { background: #fffbe6; }
+.teacher-ranking-tools { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 本班范围：单张 KPI 卡横向铺满，避免大片空白 */
+.teacher-exam-kpis.is-single { grid-template-columns: minmax(0, 1fr); }
+.teacher-exam-kpis.is-single .teacher-exam-kpi { display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr) minmax(0, 1.1fr); grid-template-rows: auto auto; column-gap: 24px; align-items: center; }
+.teacher-exam-kpis.is-single .teacher-exam-kpi-head { grid-column: 1; grid-row: 1; }
+.teacher-exam-kpis.is-single .teacher-exam-kpi-rate { grid-column: 1; grid-row: 2; margin: 4px 0 0; }
+.teacher-exam-kpis.is-single .teacher-exam-kpi-grid { grid-column: 2; grid-row: 1 / span 2; margin-bottom: 0; }
+.teacher-exam-kpis.is-single .teacher-exam-highlow { grid-column: 3; }
+.teacher-exam-charts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .teacher-exam-charts { grid-template-columns: minmax(0, 1fr); } .teacher-ranking-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 900px) { .teacher-exam-kpis.is-single .teacher-exam-kpi { display: block; } .teacher-exam-kpis.is-single .teacher-exam-kpi-rate { margin: 8px 0 10px; } .teacher-exam-kpis.is-single .teacher-exam-kpi-grid { margin-bottom: 8px; } }

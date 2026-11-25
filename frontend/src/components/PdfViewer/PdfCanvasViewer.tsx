@@ -17,10 +17,11 @@ export interface PdfHighlight {
 const PdfCanvasViewer: React.FC<{
   data: ArrayBuffer;
   pages?: number[];
+  pageLabel?: (page: number) => string;
   highlightPage?: number;
   highlight?: PdfHighlight;
   className?: string;
-}> = ({ data, pages, highlightPage, highlight, className }) => {
+}> = ({ data, pages, pageLabel, highlightPage, highlight, className }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRefs = useRef<Record<number, HTMLCanvasElement | null>>({});
   const renderedRef = useRef<Set<number>>(new Set());
@@ -156,7 +157,7 @@ const PdfCanvasViewer: React.FC<{
       {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 10 }} />}
       {pageNumbers.map((n) => (
         <div key={n} className="pdf-page-shell" data-pdf-page={n}>
-          <Text type="secondary" className="pdf-page-label">第 {n} 页</Text>
+          <Text type="secondary" className="pdf-page-label">{pageLabel ? pageLabel(n) : '第 ' + n + ' 页'}</Text>
           <div className="pdf-page-canvas-wrap">
             <canvas ref={(el) => { canvasRefs.current[n] = el; }} />
             {highlightPage === n && highlightStyle() && <div style={highlightStyle()} />}
