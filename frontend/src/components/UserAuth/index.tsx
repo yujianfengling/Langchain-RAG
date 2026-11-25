@@ -2,8 +2,9 @@ import React, { useState } from 'react';
 import {
   Button, Form, Input, Modal, Alert,
 } from 'antd';
-import { LoginOutlined } from '@ant-design/icons';
+import { LoginOutlined, UserOutlined } from '@ant-design/icons';
 import { useAuth, notifyAuthChanged } from '../../context/AuthContext';
+import { probeLegacyBackend } from '../../api/backendCaps';
 
 /**
  * 登录入口（2026-10-07 收敛）
@@ -13,12 +14,49 @@ import { useAuth, notifyAuthChanged } from '../../context/AuthContext';
  * 否则侧栏 / 顶栏 / 抽屉里的多个实例会把同一次失效提示刷成十几条。
  */
 const UserAuth: React.FC<{ block?: boolean; inline?: boolean }> = ({ block, inline }) => {
-  const { login, register } = useAuth();
+  const { login, register, guest } = useAuth();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [submitting, setSubmitting] = useState(false);
+  const [guestBusy, setGuestBusy] = useState(false);
+  const [legacy, setLegacy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [form] = Form.useForm();
+
+  React.useEffect(() => { void probeLegacyBackend().then(setLegacy); }, []);
+
+  const handleGuest = async () => {
+    setGuestBusy(true);
+    setError(null);
+    try {
+      await guest();
+      setOpen(false);
+      notifyAuthChanged();
+    } catch (e: any) {
+      setError(e?.response?.data?.message || e?.message || '游客进入失败，请稍后重试');
+    } finally {
+      setGuestBusy(false);
+    }
+  };
+
+  const guestEntry = (
+    <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px dashed var(--color-border, #d9d9d9)' }}>
+      {legacy ? (
+        <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', lineHeight: 1.6 }}>
+          当前服务后端版本较旧，游客入口暂不可用；重启服务后恢复。账号登录不受影响。
+        </div>
+      ) : (
+        <>
+          <Button block icon={<UserOutlined />} loading={guestBusy} onClick={() => void handleGuest()}>
+            游客一键进入
+          </Button>
+          <div style={{ marginTop: 6, fontSize: 12, color: 'rgba(0,0,0,0.45)', lineHeight: 1.6 }}>
+            免注册体验教师端全部功能；对话、讲评卡与导入历史保存在本机，下次打开自动恢复。
+          </div>
+        </>
+      )}
+    </div>
+  );
 
   const handleSubmit = async () => {
     let values: any;
@@ -89,6 +127,7 @@ const UserAuth: React.FC<{ block?: boolean; inline?: boolean }> = ({ block, inli
                 onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(null); }}>
           {mode === 'login' ? '还没有账号？去注册' : '已有账号？去登录'}
         </Button>
+        {guestEntry}
       </div>
     );
   }
@@ -151,6 +190,7 @@ const UserAuth: React.FC<{ block?: boolean; inline?: boolean }> = ({ block, inli
                 onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(null); }}>
           {mode === 'login' ? '还没有账号？去注册' : '已有账号？去登录'}
         </Button>
+        {guestEntry}
       </Modal>
     </>
   );

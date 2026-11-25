@@ -673,6 +673,29 @@ def save_avatar(user_id: str, data: bytes, filename: str) -> Dict[str, Any]:
     return user
 
 
+def guest_login(device_id: str) -> Dict[str, Any]:
+    """游客入口：设备绑定的一次性免注册教师体验账号。
+
+    评委/教师首测不应被注册流程卡住；游客按本机 device_id 落一个稳定账号，
+    助手对话、讲评卡、补测与导入历史都按该账号留存，同机回访即恢复。
+    角色授予走 grant_role 审计（role_source=guest-device），用户名不可猜测口令。
+    """
+    device_id = (device_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", device_id):
+        raise AuthError("设备标识格式不正确", "invalid_request")
+    username = "guest_" + hashlib.sha256(device_id.encode("utf-8")).hexdigest()[:10]
+    conn = _get_db()
+    try:
+        row = conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        user = register_user(username, secrets.token_urlsafe(24), display_name="游客教师 · 本机")
+        grant_role(user["id"], ROLE_TEACHER, reason="guest-device")
+        return get_user(user["id"]) or user
+    return get_user(row[0]) or {"id": row[0], "username": username}
+
+
 def authenticate(username: str, password: str) -> Optional[Dict[str, Any]]:
     """校验用户名口令，成功返回用户信息，失败返回 None"""
     user = get_user_by_username(username)

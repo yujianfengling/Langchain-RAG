@@ -260,32 +260,40 @@ class MultimodalService:
         Raises:
             ValueError: 如果视觉模型不可用或调用失败
         """
+        result = self._vision_call(
+            image_path, mime_type,
+            prompt if prompt is not None else self._get_default_image_prompt())
+        _validated_vision_answer(result)
+        capability_status.safe_report(capability_status.CAP_VISION, True, reason="识图成功")
+        return result
+    
+    def transcribe_image(self, image_path: str, prompt: str, mime_type: Optional[str] = None) -> Dict[str, Any]:
+        """表格/文档转录：与 describe_image 同一条视觉调用链，但返回结构由调用方自定义校验。"""
+        result = self._vision_call(image_path, mime_type, prompt)
+        answer = result.get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            raise VisionResponseError("视觉转录答案为空白", "empty_content", result.get("finish_reason"))
+        capability_status.safe_report(capability_status.CAP_VISION, True, reason="转录成功")
+        return result
+
+    def _vision_call(self, image_path: str, mime_type: Optional[str], prompt: str) -> Dict[str, Any]:
+        # 不在此自动初始化提供方：构造时已探活；调用时为 None 即"不可用"，
+        # 必须可见地降级（describe_image 的历史语义，测试据此断言）。
         if not self.vision_provider:
-            # 视觉不可用必须可见：VISION_MODE=ocr 曾让课件图片永远进不了知识库，
-            # 而当时只写日志，界面上和健康检查里都看不出来。
             capability_status.safe_report(
                 capability_status.CAP_VISION, False,
                 reason=self.vision_unavailable_reason or "未配置可用的视觉提供方")
             raise ValueError(self.vision_unavailable_reason
                              or "视觉模型不可用，请配置通义千问视觉模型"
                                 "（DASHSCOPE_API_KEY 或可用的视觉提供方凭证）")
-        
         # 读取图片并转换为base64
         try:
             with open(image_path, "rb") as image_file:
                 base64_image = base64.b64encode(image_file.read()).decode('utf-8')
         except Exception as e:
             raise ValueError(f"读取图片文件失败: {e}")
-        
-        # 检测MIME类型
         if mime_type is None:
             mime_type = self._detect_mime_type(image_path)
-        
-        # 使用默认提示词或自定义提示词
-        if prompt is None:
-            prompt = self._get_default_image_prompt()
-        
-        # 构建多模态消息
         messages = [
             {
                 "role": "user",
@@ -303,7 +311,6 @@ class MultimodalService:
                 ]
             }
         ]
-        
         # 调用视觉模型。单次调用超时可配置（VISION_IMAGE_TIMEOUT_SECONDS，默认 30s），
         # 由 provider 的 requests timeout 强制执行，避免"一张图无限等"。
         try:
@@ -312,17 +319,13 @@ class MultimodalService:
                 # 图片描述/文字提取需要正式 content；不改变 chat/Agent 的思考策略。
                 # requests 兼容客户端通过 extra_payload 合并到最终 JSON 请求体。
                 vision_kwargs["extra_payload"] = {"thinking": {"type": "disabled"}}
-            result = self.vision_provider.vision(
-                messages, **vision_kwargs)
-            _validated_vision_answer(result)
+            return self.vision_provider.vision(messages, **vision_kwargs)
         except Exception as e:
             capability_status.safe_report(
                 capability_status.CAP_VISION, False,
                 reason=f"{type(e).__name__}: {e}")
             raise
-        capability_status.safe_report(capability_status.CAP_VISION, True, reason="识图成功")
-        return result
-    
+
     def _detect_mime_type(self, image_path: str) -> str:
         """检测图片MIME类型"""
         ext = Path(image_path).suffix.lower()

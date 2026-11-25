@@ -274,6 +274,10 @@
 }
 .assistant-msg.is-assistant .assistant-msg-avatar { background: var(--comp-accent, #2f5cff); color: #fff; }
 .assistant-msg.is-user .assistant-msg-avatar { background: #e8ecf5; color: var(--comp-ink-2, #4b5261); }
+/* 我的消息靠右（微信/ChatGPT 习惯），AI 回复靠左 */
+.assistant-msg.is-user { flex-direction: row-reverse; }
+.assistant-msg.is-user .assistant-msg-body { display: flex; flex-direction: column; align-items: flex-end; }
+.assistant-msg.is-user .assistant-msg-actions { justify-content: flex-end; }
 .assistant-msg-body { flex: 1 1 auto; min-width: 0; }
 .assistant-msg-role { font-size: 12.5px; font-weight: 600; color: var(--comp-ink-3, #7a8291); margin-bottom: 4px; }
 .assistant-msg-text {
@@ -285,6 +289,17 @@
   border-radius: 10px;
   padding: 12px 16px;
   display: inline-block;
+}
+.assistant-msg.is-user .assistant-msg-text {
+  background: var(--comp-accent, #2f5cff);
+  color: #fff;
+  border-radius: 12px 12px 2px 12px;
+  max-width: 85%;
+}
+.assistant-msg.is-assistant .assistant-msg-text {
+  background: #f4f6fa;
+  border: 1px solid #e3e8f0;
+  border-radius: 12px 12px 12px 2px;
 }
 
 /* 悬停操作条：复制 / 编辑 / 重新生成 */

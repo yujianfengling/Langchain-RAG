@@ -177,7 +177,6 @@ const check=(name,ok)=>{assert.ok(ok,name);results.push(name);console.log('PASS 
    const noOriginSave=page.getByRole('button',{name:'教师确认并保存',exact:true});
    const alreadySaved=/补测安排已保存，等待学生作答或教师核对/.test(await page.getByRole('region',{name:'证据图'}).innerText());
    if(!alreadySaved){await noOriginSave.click();await page.getByText('补测安排已保存。',{exact:true}).waitFor();}
-   await page.getByText('补测安排已保存。',{exact:true}).waitFor();
    await page.getByRole('region',{name:'证据图'}).getByText('补测安排已保存，等待学生作答或教师核对。',{exact:true}).waitFor();
    check('无原答卷计划保存后证据图可回读',true);
    await page.getByRole('button',{name:'预览学生补测卡',exact:true}).click();
@@ -260,14 +259,12 @@ const check=(name,ok)=>{assert.ok(ok,name);results.push(name);console.log('PASS 
    await page.getByRole('button',{name:/导入评测数据/}).click();
    await page.getByRole('dialog').waitFor();
    const inputs=page.locator('.ant-modal input[type="file"]');
-   await inputs.nth(2).setInputFiles(['课程要求.csv','题目与材料.csv','模拟学生.csv','测验节点.csv','作答记录.csv'].map(f=>samples+f));
-   await page.getByRole('button',{name:/识别并合并导入/}).click();
+   await inputs.nth(0).setInputFiles(['课程要求.csv','题目与材料.csv','模拟学生.csv','测验节点.csv','作答记录.csv'].map(f=>samples+f));
    await page.waitForTimeout(1500);
-   check('健壮导入按表头跨通道识别五表',await page.locator('.import-present .ant-tag-green').count()===5);
-   await page.getByRole('button',{name:/生成评测数据/}).click();
+   check('健壮导入按表头跨通道识别五表',await page.evaluate(()=>['课程要求','题目与材料','模拟学生','测验节点','作答记录'].every(t=>[...document.querySelectorAll('.import-present .ant-tag-green')].some(el=>el.textContent.includes(t)))));
    await page.getByText(/导入完成/).waitFor({timeout:90000});
    check('导入五CSV生成独立评测',true);
-   await page.getByRole('button',{name:'切换到导入数据',exact:true}).click();
+   await page.getByRole('button',{name:'切换到本次导入数据',exact:true}).click();
    await page.waitForURL(/source=imported/);
    await page.getByTestId('exam-overview').waitFor({timeout:30000});
    check('切换导入数据后总览可用',/独立评测数据/.test(await page.locator('body').innerText()));

@@ -51,6 +51,11 @@ export const login = async (username: string, password: string): Promise<ApiResp
   return apiClient.post('/auth/login', { username, password });
 };
 
+/** 游客入口：设备标识绑定本机账号，免注册体验教师端并留存历史 */
+export const guestLogin = async (deviceId: string): Promise<ApiResponse<AuthSession>> => {
+  return apiClient.post('/auth/guest', { device_id: deviceId });
+};
+
 export const logout = async (): Promise<ApiResponse<null>> => {
   return apiClient.post('/auth/logout');
 };

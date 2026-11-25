@@ -4,7 +4,7 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, File, Header, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from api.schemas.response_schema import SuccessResponse
@@ -24,6 +24,10 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class GuestRequest(BaseModel):
+    device_id: str = Field(min_length=8, max_length=64)
 
 
 class ProfileUpdate(BaseModel):
@@ -75,6 +79,19 @@ async def login(request: LoginRequest):
         effective_role = await run_in_threadpool(auth_service.get_role, user["id"])
         return SuccessResponse(
             data={**user, "role": effective_role, **session}, message="登录成功")
+    except AuthError as e:
+        return _auth_error(e)
+
+
+@router.post("/auth/guest")
+async def guest(request: GuestRequest):
+    """游客一键进入：按本机设备标识绑定稳定账号，历史记录同机留存。"""
+    try:
+        user = await run_in_threadpool(auth_service.guest_login, request.device_id)
+        session = await run_in_threadpool(auth_service.create_session, user["id"])
+        effective_role = await run_in_threadpool(auth_service.get_role, user["id"])
+        return SuccessResponse(
+            data={**user, "role": effective_role, **session}, message="游客进入成功")
     except AuthError as e:
         return _auth_error(e)
 

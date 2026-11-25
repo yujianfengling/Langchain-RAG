@@ -1,11 +1,6 @@
-.import-channels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 12px 0; }
-.import-channel-head { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 6px; font-size: 13px; }
-.import-channel .ant-upload-drag { padding: 8px 0; }
-.import-channel .ant-upload-drag-icon { margin-bottom: 4px; }
-.import-channel .ant-upload-drag-icon .anticon { font-size: 26px; }
-.import-channel .ant-upload-text { font-size: 13px; margin: 0 0 2px; }
-.import-channel .ant-upload-hint { font-size: 11px; }
 .import-toolbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 10px 0; }
 .import-ai { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #46506a; }
 .import-present { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-@media (max-width: 800px) { .import-channels { grid-template-columns: minmax(0, 1fr); } }
+.import-history { margin-top: 14px; border-top: 1px dashed var(--color-border, #d9d9d9); padding-top: 10px; }
+.import-history-head { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: #46506a; margin-bottom: 6px; }
+.import-history .ant-table { font-size: 12px; }

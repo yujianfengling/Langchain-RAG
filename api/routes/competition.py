@@ -914,6 +914,69 @@ async def import_run(body: ImportRunRequest, _: str = Depends(require_teacher)) 
     return JSONResponse({"id": out.name, "counts": manifest.get("counts", {}), "independentEvaluation": True})
 
 
+def _unified_module():
+    repo = Path(__file__).resolve().parent.parent.parent
+    pipeline_dir = str(repo / "competition_pipeline")
+    if pipeline_dir not in sys.path:
+        sys.path.insert(0, pipeline_dir)
+    import unified_import
+    return unified_import
+
+
+@router.post("/competition/import-unified")
+async def import_unified(
+    files: list[UploadFile] = File(...),
+    session: str = Form(""),
+    ai_assist: str = Form("1"),
+    _: str = Depends(require_teacher),
+) -> JSONResponse:
+    """单入口多格式导入：异步 job，自动识别五表，不足时 DeepSeek 兜底，五表齐自动复算。"""
+    unified = _unified_module()
+    imports_root = _LOCAL_ROOT / "imports"
+    imports_root.mkdir(parents=True, exist_ok=True)
+    sid = session if re.fullmatch(r"session-[0-9a-f]{8}", session) else f"session-{uuid.uuid4().hex[:8]}"
+    payload: list[tuple[str, bytes]] = []
+    for upload in files:
+        raw = await upload.read()
+        if len(raw) > 30 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail=f"{upload.filename} 超过 30MB")
+        name = upload.filename or "file"
+        if not name.lower().endswith(unified.ACCEPT_EXTS):
+            raise HTTPException(status_code=400, detail=(
+                f"{name} 类型不支持；可导入 CSV / Excel / JSON / ZIP / TXT / Markdown / PDF / 图片"))
+        payload.append((name, raw))
+    if not payload:
+        raise HTTPException(status_code=400, detail="没有收到文件")
+    job = await run_in_threadpool(unified.create_job, imports_root, sid, payload, ai_assist == "1")
+    return JSONResponse({"job_id": job["id"], "session": sid, "status": job["status"]})
+
+
+@router.get("/competition/import-job/{job_id}")
+async def import_job(job_id: str, _: str = Depends(require_teacher)) -> JSONResponse:
+    if not re.fullmatch(r"job-[0-9a-f]{8}", job_id):
+        raise HTTPException(status_code=400, detail="非法的导入任务编号")
+    job = _unified_module().load_job(_LOCAL_ROOT / "imports", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="导入任务不存在或已清理")
+    return JSONResponse(job, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/competition/import-jobs")
+async def import_jobs(_: str = Depends(require_teacher)) -> JSONResponse:
+    return JSONResponse({"jobs": _unified_module().list_jobs(_LOCAL_ROOT / "imports")},
+                        headers={"Cache-Control": "no-store"})
+
+
+@router.post("/competition/import-job/{job_id}/retry")
+async def import_job_retry(job_id: str, _: str = Depends(require_teacher)) -> JSONResponse:
+    if not re.fullmatch(r"job-[0-9a-f]{8}", job_id):
+        raise HTTPException(status_code=400, detail="非法的导入任务编号")
+    job = await run_in_threadpool(_unified_module().retry_job, _LOCAL_ROOT / "imports", job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="导入任务不存在或已清理")
+    return JSONResponse(job)
+
+
 class AiQuestionsRequest(BaseModel):
     indicator_id: str = Field(min_length=1, max_length=32)
     indicator_name: str = Field(min_length=1, max_length=120)

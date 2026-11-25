@@ -7,7 +7,7 @@ import {
 import { AUTH_EXPIRED_EVENT } from '../api/axios';
 import { isStaleAuthError } from '../api/authState';
 import {
-  commitUser, login as loginApi, logout as logoutApi, me, register as registerApi,
+  commitUser, guestLogin as guestLoginApi, login as loginApi, logout as logoutApi, me, register as registerApi,
 } from '../api/auth';
 import type { AuthUser } from '../api/authTypes';
 
@@ -38,6 +38,7 @@ interface AuthContextValue {
   bootstrapError: string | null;
   login: (username: string, password: string) => Promise<AuthUser>;
   register: (username: string, password: string, displayName?: string) => Promise<AuthUser>;
+  guest: () => Promise<AuthUser>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -161,13 +162,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  const guest = useCallback(async () => {
+    let deviceId = localStorage.getItem('edu_device_id');
+    if (!deviceId) {
+      deviceId = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      localStorage.setItem('edu_device_id', deviceId);
+    }
+    const res: any = await guestLoginApi(deviceId);
+    const data = res?.data;
+    if (!data?.token) {
+      throw new Error(res?.message || '游客进入失败，请稍后重试');
+    }
+    adoptToken(data.token);
+    const user = toUser(data);
+    markAuthenticated(user);
+    bootstrapped.current = true;
+    notifyAuthChanged();
+    return user;
+  }, []);
+
   const value = useMemo<AuthContextValue>(() => ({
     status: getStatus(),
     user: snap.user,
     ready: snap.status === 'authenticated' && !!snap.user,
     bootstrapError,
-    login, register, logout, refreshUser,
-  }), [snap, bootstrapError, login, register, logout, refreshUser]);
+    login, register, guest, logout, refreshUser,
+  }), [snap, bootstrapError, login, register, guest, logout, refreshUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
