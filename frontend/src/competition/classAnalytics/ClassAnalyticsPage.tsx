@@ -14,7 +14,7 @@ import { rememberAnalysis } from '../shared/teacherContext';
 import ReviewPlanPanel from '../reviewPlan/ReviewPlanPanel';
 import BarCompare, { KP_SHORT_NAME, type BarRow } from './BarCompare';
 import ExamOverview from './ExamOverview';
-import { examReport } from '../shared/examReport';
+import { examReport, summarize } from '../shared/examReport';
 import { getBundle, isRealData } from '../dataSource';
 import type { AnomalyRecord, RealAnswer } from '../dataSource';
 import './teacherAnalytics.css';
@@ -187,13 +187,13 @@ const ClassAnalyticsPage: React.FC = () => {
   const itemOverview = bundle ? [...new Set(bundle.answers.filter(a => a.quizId === quizId && bundle.students.some(s=>s.id===a.studentId&&s.classId===classA)).map(a=>a.questionId))].map(id => {
     const answers=bundle.answers.filter(a=>a.quizId===quizId&&a.questionId===id&&bundle.students.some(s=>s.id===a.studentId&&s.classId===classA));
     const q=bundle.questions.find(x=>x.id===id);const kp=bundle.curriculumMap?.indicators.find(x=>x.indicator_id===q?.kpId);
-    return {id,stem:q?.stem||'题干未提供',kp:kp?.requirement||q?.kpId||'考点未标注',count:answers.length,
-      mean:answers.reduce((n,a)=>n+a.score,0)/Math.max(1,answers.length),full:answers[0]?.fullScore||0,
+    const totals = summarize(answers);
+    return {id,stem:q?.stem||'题干未提供',kp:kp?.requirement||q?.kpId||'考点未标注',
+      count:new Set(answers.map(a=>a.studentId)).size,
+      lossCount:new Set(answers.filter(a=>a.score<a.fullScore).map(a=>a.studentId)).size,
+      rate:totals.rate, mean:totals.score/answers.length,full:totals.full/answers.length,
       fullCount:answers.filter(a=>a.score>=a.fullScore).length,partial:answers.filter(a=>a.score>0&&a.score<a.fullScore).length,zero:answers.filter(a=>a.score===0).length};
-  }).sort((a,b)=>{
-    const rate=(r:{mean:number;full:number})=>r.full>0?r.mean/r.full:Infinity;
-    return rate(a)-rate(b)||a.id.localeCompare(b.id,undefined,{numeric:true});
-  }) : [];
+  }).sort((a,b)=>(a.rate??Infinity)-(b.rate??Infinity)||a.id.localeCompare(b.id,undefined,{numeric:true})) : [];
   return <div className="competition-page" style={{ paddingTop: 10 }}>
     <header className="teacher-page-header" data-testid="class-context"><Title level={3} style={{ margin: 0 }}><BarChartOutlined aria-hidden /> 考试分析</Title><Space wrap><Select aria-label="当前测验" value={quizId} style={{ width: 295, maxWidth: '100%' }} options={QUIZZES.map((q) => ({ value: q.id, label: `${quizLabel(q)}（${q.date}）` }))} onChange={(id) => { setContext({ quizId: id }); setSelected(null); setDrawerOpen(false); }} /><Select aria-label="讲评班级" value={classA} style={{ width: 130 }} options={CLASSES.map((c) => ({ value: c.id, label: c.name === c.id ? '班级 ' + c.id : c.name }))} onChange={(id) => { setContext({ classId: id }); setSelected(null); setDrawerOpen(false); }} /></Space></header>
     {overview && <ExamOverview overview={overview} kps={allKps} classA={classA} scope={overviewScope}
@@ -202,13 +202,13 @@ const ClassAnalyticsPage: React.FC = () => {
     <section className="teacher-section teacher-item-detail" aria-label="逐题得分明细" data-testid="item-detail">
       <div className="teacher-section-heading"><Title level={4} style={{ margin: 0 }}><TableOutlined aria-hidden /> 逐题得分明细 · {className(classA)}</Title><Text type="secondary">{itemOverview.length} 题 · 按得分率升序，低分在前</Text></div>
       <Table size="small" pagination={{ pageSize: 10, showSizeChanger: false }} rowKey="id" dataSource={itemOverview}
-        rowClassName={(r) => (r.full > 0 && r.mean / r.full < 0.5 ? 'teacher-item-low' : '')} columns={[
+        rowClassName={(r) => (r.rate != null && r.rate < 50 ? 'teacher-item-low' : '')} columns={[
         { title: '题目', dataIndex: 'id', width: 80 },
         { title: '考点', dataIndex: 'kp', width: 200 },
         { title: '题干', dataIndex: 'stem', ellipsis: true },
         { title: '得分率', width: 120, render: (_, r) => {
-          if (r.full <= 0) return <Text type="secondary">—</Text>;
-          const rate = Math.max(0, Math.min(1, r.mean / r.full));
+          if (r.rate == null) return <Text type="secondary">—</Text>;
+          const rate = Math.max(0, Math.min(1, r.rate / 100));
           return <span className="teacher-rate-heat">
             <span className="teacher-rate-heat-track"><i style={{ width: `${Math.round(rate * 100)}%`, opacity: 0.35 + (1 - rate) * 0.65 }} /></span>
             <Text strong>{Math.round(rate * 100)}%</Text>
@@ -218,11 +218,12 @@ const ClassAnalyticsPage: React.FC = () => {
         { title: '满分', dataIndex: 'fullCount', width: 60 },
         { title: '部分得分', dataIndex: 'partial', width: 80 },
         { title: '零分', dataIndex: 'zero', width: 60 },
+        { title: '失分人数', dataIndex: 'lossCount', width: 110, sorter: (a,b) => a.lossCount-b.lossCount, sortDirections: ['descend','ascend'] },
         { title: '作答人数', dataIndex: 'count', width: 80 },
         { title: '出处', width: 90, render: (_, r) => <TeachingSourceLink questionId={r.id} quizId={quizId} classId={classA} /> },
       ]} />
       <details className="teacher-note-fold"><summary><QuestionCircleOutlined aria-hidden />统计口径说明</summary>
-        <p className="teacher-muted">仅统计本班本次有效已评分作答。满分/部分得分/零分按个人本题得分判定；待评分、未作答、隔离及超范围不计入。</p>
+        <p className="teacher-muted">仅统计本班本次有效已评分作答。得分率按得分和除以满分和计算。失分人数按本题低于满分的学生去重。</p>
       </details>
     </section>
     {bundle && <ClassRanking bundle={bundle} quizId={quizId} focusClassId={classA} scope={rankScope}

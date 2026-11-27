@@ -4,7 +4,7 @@ import {
   BarChartOutlined, BulbOutlined, CheckCircleOutlined, FallOutlined, LineChartOutlined, QuestionCircleOutlined,
   RadarChartOutlined, RiseOutlined, RobotOutlined, TeamOutlined, TrophyOutlined,
 } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import type { EChartsOption } from 'echarts';
 import EChart from '../shared/EChart';
 import { percent } from '../shared/examReport';
@@ -13,6 +13,7 @@ import type { KnowledgePoint } from '../shared/types';
 import { getKpStat } from './data';
 import { getBundle } from '../dataSource';
 import { KP_SHORT_NAME } from './BarCompare';
+import { assistantPath } from '../shared/teacherContext';
 import { FileWordOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
@@ -40,8 +41,11 @@ const ExamOverview: React.FC<ExamOverviewProps> = ({ overview, kps, classA, scop
   const scopeClasses = useMemo(() => (scope === 'mine' ? classes.filter((c) => c.id === classA) : classes), [classes, scope, classA]);
   const firstRow = overview.rows[0];
   const navigate = useNavigate();
+  const location = useLocation();
   const quizId = firstRow?.quizId || '';
-  const jumpAssistant = (prompt: string) => navigate(`/assistant?prompt=${encodeURIComponent(prompt)}&autosend=1`);
+  const jumpAssistant = (prompt: string) => navigate(assistantPath(new URLSearchParams(location.search), {
+    classId: classA, quizId, prompt, fromExam: true,
+  }));
 
   const distribution = useMemo(() => scopeClasses.map((c) => BANDS.map((_, band) => c.scored.filter((s) => bandOf(s.rate || 0) === band).length)), [scopeClasses]);
 

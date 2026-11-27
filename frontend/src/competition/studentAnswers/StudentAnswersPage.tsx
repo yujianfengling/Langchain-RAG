@@ -265,7 +265,7 @@ const StudentAnswersPage: React.FC = () => {
           <div className="teacher-learning-students">{group.rows.map(({student,rate,count})=><Button key={student.id} onClick={()=>selectStudent(student.id)}>{student.name} · {percent(rate)} · {count} 题</Button>)}</div>
         </div>)}</section>
         <details className="teacher-note-fold"><summary><QuestionCircleOutlined aria-hidden />统计口径说明</summary>
-          <p className="teacher-muted">均值按有记录学生等权计算。得分率只覆盖本次有效已评分作答，不等同于整卷成绩；缺少作答不计为零分。选择学生可查看个人档案、逐题证据和答卷分析。</p>
+          <p className="teacher-muted">班级得分率是本班本次有效得分合计除以对应满分合计。缺少的作答不计入分子或分母。</p>
         </details>
       </section> : activeTab === 'profile' ? (
         <div role="tabpanel" id="student-profile-panel" aria-labelledby="student-profile-tab">

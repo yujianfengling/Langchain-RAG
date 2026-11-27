@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { Button, Typography } from 'antd';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { assistantPath } from '../shared/teacherContext';
 import { isPrivateCompetitionData } from '../dataSource';
 import type { StudentProfileData } from './studentProfileData';
 
@@ -21,6 +22,7 @@ export interface AiDiagnosisCardProps {
  */
 const AiDiagnosisCard: React.FC<AiDiagnosisCardProps> = ({ profile, studentId, quizId, studentName }) => {
   const navigate = useNavigate();
+  const location = useLocation();
 
   const current = profile.history.find((q) => q.id === quizId)?.totals;
   const weak = useMemo(() => profile.indicators
@@ -43,7 +45,9 @@ const AiDiagnosisCard: React.FC<AiDiagnosisCardProps> = ({ profile, studentId, q
     </div>
     <div className="teacher-actions student-ai-actions">
       <Button type="primary" data-testid="jump-assistant-student"
-        onClick={() => navigate(`/assistant?prompt=${encodeURIComponent(`请分析学生 ${studentId} 在测验 ${quizId} 的本次与历次学情，指出薄弱与下一步。`)}&autosend=1`)}>
+        onClick={() => navigate(assistantPath(new URLSearchParams(location.search), {
+          quizId, prompt: `请分析学生 ${studentId} 在本次及历次测验的学情，指出薄弱与下一步。`,
+        }))}>
         AI 深度分析（跳转 AI 助手）
       </Button>
       <Text type="secondary">{isPrivateCompetitionData() ? `跳转 AI 助手为 ${studentName || studentId} 自动发送学情分析请求，结果需教师核对。` : '演示样例下同样可跳转，结果仅供演示。'}</Text>

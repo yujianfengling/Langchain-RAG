@@ -360,25 +360,41 @@ def build_diagnoses(src: Path, csv_dir: Path, textbook_map: dict) -> dict:
                 for pid, earned in kv.items() if earned < defs.get(pid, {}).get("full", earned)
             ]
             mis = _mismatch(e)
-            is_lost = e.get("score") is not None and float(e["score"]) < float(e.get("full_score") or 0)
+            score_v = float(e["score"]) if e.get("score") is not None else None
+            full_v = float(e.get("full_score") or 0)
+            is_zero = score_v == 0 and full_v > 0
+            is_partial = score_v is not None and 0 < score_v < full_v
+            is_lost = is_zero or is_partial
             if not mis and not is_lost:
                 continue
-            kind = "过程与填答不一致" if mis else "部分得分"
+            # kind 记录「作答问题」；score_status 记录「得分状态」，二者分开，零分不再冒充部分得分
+            score_status = "有效零分" if is_zero else ("部分得分" if is_partial else "满分")
+            kind = "过程与填答不一致" if mis else ("有效零分" if is_zero else "部分得分")
             if mis:
                 fact, inference, action = mis["fact"], mis["inference"], mis["action"]
+                if is_zero:
+                    fact = f"{iid} 官方得分 0/{full_v:g}（有效零分，真实作答而非缺记录）。" + fact
+            elif is_zero:
+                lp = "、".join(f"{p['label']}（{p['earned']:g}/{p['full']:g}）" for p in lost_points) or "未提供评分点明细"
+                fact = (f"{iid} 官方得分 0/{full_v:g}，为有效零分（真实作答，不是缺记录）；"
+                        f"失分评分点：{lp}。")
+                inference = "零分是真实作答结果；需核对是整题误读还是逐步错误，不按缺记录处理。"
+                action = f"先核对 {iid} 的作答与评分点，区分整题误读与步骤错误，再做同指标对照题。"
             else:
                 lp = "、".join(f"{p['label']}（{p['earned']:g}/{p['full']:g}）" for p in lost_points) or "未提供评分点明细"
-                fact = (f"{iid} 官方得分 {float(e['score']):g}/{float(e['full_score'] or 0):g}，"
+                fact = (f"{iid} 官方得分 {score_v:g}/{full_v:g}，"
                         f"失分评分点：{lp}。")
                 inference = "失分集中在上述评分点对应的步骤；具体原因需结合本人核对。"
                 action = f"先核对 {iid} 失分评分点对应的步骤，再做同指标对照题。"
             findings.append({
                 "item_id": iid, "evidence_id": e["evidence_id"], "record_id": e["record_id"],
-                "kind": kind, "score": e.get("score"), "full_score": e.get("full_score"),
+                "kind": kind, "score_status": score_status,
+                "score": e.get("score"), "full_score": e.get("full_score"),
                 "lost_points": lost_points, "fact": fact, "inference": inference, "action": action,
                 **({"last_expr": mis["last_expr"], "final_answer": mis["final"]} if mis else {}),
             })
-        question_case = "部分得分" if lost else ("满分" if scored else None)
+        question_case = ("部分得分" if any(0 < float(e["score"]) < float(e.get("full_score") or 0) for e in lost)
+                         else ("有效零分" if lost else ("满分" if scored else None)))
 
         # ---- 第二层：考点覆盖 ----
         sufficient = len(scored) >= MIN_EVIDENCE
@@ -386,6 +402,8 @@ def build_diagnoses(src: Path, csv_dir: Path, textbook_map: dict) -> dict:
             coverage_case = "记录不足"
         elif rate is not None and rate >= GOOD_THRESHOLD:
             coverage_case = "表现较好"
+        elif s == 0 and f > 0:
+            coverage_case = "有效零分"
         else:
             coverage_case = "部分得分"
         coverage = {
@@ -406,7 +424,14 @@ def build_diagnoses(src: Path, csv_dir: Path, textbook_map: dict) -> dict:
             f"列入的证据编号为 {', '.join(evidence_ids[:6])}{'…' if len(evidence_ids) > 6 else ''}。",
         ]
         if lost:
-            facts.append(f"其中 {len(lost)} 条为部分得分，涉及题目 "
+            n_zero = sum(1 for e in lost if float(e["score"]) == 0)
+            n_partial = len(lost) - n_zero
+            seg = []
+            if n_partial:
+                seg.append(f"{n_partial} 条部分得分")
+            if n_zero:
+                seg.append(f"{n_zero} 条有效零分（真实作答，非缺记录）")
+            facts.append("其中 " + "、".join(seg) + "，涉及题目 "
                          + "、".join(sorted({e['item_id'] for e in lost})[:8]) + "。")
         if pending:
             facts.append(f"另有 {len(pending)} 条待评分，未计入得分率。")
@@ -494,6 +519,22 @@ def build_diagnoses(src: Path, csv_dir: Path, textbook_map: dict) -> dict:
                 }
             inference = f"已观察题目上的得分率 {rate:.0%}，表现稳定；是否具备迁移能力仍需新题验证。"
             observe = "安排一道同指标但条件变化的变式，观察能否把方法用到新情境。"
+        elif coverage_case == "有效零分":
+            zero_item = lost[0]["item_id"] if lost else (scored[0]["item_id"] if scored else "")
+            resource = {
+                "material_id": card_id, "type": "对照练习/学习卡", "kind": "question_focus",
+                "reason": (f"有效记录 {len(scored)} 条已达判断门槛，但合计 0/{f:g}：真实作答全为零分，"
+                           f"属有记录、需巩固，不是缺记录；用 {card_id} 对照 {zero_item} 的零分步骤。"),
+                "steps": [
+                    {"order": 1, "title": f"核对 {zero_item} 的零分作答：整题误读还是逐步错误",
+                     "when_stuck": "先提示读题圈出已知量与目标量，再提示第一步该写什么；先不公布答案。"},
+                    {"order": 2, "title": "用同指标对照题练一遍，写出每步依据",
+                     "when_stuck": "先提示写出每一步依据，再提示对照评分点自查。"},
+                ],
+                "review": "复查时看该评分点是否从 0 变为得分，并记录新的作答证据编号；原零分评分保持不变。",
+            }
+            inference = f"有效记录 {len(scored)} 条已达门槛，合计 0/{f:g}：有记录、需巩固（0/{f:g}），不按缺记录处理。"
+            observe = "先核对零分作答是整题误读还是逐步错误，再安排同指标对照题巩固。"
         else:
             lost_item = lost[0]["item_id"] if lost else (scored[0]["item_id"] if scored else "")
             resource = {
@@ -566,7 +607,8 @@ def build_case_book(src: Path, diagnoses: dict) -> dict:
         return sorted(cands, key=lambda d: (d["student_id"] not in pref, sort_key(d)))[0]
 
     partial = pick(
-        [d for d in ds if any(x["kind"] == "过程与填答不一致" for x in d["question_findings"])]
+        [d for d in ds if any(x["kind"] == "过程与填答不一致" and x.get("score_status") != "有效零分"
+                              for x in d["question_findings"])]
         or [d for d in ds if d["case"] == "部分得分"],
         "部分得分", lambda d: (-len(d["question_findings"]), -d["event_count"]))
     good = pick([d for d in ds if d["case"] == "表现较好"], "表现较好",

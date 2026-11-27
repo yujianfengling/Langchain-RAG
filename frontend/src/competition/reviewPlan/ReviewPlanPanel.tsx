@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Collapse, Drawer, Empty, Input, List, Modal, Radio, Select, Space, Spin, Table, Tooltip, Typography } from 'antd';
 import { AimOutlined, BulbOutlined, CheckCircleOutlined, InfoCircleOutlined, RobotOutlined } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { assistantPath } from '../shared/teacherContext';
 import { listAllQuestions, listAnswersByQuestion } from '../studentAnswers/data';
 import { getBundle, getDatasetId } from '../dataSource';
 import type { PlanComparison, ReviewPlan, ReviewPlans } from '../dataSource';
@@ -348,7 +349,9 @@ const ReviewPlanPanel: React.FC<{
           <Tooltip title="得分率 = 本班该考点有效作答得分 ÷ 满分；失分人数按方案名单与答卷去重；环节按得分率从低到高排序，最多 3 个。数据来自本次测验记录与当前方案，下方题组为预算明细。">
             <InfoCircleOutlined className="rp-segments-info" tabIndex={0} aria-label="讲评规划口径说明" />
           </Tooltip>
-          <Button size="small" type="primary" ghost icon={<RobotOutlined />} onClick={() => navigate(`/assistant?prompt=${encodeURIComponent(`请根据班级 ${classId} 测验 ${quizId} 的薄弱考点生成40分钟讲评教案，含分层任务与教材出处。`)}&autosend=1`)} data-testid="jump-assistant-plan">AI 生成教案</Button>
+          <Button size="small" type="primary" ghost icon={<RobotOutlined />} onClick={() => navigate(assistantPath(params, {
+            classId, quizId, fromExam: true, prompt: '请根据本班本次测验的薄弱考点生成40分钟讲评教案，含分层任务与教材出处。',
+          }))} data-testid="jump-assistant-plan">AI 生成教案</Button>
         </div>
         {segments.map((s, i) => {
           const st = ai[s.indicator];

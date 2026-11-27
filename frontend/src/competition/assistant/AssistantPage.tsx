@@ -25,7 +25,8 @@ import {
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import MarkdownIt from 'markdown-it';
 import { getToken } from '../../api/authState';
-import { getBundle } from '../dataSource';
+import { getBundle, getDatasetId } from '../dataSource';
+import { QUIZZES, quizLabel } from '../shared/ids';
 import './assistant.css';
 
 /* ------------------------------------------------------------------ */
@@ -59,7 +60,10 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { 'Content-Type': 'application/json', 'X-User-Token': getToken() || '' },
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    const failure = await res.json().catch(() => null);
+    throw new Error(typeof failure?.detail === 'string' ? failure.detail : `HTTP ${res.status}`);
+  }
   return res.json() as Promise<T>;
 }
 
@@ -179,6 +183,12 @@ const MessageView: React.FC<{
 
 const AssistantPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
+  const bundle = getBundle();
+  const dataset = bundle?.manifest.source === 'official' ? getDatasetId() : '';
+  const selectedClass = bundle?.classes.find((c) => c.id === searchParams.get('classId'));
+  const selectedQuiz = bundle?.quizzes.find((q) => q.id === searchParams.get('quizId'));
+  const classId = selectedClass?.id;
+  const quizId = selectedQuiz?.id;
 
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -243,7 +253,10 @@ const AssistantPage: React.FC = () => {
     try {
       const data = await apiFetch<ChatResponse>('/api/competition/agent/chat', {
         method: 'POST',
-        body: JSON.stringify({ conversation_id: activeIdRef.current, message: text }),
+        body: JSON.stringify({
+          conversation_id: activeIdRef.current, message: text,
+          scope: dataset && classId && quizId ? { dataset, class_id: classId, quiz_id: quizId } : null,
+        }),
         signal: controller.signal,
       });
       activeIdRef.current = data.conversation_id;
@@ -268,7 +281,7 @@ const AssistantPage: React.FC = () => {
       sendingRef.current = false;
       setSending(false);
     }
-  }, [refreshConversations]);
+  }, [refreshConversations, dataset, classId, quizId]);
 
   const stopGenerating = useCallback(() => {
     abortRef.current?.abort();
@@ -440,12 +453,11 @@ const AssistantPage: React.FC = () => {
     return conversations.filter((c) => (c.title || '未命名对话').toLowerCase().includes(q));
   }, [conversations, convSearch]);
 
-  /* 数据上下文徽标：getBundle() 现算（班级去重 / 测验数 / 学生数）。 */
-  const bundle = getBundle();
-  const hasData = !!bundle && bundle.students.length > 0;
+  const hasData = !!(dataset && selectedClass && selectedQuiz);
+  const quiz = QUIZZES.find((q) => q.id === quizId);
   const dataBadgeText = hasData
-    ? `已接入 ${new Set(bundle!.students.map((s) => s.classId)).size} 班 · ${bundle!.quizzes.length} 次测验 · ${bundle!.students.length} 名学生`
-    : '未接入评测数据';
+    ? `${bundle?.manifest.independentEvaluation ? '独立评测数据' : '官方赛题数据'} · 班级 ${classId} · ${quiz ? quizLabel(quiz) : quizId}`
+    : '请先在考试分析中选择班级和测验';
 
   /* 导出当前对话为 Markdown（纯客户端生成，不走后端）。 */
   const exportConversation = () => {
@@ -541,7 +553,7 @@ const AssistantPage: React.FC = () => {
           />
           <span className="assistant-topbar-title">{activeTitle || '新对话'}</span>
           <div className="assistant-topbar-right">
-            <Tooltip title="助手可通过工具读取全部已导入评测数据与课标教材">
+              <Tooltip title="学情问题按当前数据、班级和测验读取">
               <span className={'assistant-data-badge' + (hasData ? '' : ' is-empty')}>
                 <DatabaseOutlined /> {dataBadgeText}
               </span>

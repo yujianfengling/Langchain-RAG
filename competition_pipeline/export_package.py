@@ -145,10 +145,12 @@ def build(src: Path, analysis: Path, out: Path) -> None:
         json.dumps(crosscheck, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 同题对比：两班在同一 (node, ind) 下的全部题 / 共同题口径（由 evidence 重算）
+    # 指标集合取自课程要求表（正式九项），不把学习卡的多指标关联串当单指标
     scope = _read_json(src / "scope_index.json")
+    formal_inds = sorted({i["indicator_id"] for i in curriculum["indicators"]})
     same_q = compute_same_question(
         evidence, scope["item_indicator"], scope["student_class"],
-        scope["node_order"], sorted(set(scope["item_indicator"].values())))
+        scope["node_order"], formal_inds)
     (out / "same_question_comparison.json").write_text(
         json.dumps(same_q, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[export] {out} files={len(list(out.iterdir()))} crosscheck={len(crosscheck)} "
@@ -283,7 +285,7 @@ def verify(pkg: Path, src: Path) -> None:
         key = (d["student_id"], d["node_id"], d["indicator_id"])
         label = f"diagnosis {key}"
         check(d["indicator_id"] in ind_ids, f"{label} 指标编号可定位")
-        check(d["case"] in ("记录不足", "表现较好", "部分得分"), f"{label} case 取值合法")
+        check(d["case"] in ("记录不足", "表现较好", "部分得分", "有效零分"), f"{label} case 取值合法")
         eids = d.get("evidence_ids", [])
         # 契约允许「无已评分有效证据」的诊断（仅待评分/未作答/越界隔离）：
         # evidence_ids 可为空，但必须 event_count=0 且证据索引中确无该键的有效得分；
@@ -411,7 +413,7 @@ def verify(pkg: Path, src: Path) -> None:
         src_ev = _read_json(src / "evidence_index.json")
         expected_sq = compute_same_question(
             src_ev, scope["item_indicator"], scope["student_class"],
-            scope["node_order"], sorted(set(scope["item_indicator"].values())))
+            scope["node_order"], sorted({i["indicator_id"] for i in cm["indicators"]}))
         exp_by = {(x["node_id"], x["indicator_id"]): x for x in expected_sq}
         got_by = {(x.get("node_id"), x.get("indicator_id")): x for x in sq}
         keyset_check(set(got_by.keys()), set(exp_by.keys()), "same_question_comparison")

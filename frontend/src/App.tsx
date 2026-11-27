@@ -6,6 +6,8 @@ import { ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import LoginRequired from './components/LoginRequired';
 import CompetitionChrome from './competition/shared/CompetitionChrome';
+import { getBundle } from './competition/dataSource';
+import { assistantPath } from './competition/shared/teacherContext';
 import { CourseProvider } from './context/CourseContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { themeConfig } from './theme';
@@ -118,8 +120,15 @@ const AssistantEntry: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   if (location.pathname === '/assistant') return null;
+  const current = new URLSearchParams(location.search);
+  const fromExam = location.pathname === '/class-analytics';
+  const bundle = getBundle();
   return (
-    <button type="button" className="assistant-entry-fab" aria-label="AI 助手" onClick={() => navigate('/assistant')}>
+    <button type="button" className="assistant-entry-fab" aria-label="AI 助手" onClick={() => navigate(assistantPath(current, {
+      fromExam,
+      classId: fromExam ? bundle?.classes.find((c) => c.id === current.get('classId'))?.id || bundle?.classes[0]?.id : undefined,
+      quizId: fromExam ? bundle?.quizzes.find((q) => q.id === current.get('quizId'))?.id || bundle?.quizzes[0]?.id : undefined,
+    }))}>
       <RobotOutlined aria-hidden />
       <span className="assistant-entry-fab-label" aria-hidden>AI 助手</span>
     </button>

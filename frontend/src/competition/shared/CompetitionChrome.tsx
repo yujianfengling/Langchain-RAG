@@ -4,7 +4,7 @@ import { Button, Dropdown } from 'antd';
 import { DownOutlined, LogoutOutlined, UploadOutlined } from '@ant-design/icons';
 import { useAuth } from '../../context/AuthContext';
 import { getBundle, getSourceLabel, getSourceNotice, isPrivateCompetitionData } from '../dataSource';
-import { analysisReturnPath } from './teacherContext';
+import { analysisReturnPath, assistantPath } from './teacherContext';
 import ErrorBoundary from './ErrorBoundary';
 import ImportPanel from './ImportPanel';
 
@@ -37,6 +37,16 @@ const CompetitionChrome: React.FC<{ children: React.ReactNode }> = ({ children }
   const go = (path: string) => {
     if (location.pathname === path) return;
     const current = new URLSearchParams(location.search);
+    if (path === '/assistant') {
+      const fromExam = location.pathname === '/class-analytics';
+      const bundle = getBundle();
+      navigate(assistantPath(current, {
+        fromExam,
+        classId: fromExam ? bundle?.classes.find((c) => c.id === current.get('classId'))?.id || bundle?.classes[0]?.id : undefined,
+        quizId: fromExam ? bundle?.quizzes.find((q) => q.id === current.get('quizId'))?.id || bundle?.quizzes[0]?.id : undefined,
+      }));
+      return;
+    }
     if (path === '/class-analytics' && location.pathname !== path) {
       navigate(analysisReturnPath(current));
       return;
