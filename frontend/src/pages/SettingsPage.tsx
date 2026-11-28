@@ -1,29 +1,60 @@
-import React from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
-import { Layout, Typography, Space, Card, Segmented } from 'antd';
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Button, Card, Col, Row, Segmented, Space, Tabs, Tag, Typography } from 'antd';
 import {
-  SettingOutlined, InfoCircleOutlined, UserOutlined, DatabaseOutlined,
+  AudioOutlined, BarChartOutlined, DatabaseOutlined, InfoCircleOutlined,
+  RobotOutlined, SafetyCertificateOutlined, SettingOutlined, SlidersOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
-import UserProfileDashboard from '../components/UserProfileDashboard';
 import PersonalizationSettings from '../components/PersonalizationSettings';
 import SpeechSettings from '../components/SpeechSettings';
 import TeacherActivation from '../components/TeacherActivation';
 import SubjectSelector from '../components/SubjectSelector';
 import SystemStatusPanel from '../components/SystemStatusPanel';
 import { getHealth } from '../api/health';
+import { useAuth } from '../context/AuthContext';
+import { useCourse } from '../context/CourseContext';
+import { useIsNarrow } from '../hooks/useIsNarrow';
 import { readNavMode, writeNavMode, type NavMode } from '../components/AppChrome/navMode';
 
-const { Header, Content } = Layout;
 const { Title, Text, Paragraph } = Typography;
 
-const SettingsPage: React.FC = () => {
-  const [params] = useSearchParams();
-  const [selectedSubject, setSelectedSubject] = React.useState<string>('');
-  // 版本从后端取，不要在页面里硬编码（此前写死 1.0.0，而实际已是 2.2.1）
-  const [version, setVersion] = React.useState<string>('');
-  const [navMode, setNavMode] = React.useState<NavMode>(readNavMode);
+type SettingsTabKey = 'appearance' | 'study' | 'account' | 'system';
 
-  React.useEffect(() => {
+const TAB_ALIASES: Record<string, SettingsTabKey> = {
+  preference: 'appearance',
+  appearance: 'appearance',
+  study: 'study',
+  speech: 'study',
+  account: 'account',
+  teacher: 'account',
+  system: 'system',
+  status: 'system',
+};
+
+const SettingsPage: React.FC = () => {
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const isNarrow = useIsNarrow('(max-width: 960px)');
+  const { user } = useAuth();
+  const { currentSubjectId } = useCourse();
+
+  const [selectedSubject, setSelectedSubject] = useState<string>(currentSubjectId || '');
+  const [version, setVersion] = useState<string>('');
+  const [navMode, setNavMode] = useState<NavMode>(readNavMode);
+  const initialTab = TAB_ALIASES[params.get('tab') || ''] || 'appearance';
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>(initialTab);
+
+  useEffect(() => {
+    if (currentSubjectId && !selectedSubject) setSelectedSubject(currentSubjectId);
+  }, [currentSubjectId, selectedSubject]);
+
+  useEffect(() => {
+    const mapped = TAB_ALIASES[params.get('tab') || ''];
+    if (mapped) setActiveTab(mapped);
+  }, [params]);
+
+  useEffect(() => {
     let alive = true;
     getHealth()
       .then((info) => { if (alive) setVersion(info?.version || ''); })
@@ -31,173 +62,221 @@ const SettingsPage: React.FC = () => {
     return () => { alive = false; };
   }, []);
 
-  // 头像菜单「讲解偏好」深链：滚动到偏好区（不新增页面）
-  React.useEffect(() => {
-    if (params.get('tab') !== 'preference') return;
-    const el = document.getElementById('preference');
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, [params]);
+  const handleTabChange = (key: string) => {
+    const next = (TAB_ALIASES[key] || 'appearance') as SettingsTabKey;
+    setActiveTab(next);
+    setParams((prev) => {
+      const updated = new URLSearchParams(prev);
+      updated.set('tab', next);
+      return updated;
+    }, { replace: true });
+  };
 
   return (
-    <Layout className="settings-page">
-      <Header style={{ 
-        background: '#fff',
-        padding: '0 24px',
-        borderBottom: '1px solid #f0f0f0',
-        display: 'flex',
-        alignItems: 'center',
-      }}>
-        <Space>
-          <SettingOutlined style={{ fontSize: '20px', color: '#0f766e' }} />
-          <Title level={4} style={{ margin: 0 }}>
-            系统设置
-          </Title>
-        </Space>
-      </Header>
-      
-      <Content className="settings-scroll" style={{ 
-        padding: '24px',
-        background: '#f5f5f5',
-      }}>
-        <div style={{ 
-          background: '#fff',
-          borderRadius: '12px',
-          padding: '24px',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-        }}>
-          <div style={{ marginBottom: 24 }}>
-            <Title level={5} style={{ marginBottom: 16 }}>导航方式</Title>
-            <Card size="small">
-              <Space direction="vertical" size={12}>
-                <Text type="secondary">
-                  顶栏平时收成顶部拉条。左轮不留导航条，在空白处右键打开，滚轮换页。
-                </Text>
-                <Segmented
-                  value={navMode}
-                  onChange={(value) => {
-                    const next: NavMode = value === 'cylinder' ? 'cylinder' : 'top';
-                    setNavMode(next);
-                    writeNavMode(next);
-                  }}
-                  options={[
-                    { label: '顶栏', value: 'top' },
-                    { label: '左轮', value: 'cylinder' },
-                  ]}
-                />
-              </Space>
-            </Card>
-          </div>
-
-          {/* 学习仪表盘 */}
-          <div style={{ marginBottom: 24 }}>
-            <UserProfileDashboard userId="default_user" subjectId={selectedSubject} />
-          </div>
-
-          {/* 个性化设置（讲解偏好）：头像菜单的「讲解偏好」直达这里 */}
-          <div id="preference" style={{ marginBottom: 24 }}>
-            <PersonalizationSettings userId="default_user" subjectId={selectedSubject} />
-          </div>
-
-          {/* 语音设置（语音输入/本地 ASR；回答朗读已移除，2026-10-01） */}
-          <div style={{ marginBottom: 24 }}>
-            <TeacherActivation />
-
-        <SpeechSettings />
-          </div>
-
-          {/* 学科选择 */}
-          <div style={{ marginBottom: 24 }}>
-            <Title level={5} style={{ marginBottom: '16px' }}>
-              <UserOutlined /> 学习学科
-            </Title>
-            <SubjectSelector value={selectedSubject} onChange={setSelectedSubject} />
-          </div>
-
-          {/* 资料知识库（个人/管理）：课程资料入口已在「我的课程」内，这里保留个人资料入口 */}
-          <div style={{ marginBottom: 24 }}>
-            <Title level={5} style={{ marginBottom: '16px' }}>
-              <DatabaseOutlined /> 资料知识库（个人 / 管理）
-            </Title>
-            <Card size="small">
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <Text type="secondary">
-                  个人资料知识库的上传与索引管理入口。教师课程的「课程资料」在「我的课程 → 课程资料与知识库」里查看，
-                  两套资料权限不同：课程资料由任课老师维护、只对本课程学生可见。
-                </Text>
-                <Link to="/knowledge">进入知识库管理</Link>
-              </Space>
-            </Card>
-          </div>
-
-          {/* 运行状态：外部能力与当日用量（观测数据的用户可见入口） */}
-          <div style={{ marginBottom: 24 }}>
-            <SystemStatusPanel />
-          </div>
-
-          {/* 系统信息部分 */}
-          <div>
-            <Title level={5} style={{ marginBottom: '16px' }}>
-              <InfoCircleOutlined /> 系统信息
-            </Title>
-            
-            <Card size="small">
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <Text>系统名称</Text>
-                  <Text>RAG与LangChain融合的智慧教育系统</Text>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <Text>版本</Text>
-                  <Text>{version || '—'}</Text>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <Text>API文档</Text>
-                  <Text>
-                    <a href="/docs" target="_blank" rel="noopener noreferrer">
-                      查看API文档
-                    </a>
-                  </Text>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <Text>健康检查</Text>
-                  <Text>
-                    <a href="/health" target="_blank" rel="noopener noreferrer">
-                      检查系统状态
-                    </a>
-                  </Text>
-                </div>
-              </Space>
-            </Card>
-            
-            <Paragraph type="secondary" style={{ marginTop: '16px', fontSize: '12px' }}>
-              RAG与LangChain融合的智慧教育系统：基于课程资料的检索增强问答与教学辅助。
-              支持多学科/课程知识库、资料级引用、智能问答与教学辅助。
-            </Paragraph>
-
-            {/* 技术说明：准确区分 LangChain 组件与自研逻辑，避免把普通函数调用说成"LangChain 链" */}
-            <Card size="small" style={{ marginTop: 12 }}>
-              <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                <Text strong>技术说明（RAG 与 LangChain）</Text>
-                <Text style={{ fontSize: 12 }}>
-                  LangChain 组件：文档加载（PyPDFLoader / TextLoader / UnstructuredMarkdownLoader）、
-                  文本切分（RecursiveCharacterTextSplitter）、统一文档对象（langchain_core Document）、
-                  本地向量化（HuggingFaceEmbeddings）；思维导图生成使用 LangChain 表达式链
-                  （ChatOpenAI + ChatPromptTemplate + JsonOutputParser）。
-                </Text>
-                <Text style={{ fontSize: 12 }}>
-                  项目自研：FAISS 向量存储与缓存（直接调用 faiss）、BM25 关键词检索、RRF 融合与重排、
-                  检索阈值与降级、提示词与上下文组装、模型调用与流式输出、会话与学习闭环、权限校验。
-                </Text>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  问答与检索主链路（chat_service + rag_service）是自研流程，不是 LangChain Chain；
-                  引用只来自真实检索到的资料片段。
-                </Text>
-              </Space>
-            </Card>
-          </div>
+    <div className="app-page app-page-wide">
+      {/* 紧凑页头 */}
+      <Card size="small" styles={{ body: { padding: '12px 18px' } }} style={{ marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+          <Space size={10} align="center">
+            <SettingOutlined style={{ fontSize: 20, color: 'var(--color-primary)' }} />
+            <div>
+              <Title level={4} style={{ margin: 0, fontSize: 17 }}>系统设置</Title>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                按模块管理导航偏好、讲解风格、语音输入、身份权限与系统运行状态
+              </Text>
+            </div>
+          </Space>
+          <Space size={8} wrap>
+            <Button icon={<BarChartOutlined />} onClick={() => navigate('/me')}>返回个人学情</Button>
+            <Button type="primary" icon={<RobotOutlined />} onClick={() => navigate('/student')}>进入 AI 伴学</Button>
+          </Space>
         </div>
-      </Content>
-    </Layout>
+      </Card>
+
+      {/* 左侧分组标签（窄屏自动切顶部），每页控制在一屏内 */}
+      <Card size="small" styles={{ body: { padding: isNarrow ? '10px 14px 16px' : '16px 20px' } }}>
+        <Tabs
+          tabPosition={isNarrow ? 'top' : 'left'}
+          activeKey={activeTab}
+          onChange={handleTabChange}
+          items={[
+            {
+              key: 'appearance',
+              label: (
+                <Space size={6}>
+                  <SlidersOutlined />
+                  <span>界面与偏好</span>
+                </Space>
+              ),
+              children: (
+                <Row gutter={[16, 16]}>
+                  <Col xs={24} lg={10}>
+                    <Space direction="vertical" size={14} style={{ width: '100%' }}>
+                      <Card size="small" type="inner" title="导航方式">
+                        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                          <Text type="secondary" style={{ fontSize: 13 }}>
+                            顶栏平时收成顶部拉条，展开即可切页；左轮不留导航条，在空白处右键（或长按）打开并用滚轮换页。
+                          </Text>
+                          <Segmented
+                            value={navMode}
+                            onChange={(value) => {
+                              const next: NavMode = value === 'cylinder' ? 'cylinder' : 'top';
+                              setNavMode(next);
+                              writeNavMode(next);
+                            }}
+                            options={[
+                              { label: '顶栏模式（默认）', value: 'top' },
+                              { label: '左轮模式', value: 'cylinder' },
+                            ]}
+                          />
+                        </Space>
+                      </Card>
+
+                      <Card size="small" type="inner" title="个人学情首页">
+                        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                          <Text type="secondary" style={{ fontSize: 13 }}>
+                            登录后默认进入「个人学情」首页，集中展示掌握诊断、知识图谱热力、遗忘预警、错因画像与教师批改评语。
+                          </Text>
+                          <Button type="primary" ghost size="small" icon={<BarChartOutlined />} onClick={() => navigate('/me')}>
+                            前往个人学情
+                          </Button>
+                        </Space>
+                      </Card>
+                    </Space>
+                  </Col>
+
+                  <Col xs={24} lg={14}>
+                    <div id="preference">
+                      <PersonalizationSettings userId={user?.id} subjectId={selectedSubject || currentSubjectId || ''} />
+                    </div>
+                  </Col>
+                </Row>
+              ),
+            },
+            {
+              key: 'study',
+              label: (
+                <Space size={6}>
+                  <AudioOutlined />
+                  <span>学科与语音</span>
+                </Space>
+              ),
+              children: (
+                <Row gutter={[16, 16]}>
+                  <Col xs={24} lg={12}>
+                    <SpeechSettings />
+                  </Col>
+                  <Col xs={24} lg={12}>
+                    <Space direction="vertical" size={14} style={{ width: '100%' }}>
+                      <Card size="small" type="inner" title={<Space><UserOutlined />当前学习学科</Space>}>
+                        <SubjectSelector value={selectedSubject} onChange={setSelectedSubject} />
+                      </Card>
+
+                      <Card size="small" type="inner" title={<Space><DatabaseOutlined />资料知识库（个人 / 课程）</Space>}>
+                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                          <Text type="secondary" style={{ fontSize: 13 }}>
+                            个人资料库用于管理自己上传的课件与索引；教师课程资料由任课老师维护、仅本班学生可见，两者权限隔离。
+                          </Text>
+                          <Link to="/student/materials">
+                            <Button size="small">进入资料库管理</Button>
+                          </Link>
+                        </Space>
+                      </Card>
+                    </Space>
+                  </Col>
+                </Row>
+              ),
+            },
+            {
+              key: 'account',
+              label: (
+                <Space size={6}>
+                  <SafetyCertificateOutlined />
+                  <span>身份与权限</span>
+                </Space>
+              ),
+              children: (
+                <Row gutter={[16, 16]}>
+                  <Col xs={24} lg={14}>
+                    <TeacherActivation />
+                  </Col>
+                  <Col xs={24} lg={10}>
+                    <Card size="small" type="inner" title="账号与角色说明">
+                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                        <Space size={8}>
+                          <Text type="secondary">当前账号：</Text>
+                          <Text strong>{user?.display_name || user?.username || '—'}</Text>
+                          <Tag color={user?.role === 'teacher' || user?.role === 'admin' ? 'blue' : 'default'}>
+                            {user?.role === 'admin' ? '管理员' : user?.role === 'teacher' ? '教师' : '学生'}
+                          </Tag>
+                        </Space>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          修改显示姓名、更换头像可在「个人学情 → 账号与偏好」完成。
+                        </Text>
+                        <Button size="small" onClick={() => navigate('/me')}>去个人资料</Button>
+                      </Space>
+                    </Card>
+                  </Col>
+                </Row>
+              ),
+            },
+            {
+              key: 'system',
+              label: (
+                <Space size={6}>
+                  <InfoCircleOutlined />
+                  <span>运行状态与关于</span>
+                </Space>
+              ),
+              children: (
+                <Row gutter={[16, 16]}>
+                  <Col xs={24} lg={13}>
+                    <SystemStatusPanel />
+                  </Col>
+                  <Col xs={24} lg={11}>
+                    <Space direction="vertical" size={14} style={{ width: '100%' }}>
+                      <Card size="small" type="inner" title="系统信息">
+                        <Space direction="vertical" size={8} style={{ width: '100%', fontSize: 13 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <Text type="secondary">系统名称</Text>
+                            <Text>知学 · RAG 智慧教育系统</Text>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <Text type="secondary">当前版本</Text>
+                            <Text>{version || '—'}</Text>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <Text type="secondary">开发接口</Text>
+                            <Space size={12}>
+                              <a href="/docs" target="_blank" rel="noopener noreferrer">API 文档</a>
+                              <a href="/health" target="_blank" rel="noopener noreferrer">健康检查</a>
+                            </Space>
+                          </div>
+                        </Space>
+                      </Card>
+
+                      <Card size="small" type="inner" title="架构说明（RAG 与 LangChain）">
+                        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                          <Paragraph style={{ marginBottom: 4, fontSize: 12 }}>
+                            <strong>LangChain 组件：</strong>文档加载、递归切分、统一 Document 模型、本地向量化与结构化输出链。
+                          </Paragraph>
+                          <Paragraph style={{ marginBottom: 4, fontSize: 12 }}>
+                            <strong>项目自研：</strong>FAISS + BM25 混合检索、RRF 重排、图谱增强检索、学情追踪（BKT + FSRS）、工具化伴学与权限隔离。
+                          </Paragraph>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            所有回答引用与学情结论均基于真实资料片段和真实作答记录。
+                          </Text>
+                        </Space>
+                      </Card>
+                    </Space>
+                  </Col>
+                </Row>
+              ),
+            },
+          ]}
+        />
+      </Card>
+    </div>
   );
 };
 

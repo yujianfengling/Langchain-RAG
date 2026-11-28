@@ -7,7 +7,7 @@ import type { ThemeConfig } from 'antd';
 export const themeConfig: ThemeConfig = {
   token: {
     colorPrimary: '#4f46e5', colorPrimaryBg: '#eef2ff', colorLink: '#4f46e5', colorLinkHover: '#4338ca',
-    colorSuccess: '#15803d', colorWarning: '#b45309', colorError: '#dc2626',
+    colorSuccess: '#10b981', colorWarning: '#f59e0b', colorError: '#ef4444',
     colorBgContainer: '#ffffff', colorBgLayout: '#f5f6f8', colorBgElevated: '#ffffff',
     colorText: '#182033', colorTextSecondary: '#556074', colorTextTertiary: '#737d8f',
     colorBorder: '#e3e6eb', colorBorderSecondary: '#edf0f3',

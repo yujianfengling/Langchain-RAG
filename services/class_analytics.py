@@ -89,12 +89,14 @@ def class_overview(user_id: str, class_id: str, days: int = 30,
                 "task_completion": None, "knowledge_points": [],
                 "weak_knowledge_points": [], "trend": []}
 
-    from services import quiz_service
+    from services import learning_data, quiz_service
     conn = quiz_service._get_db()
     try:
+        learning_data.ensure_columns(conn, "quiz_attempts")
         marks = ",".join("?" for _ in student_ids)
         attempts = conn.execute(
             f"""SELECT a.user_id, a.question_id, a.knowledge_point_id, a.knowledge_point_name,
+                       a.user_answer, a.user_answer_text, a.error_code, a.error_note,
                        a.is_correct, a.grade_status, a.attempt_kind, a.created_at
                 FROM quiz_attempts a
                 WHERE a.user_id IN ({marks}) AND a.subject_id=?
@@ -146,10 +148,20 @@ def class_overview(user_id: str, class_id: str, days: int = 30,
     latest = _latest_attempts_per_question(graded)
     # 知识点作答情况（最新口径 + 原始计数）
     kp_stats = _knowledge_point_stats(graded, latest)
-    # 常见错题（最新口径）
+    # 常见错题（最新口径，附客观题选项分布，不含标准答案）
     wrong_questions = _wrong_questions(latest, graded)
     # 时间趋势（按天，原始计数）
     trend = _trend(attempt_rows, rng)
+    # 全班错因分布（聚合学生自报的 ERROR_CAUSES）
+    error_causes = _error_causes(attempt_rows)
+    # 班级学生分层与预警（严格依据真实作答证据）
+    student_tiers = _student_tiers(student_ids, latest)
+    # 知识图谱前置溯因预警（仅对班级薄弱知识点）
+    weak_kps = [
+        k for k in kp_stats
+        if k["enough_data"] and k["wrong_rate"] is not None and k["wrong_count"] > 0
+    ][:8]
+    prerequisite_alerts = _class_prerequisite_alerts(subject_id, kp_stats, weak_kps)
 
     sample_enough = (len(graded) >= MIN_ATTEMPTS_FOR_CONCLUSION
                      and len(answered_students) >= MIN_STUDENTS_FOR_CONCLUSION)
@@ -160,16 +172,24 @@ def class_overview(user_id: str, class_id: str, days: int = 30,
         reasons.append(f"参与作答的学生仅 {len(answered_students)} 人"
                        f"（少于 {MIN_STUDENTS_FOR_CONCLUSION} 人）")
 
+    headline = _class_headline(
+        sample_enough, participation, weak_kps, error_causes, prerequisite_alerts,
+        "；".join(reasons) if reasons else None,
+    )
+
     return {
         **meta,
         "enough_data": sample_enough,
         "insufficient_reason": "；".join(reasons) if reasons else None,
+        "headline": headline,
         "participation": participation,
         "task_completion": task_completion,
         "knowledge_points": kp_stats,
-        "weak_knowledge_points": [k for k in kp_stats if k["enough_data"] and k["wrong_rate"] is not None
-                                  and k["wrong_count"] > 0][:8],
+        "weak_knowledge_points": weak_kps,
         "wrong_questions": wrong_questions[:10],
+        "error_causes": error_causes,
+        "student_tiers": student_tiers,
+        "prerequisite_alerts": prerequisite_alerts,
         "trend": trend,
         "thresholds": {"min_attempts": MIN_ATTEMPTS_FOR_CONCLUSION,
                        "min_students": MIN_STUDENTS_FOR_CONCLUSION},
@@ -279,28 +299,225 @@ def _wrong_questions(latest: List[Dict[str, Any]],
         item = by_q.setdefault(a["question_id"], {"question_id": a["question_id"],
                                                   "attempt_count": 0, "wrong_count": 0,
                                                   "students": set(),
+                                                  "answer_counts": {},
                                                   "knowledge_point": a.get("knowledge_point_name")})
         item["attempt_count"] += 1
         if not a.get("is_correct"):
             item["wrong_count"] += 1
         item["students"].add(a["user_id"])
+        ans = str(a.get("user_answer") or "").strip()
+        if ans:
+            item["answer_counts"][ans] = item["answer_counts"].get(ans, 0) + 1
     out = []
     for qid, item in by_q.items():
         if item["wrong_count"] == 0:
             continue
         students = item.pop("students")
+        ans_counts = item.pop("answer_counts")
         item["student_count"] = len(students)
         item["wrong_rate"] = round(item["wrong_count"] / item["attempt_count"], 3)
         item["raw_wrong_count"] = raw_by_q.get(qid, item["wrong_count"])
         item["basis"] = "每题最新一次作答"
         q = quiz_service.get_question_public(qid)
         if q:
-            item["stem"] = q.get("stem")
-            item["question_type"] = q.get("question_type")
+            item["stem"] = q.get("stem") or q.get("question")
+            item["question_type"] = q.get("question_type") or q.get("type")
             item["options"] = q.get("options")  # 不含答案
+            item["option_distribution"] = _option_distribution(
+                q.get("options"), ans_counts, item["attempt_count"])
         out.append(item)
     out.sort(key=lambda x: (-x["wrong_count"], -x["wrong_rate"]))
     return out
+
+
+def _option_distribution(options: Any, answer_counts: Dict[str, int],
+                         total_attempts: int) -> List[Dict[str, Any]]:
+    """客观题选项分布（不泄露标准答案，帮助教师识别共性干扰项）。"""
+    if not isinstance(options, list) or not options or total_attempts <= 0:
+        return []
+    dist: List[Dict[str, Any]] = []
+    for opt in options:
+        if not isinstance(opt, dict):
+            continue
+        oid = str(opt.get("id") or "").strip()
+        if not oid:
+            continue
+        cnt = int(answer_counts.get(oid, 0))
+        dist.append({
+            "option_id": oid,
+            "text": str(opt.get("text") or ""),
+            "count": cnt,
+            "ratio": round(cnt / total_attempts, 3),
+        })
+    return dist
+
+
+def _error_causes(attempt_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """聚合全班学生自报的错因分布（来自 quiz_attempts.error_code）。"""
+    from services import quiz_service
+    counts: Dict[str, int] = {}
+    for a in attempt_rows:
+        code = str(a.get("error_code") or "").strip()
+        if code and code in quiz_service.ERROR_CAUSES:
+            counts[code] = counts.get(code, 0) + 1
+    total = sum(counts.values())
+    return [
+        {
+            "code": code,
+            "label": quiz_service.ERROR_CAUSES[code],
+            "count": cnt,
+            "ratio": round(cnt / total, 3) if total else 0.0,
+        }
+        for code, cnt in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
+
+def _student_tiers(student_ids: List[str],
+                   latest: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """按本班最新作答证据将学生分层：需重点干预 / 巩固中 / 稳步掌握 / 待评估。"""
+    from services import auth_service
+    by_user: Dict[str, Dict[str, Any]] = {
+        uid: {"attempts": 0, "wrong": 0, "wrong_kps": set()} for uid in student_ids
+    }
+    for a in latest:
+        slot = by_user.get(a["user_id"])
+        if slot is None:
+            continue
+        slot["attempts"] += 1
+        if _is_wrong(a.get("is_correct")):
+            slot["wrong"] += 1
+            kp_n = str(a.get("knowledge_point_name") or "").strip()
+            if kp_n and kp_n != "待确认":
+                slot["wrong_kps"].add(kp_n)
+
+    tier_labels = {
+        "needs_attention": "需重点干预",
+        "consolidating": "波动巩固中",
+        "on_track": "稳步掌握",
+        "inactive": "暂无足够证据",
+    }
+    counts = {k: 0 for k in tier_labels}
+    students: List[Dict[str, Any]] = []
+    for uid in student_ids:
+        slot = by_user[uid]
+        att = slot["attempts"]
+        w = slot["wrong"]
+        wrate = round(w / att, 3) if att else None
+        weak_kp_count = len(slot["wrong_kps"])
+        if att < 2:
+            tier = "inactive"
+        elif (wrate is not None and wrate >= 0.5) or weak_kp_count >= 3:
+            tier = "needs_attention"
+        elif wrate is not None and wrate < 0.25 and att >= 3:
+            tier = "on_track"
+        else:
+            tier = "consolidating"
+        counts[tier] += 1
+        try:
+            u = auth_service.get_user(uid) or {}
+            dname = u.get("display_name") or u.get("username") or uid
+        except Exception:
+            dname = uid
+        students.append({
+            "user_id": uid,
+            "display_name": dname,
+            "attempt_count": att,
+            "wrong_count": w,
+            "wrong_rate": wrate,
+            "weak_kp_count": weak_kp_count,
+            "tier": tier,
+            "tier_label": tier_labels[tier],
+        })
+
+    order = {"needs_attention": 0, "consolidating": 1, "on_track": 2, "inactive": 3}
+    students.sort(key=lambda s: (
+        order.get(s["tier"], 9),
+        -(s["wrong_rate"] or 0),
+        -s["wrong_count"],
+        s["display_name"],
+    ))
+    return {"counts": counts, "labels": tier_labels, "students": students}
+
+
+def _class_prerequisite_alerts(
+    subject_id: str,
+    kp_stats: List[Dict[str, Any]],
+    weak_kps: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """基于知识图谱/学习路线，对班级薄弱知识点排查前置概念薄弱根因。"""
+    if not subject_id or not weak_kps:
+        return []
+    try:
+        from services import graph_bridge, knowledge_map
+        graph = graph_bridge.load_subject_graph(subject_id)
+        lmap = knowledge_map.get_map(subject_id)
+        if not graph and not lmap:
+            return []
+        metrics = {
+            str(k.get("knowledge_point") or "").strip(): {
+                "kp_id": k.get("knowledge_point_id"),
+                "wrong_rate": k.get("wrong_rate"),
+                "attempt_count": k.get("attempt_count"),
+                "wrong_count": k.get("wrong_count"),
+                "enough_data": k.get("enough_data"),
+            }
+            for k in kp_stats
+            if k.get("knowledge_point")
+        }
+        alerts: List[Dict[str, Any]] = []
+        for wk in weak_kps[:5]:
+            kp_name = str(wk.get("knowledge_point") or "").strip()
+            if not kp_name or kp_name in ("未标注知识点", "待确认"):
+                continue
+            diag = graph_bridge.diagnose_prerequisites(
+                kp_name, metrics, graph=graph, learning_map=lmap, mode="class",
+            )
+            if diag.get("root_cause_type") == "prerequisite_gap":
+                alerts.append({
+                    "knowledge_point": kp_name,
+                    "knowledge_point_id": wk.get("knowledge_point_id"),
+                    "wrong_rate": wk.get("wrong_rate"),
+                    "wrong_count": wk.get("wrong_count"),
+                    "weak_prerequisites": diag["weak_prerequisites"],
+                    "summary": diag["summary"],
+                })
+        return alerts[:4]
+    except Exception as e:
+        logger.debug(f"班级前置溯因跳过: {e}")
+        return []
+
+
+def _class_headline(
+    enough_data: bool,
+    participation: Dict[str, Any],
+    weak_kps: List[Dict[str, Any]],
+    error_causes: List[Dict[str, Any]],
+    prereq_alerts: List[Dict[str, Any]],
+    insufficient_reason: Optional[str],
+) -> str:
+    """程序生成的班级学情一句话结论（严格引用真实统计，不下无依据结论）。"""
+    if not enough_data:
+        return f"当前样本量不足（{insufficient_reason or '数据不足'}），暂不下班级掌握结论，建议先完成一次课堂测验。"
+    parts: List[str] = []
+    answered = participation.get("answered_student_count") or 0
+    total = participation.get("student_count") or 0
+    parts.append(f"统计期内 {answered}/{total} 名学生参与作答（有效判分 {participation.get('graded_count') or 0} 次）。")
+    if weak_kps:
+        top = weak_kps[0]
+        parts.append(
+            f"最突出薄弱点为「{top['knowledge_point']}」（错误率 {round((top['wrong_rate'] or 0) * 100)}%，"
+            f"错 {top['wrong_count']}/{top['attempt_count']}）。"
+        )
+    if prereq_alerts:
+        pre_names = "、".join(
+            f"「{p['concept']}」" for p in (prereq_alerts[0].get("weak_prerequisites") or [])[:2]
+        )
+        if pre_names:
+            parts.append(f"图谱溯因提示前置概念 {pre_names} 同样薄弱，建议讲评先补前置。")
+    elif error_causes:
+        top_c = error_causes[0]
+        parts.append(f"学生自报最高频错因为「{top_c['label']}」（占已标注错因 {round(top_c['ratio'] * 100)}%）。")
+    return "".join(parts)
 
 
 def _is_wrong(value: Any) -> bool:
@@ -368,11 +585,13 @@ def knowledge_point_detail(user_id: str, class_id: str, knowledge_point_id: str,
     student_ids = [m["user_id"] for m in td.list_members(class_id, status="active")]
     rows = []
     if student_ids:
+        from services import learning_data
         marks = ",".join("?" for _ in student_ids)
         conn = quiz_service._get_db()
         try:
+            learning_data.ensure_columns(conn, "quiz_attempts")
             rows = conn.execute(
-                f"""SELECT user_id, question_id, is_correct, created_at
+                f"""SELECT user_id, question_id, user_answer, error_code, is_correct, created_at
                     FROM quiz_attempts
                     WHERE user_id IN ({marks}) AND subject_id=? AND knowledge_point_id=?
                       AND date(created_at) BETWEEN ? AND ?
@@ -383,13 +602,17 @@ def knowledge_point_detail(user_id: str, class_id: str, knowledge_point_id: str,
         finally:
             conn.close()
 
-    latest = _latest_attempts_per_question([dict(r) for r in rows])
-    agg: Dict[str, Dict[str, int]] = {}
+    row_dicts = [dict(r) for r in rows]
+    latest = _latest_attempts_per_question(row_dicts)
+    agg: Dict[str, Dict[str, Any]] = {}
     for a in latest:
-        slot = agg.setdefault(a["question_id"], {"c": 0, "wrong": 0})
+        slot = agg.setdefault(a["question_id"], {"c": 0, "wrong": 0, "ans": {}})
         slot["c"] += 1
         if not a["is_correct"]:
             slot["wrong"] += 1
+        ans = str(a.get("user_answer") or "").strip()
+        if ans:
+            slot["ans"][ans] = slot["ans"].get(ans, 0) + 1
     ordered = sorted(((qid, v) for qid, v in agg.items() if v["wrong"] > 0),
                      key=lambda kv: -kv[1]["wrong"])[:20]
 
@@ -398,12 +621,38 @@ def knowledge_point_detail(user_id: str, class_id: str, knowledge_point_id: str,
         q = quiz_service.get_question_public(qid) or {}
         questions.append({
             "question_id": qid,
-            "stem": q.get("stem"),
+            "stem": q.get("stem") or q.get("question"),
             "options": q.get("options"),
-            "knowledge_point_name": q.get("knowledge_point_name"),
+            "option_distribution": _option_distribution(q.get("options"), v["ans"], v["c"]),
+            "knowledge_point_name": q.get("knowledge_point_name") or q.get("knowledge_point"),
             "attempt_count": v["c"],
             "wrong_count": v["wrong"],
         })
+
+    # 该知识点的错因分布与前置溯因
+    kp_error_causes = _error_causes(row_dicts)
+    prereq_diag = None
+    try:
+        from services import graph_bridge
+        metrics = {
+            str(k.get("knowledge_point") or "").strip(): {
+                "kp_id": k.get("knowledge_point_id"),
+                "wrong_rate": k.get("wrong_rate"),
+                "attempt_count": k.get("attempt_count"),
+                "wrong_count": k.get("wrong_count"),
+                "enough_data": k.get("enough_data"),
+            }
+            for k in overview["knowledge_points"]
+            if k.get("knowledge_point")
+        }
+        diag = graph_bridge.diagnose_prerequisites(
+            kp.get("knowledge_point") or "", metrics,
+            subject_id=overview.get("subject_id"), mode="class",
+        )
+        if diag.get("has_graph_links"):
+            prereq_diag = diag
+    except Exception as e:
+        logger.debug(f"知识点下钻前置溯因跳过: {e}")
 
     materials = _related_materials(overview["course_id"], kp.get("knowledge_point") or "")
     return {
@@ -412,6 +661,8 @@ def knowledge_point_detail(user_id: str, class_id: str, knowledge_point_id: str,
         "range": overview["range"],
         "knowledge_point": kp,
         "questions": questions,
+        "error_causes": kp_error_causes,
+        "prerequisite_diagnosis": prereq_diag,
         "materials": materials,
         "enough_data": kp.get("enough_data", False),
         "sources": [DATA_SOURCE_QUIZ],
@@ -469,6 +720,11 @@ def explain_with_ai(user_id: str, class_id: str, days: int = 30,
         "错得最多的题目": [{"题干": w.get("stem"), "错误次数": w.get("wrong_count"),
                             "作答次数": w.get("attempt_count")}
                            for w in overview.get("wrong_questions", [])[:5]],
+        "全班错因分布": overview.get("error_causes") or [],
+        "知识图谱前置薄弱预警": [
+            {"知识点": a.get("knowledge_point"), "结论": a.get("summary")}
+            for a in (overview.get("prerequisite_alerts") or [])[:4]
+        ],
     }
     prompt = (
         "下面是一个班级的真实学情统计（由程序从作答记录算出，未包含任何学生个人聊天内容）。\n"

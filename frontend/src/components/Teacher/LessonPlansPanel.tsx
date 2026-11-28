@@ -21,11 +21,20 @@ import LessonPlanEditor from './LessonPlanEditor';
 const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
 
+export interface RemedialLessonPlanDraft {
+  classId?: string;
+  topic: string;
+  objectives?: string;
+  nonce: number;
+}
+
 export interface LessonPlansPanelProps {
   courseId: string;
   courseTitle?: string;
   /** 从工作台「继续编辑」跳转过来的教案 ID */
   focusPlanId?: string;
+  /** 从学情分析一键带入的讲评/补课教案草稿参数 */
+  prefillDraft?: RemedialLessonPlanDraft | null;
   onBack?: () => void;
 }
 
@@ -33,7 +42,7 @@ type StatusFilter = 'draft' | 'published' | 'all';
 
 /** 教案：生成 / 手写 / 编辑（新版本）/ 版本回看 / 预览 / 发布 / 导出 */
 const LessonPlansPanel: React.FC<LessonPlansPanelProps> = ({
-  courseId, courseTitle, focusPlanId, onBack,
+  courseId, courseTitle, focusPlanId, prefillDraft, onBack,
 }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -118,6 +127,20 @@ const LessonPlansPanel: React.FC<LessonPlansPanelProps> = ({
   useEffect(() => {
     if (focusPlanId) openPlan(focusPlanId);
   }, [focusPlanId, openPlan]);
+
+  // 从学情分析一键带入薄弱主题与班级学情，直接打开 AI 生成教案弹窗
+  useEffect(() => {
+    if (!prefillDraft) return;
+    genForm.resetFields();
+    genForm.setFieldsValue({
+      topic: prefillDraft.topic,
+      hours: 1,
+      objectives: prefillDraft.objectives || '结合本班错题与薄弱知识点讲评，巩固前置概念并配变式练习。',
+      class_id: prefillDraft.classId || classes[0]?.id,
+    });
+    setGenOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillDraft?.nonce]);
 
   const handleGenerate = async (values: {
     topic: string; hours: number; objectives?: string; class_id?: string;

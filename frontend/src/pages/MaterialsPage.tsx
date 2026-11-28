@@ -1007,9 +1007,9 @@ const MaterialsPage: React.FC = () => {
                   key: 'graph',
                   label: (
                     <span>
-                      知识图谱（概念关系分析）
+                      知识图谱（概念关系与掌握热力）
                       <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-                        用于查看资料里的概念关系，不是学习路线
+                        已接入检索增强、前置溯因与伴学入口，点击节点可直接精讲或练题
                       </Text>
                     </span>
                   ),

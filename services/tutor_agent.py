@@ -42,96 +42,157 @@ INPUT_TOO_LONG_MESSAGE = ("当前问题与必要的系统指令合计已超出�
 MAX_TOOL_RESULT_CHARS = 12000
 
 _COMMON_RULES = """
-## 硬性规则（必须遵守）
-1. 涉及课程内容、概念、例题、作业时，先调用 search_materials 检索资料，再作答；
-   不许凭记忆编造资料里没有的内容。
-2. 引用格式：[1] [2] 对应检索结果里的 id。**只标注真正支持该结论的片段**，
-   不要把所有检索结果都列成依据；没有用到就写“资料未覆盖”。
-   **只能用本次检索结果里真实存在的 id**；资料原文自带的参考文献编号（如 [6]）
-   照抄过来会指向不存在的片段，必须去掉。
-3. 不许编造页码、章节号、分数、成绩、教师已确定的考点或学生数据。
-4. 判定“掌握 / 通过检测”必须由程序给出（学生独立作答后的结果），你不能自行宣布。
-5. 需要澄清或重大操作确认时，调用 ask_user，不要猜测学生意图后直接改数据。
-6. 用中文回答；面向学生时语言朴素具体，先给结论再给依据，不要输出内部 ID 或调试信息。
-7. 工具结果里如果出现 scope_warning，必须如实转告学生（当前资料范围不覆盖该知识点），
-   不得忽略、也不得把它包装成"这个知识点的练习/讲解"。
-8. 数学公式用 LaTeX：行内写 $...$、独立成行写 $$...$$（界面会渲染成公式）。
-   但**不要整段堆公式**——每个公式前后都要用中文说清"在算什么、符号什么含义"，
-   结果带单位；能一句话讲明白的就不上公式。
-   讲例题要给"已知 → 求 → 思路 → 代入 → 结论"的完整脉络，只丢算式等于没讲。
-9. 工具把讲解或笔记存进学习成果，只是给侧栏用的。回答里讲内容本身，
-   不要向学生播报“已保存”“学习成果”“随时可以再打开复习”或成果标题。
-10. 学生要出题/练习/辨析时，检索词必须用**资料里可能真实出现的实词**
-   （名词、数字、代码、章节主题），不要用"练习/例题/辨析题/易混点"这类请求性词语
-   ——它们不会出现在教材正文里，必然 0 命中。
-   若按实词检索仍 0 命中，**先回看本轮对话里已确认的具体主题**
-   （学生刚提到的名词/数字/章节），用它作为 topic 直接调用 generate_practice；
-   只有学生没有给出任何具体主题时才要求其补充（实测：上轮刚确认完主题，
-   下轮出题却再问一遍"你想考什么"，是真实发生过的坏体验）。
-11. 学生本轮只要出题/练习/检测（没有同时要求讲解）时，正文**不要先概括、讲解或复述知识点**
-    （定义、学科分支、研究范畴等一句都不要写），也不要调用 generate_node_lesson 先讲一遍；
-    检索只为出题服务。正文只保留"出了几道题、考什么、请作答"，内容全部由题目卡片承载。
+## 核心准则（必须遵守）
+### 1. 事实与引用底线
+- 涉及课程内容、概念、例题、作业时，先调用 search_materials 检索资料再作答；严禁凭记忆编造资料里没有的内容。
+- 引用格式：`[1]` `[2]` 对应本次检索结果里的真实 `id`。**只标注真正支撑该结论的片段**，不把无关结果凑数；未用到资料时明确写“当前资料未覆盖”。必须去掉资料原文自带的参考文献编号，防止指向不存在片段。
+- 严禁编造页码、章节号、分数、成绩、教师考点或学生数据；若工具返回 `scope_warning`，必须如实转告学生，不得包装成该知识点的讲解或练习。
+- “掌握 / 通过检测”的判定仅由程序依据学生独立作答给出，你不得自行宣布。
+
+### 2. 表达与防重复
+- 全程使用中文，语言朴素直白、**先给结论再给依据**，不输出内部 ID、系统术语或调试信息。
+- 回答直击问题本身：不写套话开场白，不重复复述学生提问；多轮对话中若前文已讲过基础定义或推导，追问时直接切入新问题或卡点，不再把前文讲过的大段内容重讲一遍。
+- 工具把讲解或笔记写入侧栏成果时，只讲知识内容本身，不要播报“已保存”“学习成果”“随时可打开复习”或成果标题。
+- 数学公式使用 LaTeX（行内 `$...$`、独立成行 `$$...$$`），但不要堆砌公式：公式前后用中文说清物理/数学含义并带单位；例题按“已知 → 求 → 思路 → 代入 → 结论”清晰展开。
+
+### 3. 工具与出题纪律
+- 需要澄清歧义或确认重大操作时，调用 `ask_user`，不要盲猜后直接改数据。
+- 学生要出题/练习/辨析时，检索词必须用教材里真实出现的实词（概念名、章节名、公式名），禁用“练习/例题/辨析题”等请求词；若按实词仍 0 命中，直接沿用本轮对话里已确认的具体主题调用 `generate_practice`，不要反复追问“你想考什么”。
+- 学生本轮只要出题/练习/检测（未同时要求讲解）时，正文**不要先概括、讲解或复述知识点**（定义、分类、前文回顾一句都不要写），也严禁调用 `generate_node_lesson`；正文只用 1~2 句话说明“出了几道题、考什么、请在卡片作答”。
 """
 
 # 引导模式（2026-10-24）：只改变「怎么讲」，不改变检索、工具权限、判分与掌握度。
 # 放在通用规则之后，确保它覆盖「先给结论再给依据」的默认风格。
 _SOCRATIC_RULES = """
 ## 引导模式（socratic，优先级最高）
-学生选择了「引导我」：目标是让他自己想出来，不是把答案递到手里。
-本模式优先于通用规则第 6 条与「资料问答」里的"结论先行"要求：
-1. 除非学生明确说"直接告诉我 / 看答案 / 不会了"，否则**不要给出最终答案、正确选项或完整解题步骤**。
-2. 每轮只做一件事：先用一个问题确认他卡在哪（已知什么、试过什么、哪一步不确定）。
-3. 按提示阶梯逐层给，每次只上一层：
-   L1 复述题意、圈出关键条件；L2 给相关概念或生活类比；L3 只给第一步；
-   L4 给关键中间步骤；L5 才给完整解。
-4. 学生连续两次明确要答案，才进入 L5；进入时先说明"这是完整解，建议你合上后自己复述一遍"，再给解。
-5. 学生给出尝试后，先指出"哪一步是对的"，再只纠正一个最关键的错误；不要一次列出全部问题。
-6. 学生做完后，邀请他用一两句话复述（费曼回讲），并只给一个改进点。
-7. 不要假装学生已经作答；掌握度/是否通过仍由程序判定。
+学生选择了「引导我」，目标是让他自己推出来，而不是直接递答案。本模式优先于通用规则的“先给结论再给依据”：
+1. 除非学生明确要求“直接告诉我 / 看答案 / 不会了”，否则**不要给出最终答案、正确选项或完整解题步骤**。
+2. 每轮只聚焦一步：先用 1 个具体问题定位学生卡点（已知什么、试过哪步、卡在哪）。
+3. 按 5 级提示阶梯逐层推进，每次只上一层：L1 复述题意圈条件 → L2 相关概念/类比 → L3 只给第一步 → L4 关键中间步 → L5 完整解。
+4. 仅当学生连续两次明确索要答案时才进入 L5，并提示“先看懂思路再合上自己复述一遍”。
+5. 学生给出尝试后，先肯定做对的部分，再只纠正 1 个最关键的偏差，不一次全盘否定。
+6. 做完后邀请学生用 1~2 句话复述核心思路，只给 1 条改进建议；掌握度仍由程序判定。
 """
 
 _ABILITY_PROMPTS: Dict[str, str] = {
     tutor_session.ABILITY_CHAT: """
 ## 当前能力：资料问答与深入追问
-按学生的问题直接回答，需要时先检索资料。回答结构：结论 → 依据（带引用）→ 可选的延伸追问。
-如果资料没有覆盖，明确说明“当前资料未覆盖”，可以补充通用知识但必须单独标注其为通用知识。
-涉及图片、图表、表格、版式或“第几页”的问题，先调用 search_pages 按页检索；
-返回的页面图可点开核对，不要凭文字片段猜图里有什么。
+- 围绕当前问题直接作答，需要资料依据时先调用 `search_materials`；回答结构：`结论 → 关键依据（带引用）→ 可选延伸`。
+- 资料未覆盖时明确说明“当前资料未覆盖”，若补充通用知识必须显式标注为通用知识。
+- 涉及图片、图表、表格、版式或“第几页”时，先调用 `search_pages` 按页检索，不凭纯文字猜测图示内容。
+- 涉及概念关系、推导来源、前置依赖或跨章节对比时，可调用 `query_concept_graph` 结合知识图谱与前置掌握情况回答。
+- 若本会话前文已经系统讲解过该知识点，后续追问或出题时不要重复前文内容。
 """,
     tutor_session.ABILITY_EXPLAIN: """
 ## 当前能力：引导学习与知识点讲解
-围绕学生当前知识点做分步讲解：先给出概括，再讲重点与例子，最后提示易错点。
-学生说“没理解 / 换个例子 / 更基础一点”时，用更小的步子重讲，不要重复原话。
-**当学生要求讲解某个具体知识点时，先调用 get_node 或 search_materials 取依据，
-再调用 generate_node_lesson 生成结构化讲解**（界面会自己放进“学习成果”，不用你播报）。
-讲解完成后，直接把概念、例子和易错点讲给学生，并给出下一步（练习/检测/下一节点）。
-不要说“已保存到学习成果”“随时可以再打开复习”，也不要用成果标题当收尾。
-涉及图、表、公式版式时，先调用 search_pages 找对应页，再结合页面内容讲解。
+- 面向当前知识点做清晰的分步讲解：`一句话概括 → 核心要点与直白例子 → 1~2 个常见易错点 → 建议下一步`。
+- 学生反馈“没理解 / 换个例子 / 更基础一点”时，降低台阶并用新类比重讲，绝不照搬原话。
+- 学生要求系统讲解某个具体知识点时，先调用 `get_node` 或 `search_materials` 获取依据，再调用 `generate_node_lesson` 生成结构化讲解，并将要点自然讲给学生（不播报保存动作）。
+- 学生反复出错或卡在推导时，可调用 `query_concept_graph` 排查薄弱前置概念，先快速补齐前置再回到当前知识点。
+- 涉及图、表、公式版式时，先调用 `search_pages` 核对原页内容再讲。
 """,
     tutor_session.ABILITY_PRACTICE: """
 ## 当前能力：练习与检测
-先用 generate_practice 生成围绕当前知识点的题目（答案由后端保存，**你不会拿到答案**）。
-**出题前后都不要概括、讲解或复述知识点**——不写"一、概括"式的定义复述、学科分支、
-研究范畴罗列，也不要顺带调用 generate_node_lesson 讲一遍；那是「开始学习」做的事，
-这里检索只为出题找依据（实测：出题前先背一遍定义，学生要的是题不是课）。
-出题后**只用一两句话说明"出了几道题、考的是什么"并请学生作答**；
-**不要复述题干、选项、答案或解析**——题目会以可交互的卡片直接呈现在学生面前，
-你这里再抄一遍，学生就会看到两份一模一样的题（实测确认过，界面会重复得很难看）。
-同理，也不要再罗列"第 1 题 / 第 2 题"这样的清单。
-学生提交作答后，由后端判分并给出结果；你负责解释结果与下一步安排。
+- 直接调用 `generate_practice` 生成围绕当前知识点/主题的练习题（答案由后端保存，模型不可见）。
+- **出题前后都不要概括、讲解或复述知识点**——严禁输出“一、概括”式定义回顾、知识梳理或前文复述，严禁调用 `generate_node_lesson`。
+- 出题完成后，**只用 1~2 句话（不超过 60 字）说明“出了几道题、考查什么主题”并请学生在下方卡片作答**；**严禁复述题干、选项、编号清单、答案或解析**。
+- 学生提交作答后，再基于后端判分结果做精准讲评与下一步建议。
 """,
     tutor_session.ABILITY_MAP: """
 ## 当前能力：思维导图与知识地图
-学生要学习路线/思维导图时，调用 generate_knowledge_map 生成（资料未变化会复用已有地图）。
-生成后简要说明：覆盖了哪些资料、哪些资料没有被整理成节点。点击节点的学习在节点面板完成。
+- 学生需要学习路线或思维导图时，调用 `generate_knowledge_map` 生成（资料未变更时自动复用）。
+- 生成后简要说明覆盖的资料与未覆盖项，提示学生点击地图节点即可逐点学习。
 """,
     tutor_session.ABILITY_ORGANIZE: """
 ## 当前能力：学习整理（笔记、提纲、学习安排）
-把当前学习内容整理成可复用的成果：笔记 / 提纲 / 学习计划 / 复习卡片。
-用 save_artifact 保存（成果会带上资料范围与引用）。安排学习时先读 get_learning_state
-了解真实薄弱点、待复习与时间预算，再给建议；超预算时说明是草案，需学生确认。
+- 将当前内容整理为结构化可复用成果（笔记 / 提纲 / 计划 / 复习卡片），并调用 `save_artifact` 保存。
+- 规划学习安排前先调用 `get_learning_state` 读取真实薄弱点、待复习与时间预算；若超出预算需标明草案并请学生确认。
 """,
 }
+
+# 纯出题/检测意图识别：即使用户在 chat 或 explain 模式下自由输入“给我出3道题”，
+# 也自动按 practice 纪律处理（不先写大段讲解、不调用 generate_node_lesson、不复述题干）。
+_PRACTICE_INTENT_RE = re.compile(
+    r"(?:(?:再|帮我|给我|请|来|做|出|生成|布置|准备|刷|练)\s*[几两三四五\d]{0,3}\s*道?\s*"
+    r"(?:练习|自测|测试|检测|巩固|变式|选择|判断|简答|考)?题)"
+    r"|(?:出(?:几道|两道|三道|一道|\d+道|点|些|套)?(?:练习|自测|测验|检测|题))"
+    r"|(?:(?:考考我|测测我|做练习|做几道题|来几道题|出题|刷题|巩固练习|检测一下|自测一下))",
+    re.IGNORECASE,
+)
+_EXPLAIN_CO_INTENT_RE = re.compile(
+    r"(?:讲解|讲讲|讲一下|细讲|精讲|解释|推导|展开讲|梳理|概括|总结一下|"
+    r"整理笔记|做笔记|生成笔记|写提纲|思维导图|学习计划|为什么|怎么理解|什么是|区别是什么|怎么算)",
+    re.IGNORECASE,
+)
+_POST_PRACTICE_LECTURE_RE = re.compile(
+    r"(?:^|\n)\s*(?:#{1,4}\s|[一二三四五六七八九十]+[、.]|\*\*一、|1\.\s*\*\*|A[\.、]\s)",
+    re.MULTILINE,
+)
+
+
+def _is_pure_practice_request(message: str) -> bool:
+    """判断本轮消息是否为「纯出题/练习请求」（未同时要求讲解或整理笔记）。"""
+    text = (message or "").strip()
+    if not text:
+        return False
+    if _EXPLAIN_CO_INTENT_RE.search(text):
+        return False
+    return bool(_PRACTICE_INTENT_RE.search(text))
+
+
+def _compact_practice_result_for_model(result: Dict[str, Any]) -> Dict[str, Any]:
+    """发回给模型的精简出题工具结果：隐去完整题干/选项，避免模型复述题目或长篇讲解。"""
+    questions = result.get("questions") or []
+    type_counts: Dict[str, int] = {}
+    for q in questions:
+        qt = str((q or {}).get("type") or "single_choice")
+        type_counts[qt] = type_counts.get(qt, 0) + 1
+    count = int(result.get("question_count") or len(questions))
+    topic = str(result.get("topic") or "").strip()
+    note = (
+        f"已完成出题：共 {count} 道题（主题：{topic or '当前知识点'}），"
+        "交互式练习卡片已自动下发到界面（答案由后端保存）。"
+        "你的回复必须控制在 1~2 句话（不超过 60 字），只说明题数、主题并请学生作答；"
+        "严禁复述前文讲解、严禁概括知识点、严禁抄写题干或选项。"
+    )
+    if result.get("scope_warning"):
+        note = "注意存在 scope_warning，请先如实转告学生范围提示，再用 1 句话说明已出题。"
+    return {
+        "ok": bool(result.get("ok", True)),
+        "topic": topic,
+        "question_count": count,
+        "question_types": type_counts,
+        "source": result.get("source"),
+        "scope_covered": result.get("scope_covered", True),
+        "scope_warning": result.get("scope_warning"),
+        "note": note,
+    }
+
+
+def _sanitize_post_practice_reply(
+    text: str,
+    practice_result: Optional[Dict[str, Any]],
+    pure_practice: bool,
+) -> str:
+    """兜底守卫：纯出题轮次若模型仍输出大段讲解/复述题干，自动收敛为一句话确认。"""
+    cleaned = (text or "").strip()
+    if not (pure_practice and practice_result and practice_result.get("ok")):
+        return cleaned
+    if practice_result.get("scope_warning"):
+        return cleaned
+    count = int(practice_result.get("question_count") or len(practice_result.get("questions") or []))
+    if count <= 0:
+        return cleaned
+    # 正常 1~2 句简洁回复（如 ≤160 字且不含大纲/分点讲解/选项抄写）原样放行
+    is_lecture_wall = (
+        len(cleaned) > 160
+        or ("\n\n" in cleaned and len(cleaned) > 90)
+        or bool(_POST_PRACTICE_LECTURE_RE.search(cleaned))
+    )
+    if not is_lecture_wall and cleaned:
+        return cleaned
+    topic = str(practice_result.get("topic") or "当前知识点").strip()
+    return f"已围绕「{topic}」为你生成 {count} 道练习题，请直接在下方卡片作答；提交后系统会自动判分并更新掌握度。"
 
 
 def build_system_prompt(subject_name: str, ability: str, scope: Dict[str, Any],
@@ -429,8 +490,20 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
             yield emit("notice", {"level": "warning",
                                   "message": "当前没有可用资料，回答将不引用课程资料。"})
 
+        pure_practice_intent = _is_pure_practice_request(message)
+        # 若学生在 chat / explain 下直接发起纯出题请求（如“给我出 3 道题”），
+        # 本轮自动按 practice 能力运行：切到出题提示词、移除 generate_node_lesson、并抑制工具前讲解流式输出。
+        effective_ability = (
+            tutor_session.ABILITY_PRACTICE
+            if (ability == tutor_session.ABILITY_PRACTICE
+                or (pure_practice_intent and ability in (tutor_session.ABILITY_CHAT,
+                                                         tutor_session.ABILITY_EXPLAIN)))
+            else ability
+        )
+        suppress_pre_tool = (effective_ability == tutor_session.ABILITY_PRACTICE)
+
         tool_ctx = tutor_tools.ToolContext(
-            user_id=user_id, subject_id=subject_id, role=role, ability=ability,
+            user_id=user_id, subject_id=subject_id, role=role, ability=effective_ability,
             scope=scope, model=model, conversation_id=conversation_id, node_id=node_id,
             turn_id=turn_id)
 
@@ -445,12 +518,12 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
             logger.warning(f"构建教学上下文失败（不影响回答）: {e}")
 
         system_prompt = build_system_prompt(
-            subject_name, ability, scope, context_state, node,
+            subject_name, effective_ability, scope, context_state, node,
             guidance_mode=effective_mode, teaching_block=teaching_block)
         history_messages, rolling_summary = _history_with_summary(
             user_id, subject_id, conversation_id, turn_id, context_state)
 
-        tools = tutor_tools.tools_for_ability(ability, role)
+        tools = tutor_tools.tools_for_ability(effective_ability, role)
         # 整包请求预算（2026-10-28）：与 chat 链路同一套口径
         # 工具定义序列化后计入预算；工具结果在循环里按 token 累计上限截断。
         budget_report: Dict[str, Any] = {}
@@ -460,7 +533,7 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
             fit = cb.fit_request(
                 system=system_prompt, question=message, history=history_messages,
                 summary=rolling_summary,
-                tools=_json_dumps({"tools": tutor_tools.tools_for_ability(ability, role)}),
+                tools=_json_dumps({"tools": tutor_tools.tools_for_ability(effective_ability, role)}),
                 max_output=TUTOR_OUTPUT_TOKENS)
             if fit.get("too_long"):
                 # 不发送被裁坏的请求：明确告知"输入过长"并结束本轮
@@ -496,6 +569,7 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
         tool_result_chars = 0
         tool_result_tokens = 0
         ask_user_payload: Optional[Dict[str, Any]] = None
+        practice_generated: Optional[Dict[str, Any]] = None
 
         from services.model_service import get_model_provider
         provider = get_model_provider(model)
@@ -522,7 +596,9 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
                 break
 
             stage = "正在思考"
-            if round_index == 0 and ability == tutor_session.ABILITY_CHAT:
+            if round_index == 0 and suppress_pre_tool:
+                stage = "正在准备练习题"
+            elif round_index == 0 and effective_ability == tutor_session.ABILITY_CHAT:
                 stage = "正在理解问题"
             yield emit("stage", {"stage": stage, "round": round_index + 1})
 
@@ -536,10 +612,9 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
                     # 有 tool_calls 时它通常只是"我先去查资料"的前言，不作为回答展示。
                     if ev.get("type") == "content":
                         streamed_text += ev.get("text") or ""
-                        # 练习能力的前言实测会被模型写成整段"一、概括"讲解，流式期间
-                        # 学生先被迫读一遍课、done 时才被终答替换；这里扣住不发，
-                        # 等确认本轮无工具调用（即终答）再一次性放出。
-                        if ability != tutor_session.ABILITY_PRACTICE:
+                        # 出题轮次扣住前言不流式播出，防止模型先哗哗写一大段重复讲解再调用 generate_practice；
+                        # 等确认本轮无工具调用（终答）后再一次性放出。
+                        if not suppress_pre_tool:
                             yield emit("delta", {"content": ev.get("text") or "", "provisional": True})
                     elif ev.get("type") == "end":
                         end_event = ev
@@ -563,16 +638,19 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
 
             calls = end_event.get("tool_calls") or []
             if not calls:
-                if ability == tutor_session.ABILITY_PRACTICE and streamed_text:
-                    yield emit("delta", {"content": streamed_text, "provisional": True})
-                answer_parts.append(end_event.get("content") or streamed_text)
+                final_piece = end_event.get("content") or streamed_text
+                final_piece = _sanitize_post_practice_reply(
+                    final_piece, practice_generated, suppress_pre_tool)
+                if suppress_pre_tool and final_piece:
+                    yield emit("delta", {"content": final_piece, "provisional": True})
+                answer_parts.append(final_piece)
                 break
 
             # 有工具调用：把模型这一轮的中间文本只当作"过程"，不当答案
-            if streamed_text.strip():
+            if streamed_text.strip() and not suppress_pre_tool:
                 yield emit("stage", {"stage": "正在调用工具", "note": streamed_text.strip()[:200]})
 
-            messages.append({"role": "assistant", "content": end_event.get("content") or "",
+            messages.append({"role": "assistant", "content": "" if suppress_pre_tool else (end_event.get("content") or ""),
                              "tool_calls": calls})
             for call in calls:
                 if tool_calls_made >= MAX_TOOL_CALLS:
@@ -604,7 +682,11 @@ def stream_turn(user_id: str, subject_id: str, message: str, *,
                 if name == "ask_user":
                     ask_user_payload = {"question": result.get("question"),
                                         "options": result.get("options") or []}
-                payload_for_model = {k: v for k, v in result.items() if not k.startswith("_")}
+                if name == "generate_practice" and result.get("ok"):
+                    practice_generated = result
+                    payload_for_model = _compact_practice_result_for_model(result)
+                else:
+                    payload_for_model = {k: v for k, v in result.items() if not k.startswith("_")}
                 raw_content = _json_dumps(payload_for_model)
                 # 先按 token 份额截断（主口径），再按字符上限兜底（辅助）
                 content = _trim_to_token_budget(raw_content, tool_result_tokens,

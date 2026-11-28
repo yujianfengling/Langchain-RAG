@@ -994,6 +994,16 @@ def list_wrong_questions(user_id: str, subject_id: Optional[str] = None,
                 "error_label": (ERROR_CAUSES.get(r["error_code"])
                                 if "error_code" in r.keys() else None),
                 "error_note": r["error_note"] if "error_note" in r.keys() else None,
+                "teacher_regraded": (
+                    r["teacher_is_correct"] is not None
+                    if "teacher_is_correct" in r.keys() else False
+                ),
+                "teacher_reason": (
+                    r["teacher_reason"] if "teacher_reason" in r.keys() else None
+                ),
+                "teacher_graded_at": (
+                    r["teacher_graded_at"] if "teacher_graded_at" in r.keys() else None
+                ),
             }
             if expose:
                 item.update({

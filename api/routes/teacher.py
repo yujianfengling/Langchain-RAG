@@ -848,6 +848,19 @@ async def explain_analytics(class_id: str, days: int = Query(default=30),
         return _err(e)
 
 
+@router.get("/teacher/classes/{class_id}/analytics/graph")
+async def class_analytics_graph(class_id: str, days: int = Query(default=30),
+                                user_id: str = Depends(require_current_user)):
+    """班级视角知识图谱热力叠加：节点附带班级错误率、样本量与前置薄弱溯因"""
+    from services import graph_bridge
+    try:
+        return SuccessResponse(
+            data=graph_bridge.build_class_graph_overlay(user_id, class_id, days=days),
+            message="获取班级知识图谱成功")
+    except TeachingError as e:
+        return _err(e)
+
+
 # ==================== 学生画像（并入组员实现，2026-09-27 合并）====================
 #
 # 来源：组员提交 e503490「教师端（破烂版」提供 3 个接口（学生画像列表 / 单个学生总览 / 班级汇总）。

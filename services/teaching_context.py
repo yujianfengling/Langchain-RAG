@@ -340,10 +340,49 @@ def build_teaching_context(user_id: Optional[str], subject_id: Optional[str],
 
     # ---- 4.1) 一句学生可感知的变化说明（只依据真实记录；证据为 0 时不宣称） ----
     kp_name = signals.get("knowledge_point")
+    # 图谱前置知识溯因：当学生在该知识点存在答错或未达标时，结合知识图谱/学习路线排查前置薄弱
+    prereq_diag: Optional[Dict[str, Any]] = None
+    if kp_name and sample > 0 and (wrong >= FOUNDATION_MIN_WRONG or (mastery is not None and mastery < ADVANCED_MASTERY)):
+        try:
+            from services import graph_bridge, mastery_service
+            all_points = mastery_service.list_mastery(user_id, subject_id) or []
+            metrics_map: Dict[str, Dict[str, Any]] = {}
+            for pt in all_points:
+                pname = str(pt.get("knowledge_point") or "").strip()
+                if not pname or pname == "待确认":
+                    continue
+                plv = (pt.get("latest_view") or {}).get("latest_mastery_level")
+                if plv is None:
+                    plv = pt.get("mastery_level")
+                pev = (pt.get("latest_view") or {}).get("latest_evidence_count")
+                if pev is None:
+                    pev = pt.get("evidence_count") or 0
+                pw = (pt.get("latest_view") or {}).get("latest_independent_wrong")
+                if pw is None:
+                    pw = pt.get("independent_wrong_count") or 0
+                metrics_map[pname] = {
+                    "mastery_level": plv,
+                    "evidence_count": int(pev or 0),
+                    "wrong_count": int(pw or 0),
+                }
+            diag = graph_bridge.diagnose_prerequisites(
+                kp_name, metrics_map, subject_id=subject_id, mode="student")
+            if diag.get("has_graph_links"):
+                prereq_diag = diag
+                signals["prerequisite_diagnosis"] = diag
+        except Exception as e:
+            logger.debug(f"教学上下文图谱溯因跳过: {e}")
+
     if kp_name and sample > 0:
         # 说明只引用"知识点 + 真实独立答错次数"：题目的知识点标签由出题环节给出，
         # 可能与知识点语义不完全对应，直接引用题干会造成"说明与题目不匹配"。
-        if mode == MODE_FOUNDATION:
+        if prereq_diag and prereq_diag.get("root_cause_type") == "prerequisite_gap":
+            weak_pre = prereq_diag.get("weak_prerequisites") or []
+            pre_names = "、".join(f"「{p['concept']}」" for p in weak_pre[:2])
+            result["adaptation_note"] = (
+                f"你在「{kp_name}」上有 {wrong} 次独立答错，且知识图谱显示前置概念 {pre_names} 同样薄弱，"
+                "这次先快速巩固前置概念，再攻克当前知识点。")
+        elif mode == MODE_FOUNDATION:
             result["adaptation_note"] = (
                 f"你上次在「{kp_name}」上有 {wrong} 次独立答错，"
                 "这次先用基础讲解并针对这些错题做小步练习。")
@@ -368,6 +407,9 @@ def build_teaching_context(user_id: Optional[str], subject_id: Optional[str],
         "knowledge_point": signals.get("knowledge_point"),
         "recent_mistakes": len(mistakes),
         "has_task_context": bool(task),
+        "prerequisite_gap": bool(
+            prereq_diag and prereq_diag.get("root_cause_type") == "prerequisite_gap"
+        ),
     }
 
     if task and task.get("overdue_count"):
@@ -393,6 +435,9 @@ def build_teaching_context(user_id: Optional[str], subject_id: Optional[str],
             ev += (f"；历史累计独立作答 {hist_sample} 次"
                    f"（对 {hist_correct} / 错 {hist_wrong}，仅用于复习与趋势）")
         lines.append("【该知识点的真实作答证据】\n" + _truncate(ev, BUDGET["evidence"]))
+
+    if prereq_diag and prereq_diag.get("summary"):
+        lines.append("【知识图谱前置诊断】\n- " + _truncate(prereq_diag["summary"], 180))
 
     if mistakes:
         mk = "\n".join(

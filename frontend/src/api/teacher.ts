@@ -623,6 +623,61 @@ export interface KnowledgePointStat {
   source?: string;
 }
 
+export interface OptionDistributionItem {
+  option_id: string;
+  text: string;
+  count: number;
+  ratio: number;
+}
+
+export interface ClassErrorCause {
+  code: string;
+  label: string;
+  count: number;
+  ratio: number;
+}
+
+export interface StudentTierRow {
+  user_id: string;
+  display_name: string;
+  attempt_count: number;
+  wrong_count: number;
+  wrong_rate: number | null;
+  weak_kp_count: number;
+  tier: 'needs_attention' | 'consolidating' | 'on_track' | 'inactive' | string;
+  tier_label: string;
+}
+
+export interface StudentTiersData {
+  counts: {
+    needs_attention: number;
+    consolidating: number;
+    on_track: number;
+    inactive: number;
+  };
+  labels?: Record<string, string>;
+  students: StudentTierRow[];
+}
+
+export interface ClassPrerequisiteAlert {
+  knowledge_point: string;
+  knowledge_point_id?: string | null;
+  wrong_rate: number | null;
+  wrong_count: number;
+  weak_prerequisites: {
+    concept: string;
+    depth: number;
+    relation: string;
+    relation_label: string;
+    path: string[];
+    wrong_rate?: number | null;
+    attempt_count?: number;
+    wrong_count?: number;
+    kp_id?: string | null;
+  }[];
+  summary: string;
+}
+
 export interface WrongQuestionStat {
   question_id: string;
   stem?: string | null;
@@ -631,6 +686,7 @@ export interface WrongQuestionStat {
   question_type?: string | null;
   type?: string | null;
   options?: { id: string; text: string }[] | null;
+  option_distribution?: OptionDistributionItem[];
   attempt_count: number;
   wrong_count: number;
   student_count?: number;
@@ -651,16 +707,21 @@ export interface ClassAnalytics {
   class_name: string;
   course_id?: string;
   course_title: string;
+  subject_id?: string;
   range: AnalyticsRange;
   generated_at: string;
   sources?: string[];
   enough_data: boolean;
   insufficient_reason: string | null;
+  headline?: string | null;
   participation: ParticipationStats;
   task_completion: TaskCompletionStats | null;
   knowledge_points: KnowledgePointStat[];
   weak_knowledge_points?: KnowledgePointStat[];
   wrong_questions?: WrongQuestionStat[];
+  error_causes?: ClassErrorCause[];
+  student_tiers?: StudentTiersData;
+  prerequisite_alerts?: ClassPrerequisiteAlert[];
   trend: TrendPoint[];
   thresholds?: { min_attempts: number; min_students: number };
 }
@@ -670,6 +731,39 @@ export const getClassAnalytics = async (
   days: number,
 ): Promise<ApiResponse<ClassAnalytics>> =>
   apiClient.get(`/teacher/classes/${classId}/analytics`, { params: { days } });
+
+export interface ClassGraphOverlay {
+  exists: boolean;
+  class_id: string;
+  subject_id: string;
+  enough_data: boolean;
+  range?: AnalyticsRange;
+  graph: { nodes: any[]; edges: any[]; stats?: any } | null;
+  summary: {
+    total_nodes: number;
+    covered_nodes: number;
+    high_error_count: number;
+    medium_error_count: number;
+    low_error_count: number;
+    insufficient_count: number;
+    unassessed_count: number;
+  };
+  root_causes: {
+    concept: string;
+    kp_id?: string | null;
+    wrong_rate: number | null;
+    wrong_count: number;
+    attempt_count: number;
+    weak_prerequisites: ClassPrerequisiteAlert['weak_prerequisites'];
+    summary: string;
+  }[];
+}
+
+export const getClassAnalyticsGraph = async (
+  classId: string,
+  days: number,
+): Promise<ApiResponse<ClassGraphOverlay>> =>
+  apiClient.get(`/teacher/classes/${classId}/analytics/graph`, { params: { days } });
 
 export interface KnowledgePointDetail {
   class_id: string;
@@ -681,10 +775,23 @@ export interface KnowledgePointDetail {
     stem?: string | null;
     question?: string | null;
     options?: { id: string; text: string }[] | null;
+    option_distribution?: OptionDistributionItem[];
     knowledge_point_name?: string | null;
     attempt_count: number;
     wrong_count: number;
   }[];
+  error_causes?: ClassErrorCause[];
+  prerequisite_diagnosis?: {
+    target: string;
+    matched_concept?: string | null;
+    has_graph_links: boolean;
+    root_cause_type: string;
+    weak_prerequisites: ClassPrerequisiteAlert['weak_prerequisites'];
+    unassessed_prerequisites: ClassPrerequisiteAlert['weak_prerequisites'];
+    solid_prerequisites: ClassPrerequisiteAlert['weak_prerequisites'];
+    downstream_concepts: string[];
+    summary: string | null;
+  } | null;
   materials: { material_id: string; filename: string; visibility: string; matched: boolean }[];
   enough_data: boolean;
   sources?: string[];

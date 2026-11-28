@@ -5,7 +5,7 @@ import {
   Tag, Tooltip, Typography, message as antdMessage,
 } from 'antd';
 import {
-  AudioOutlined, BookOutlined, BulbOutlined, CheckCircleOutlined, CloseOutlined, DatabaseOutlined,
+  ApiOutlined, AudioOutlined, BookOutlined, BulbOutlined, CheckCircleOutlined, CloseOutlined, DatabaseOutlined,
   DownOutlined, FileTextOutlined, FormOutlined, HighlightOutlined, HistoryOutlined,
   MenuFoldOutlined, MenuOutlined, MenuUnfoldOutlined, MoreOutlined,
   PartitionOutlined, PlusOutlined, ReloadOutlined, RightOutlined, SendOutlined,
@@ -31,6 +31,9 @@ import SourcePanel from './SourcePanel';
 import WhiteboardModal from './WhiteboardModal';
 import LectureNotesModal from './LectureNotesModal';
 import QuietNotice from '../QuietNotice';
+import type { KnowledgeGraphAction } from '../KnowledgeGraph';
+
+const KnowledgeGraph = React.lazy(() => import('../KnowledgeGraph'));
 
 /** 第2章排在第10章前面。pad 后的字符串比较即可，不必拆成数字数组。 */
 const naturalFileKey = (name: string): string =>
@@ -64,6 +67,8 @@ export interface TutorWorkspaceProps {
   initialSubjectId?: string;
   initialDocIds?: string[];
   initialNodeId?: string;
+  initialPrompt?: string;
+  initialAbility?: string;
   role?: 'student' | 'teacher';
   greeting?: string;
 }
@@ -117,7 +122,7 @@ const historyToMessages = (rows: any[]): ChatMessage[] => {
 };
 
 const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
-  initialSubjectId, initialDocIds, initialNodeId, role = 'student', greeting,
+  initialSubjectId, initialDocIds, initialNodeId, initialPrompt, initialAbility, role = 'student', greeting,
 }) => {
   const ctx = useCourse();
   const navigate = useNavigate();
@@ -154,6 +159,8 @@ const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
   const [boardSources, setBoardSources] = useState<TutorSource[]>([]);
   const [boardCitedIds, setBoardCitedIds] = useState<number[]>([]);
   const [lectureOpen, setLectureOpen] = useState(false);
+  const [graphDrawerOpen, setGraphDrawerOpen] = useState(false);
+  const initialActionFired = useRef(false);
   const [map, setMap] = useState<any>(null);
   const [mapLoading, setMapLoading] = useState(false);
   const [currentNode, setCurrentNode] = useState<string>(initialNodeId || '');
@@ -707,7 +714,9 @@ const includeNodeSources = useCallback(() => {
     if (!content || running || !subjectId) return;
     setHistoryFocusId(null);
     resumeSettledRef.current = true;
-    const turnAbility = abilityOverride || ability;
+    // 自由输入发送（未显式指定动作按钮）默认走 chat，由后端按意图自动识别出题/讲解，
+    // 避免此前点过一次「开始学习」后 ability 永久停留在 explain 导致后续要出题时仍先长篇讲解。
+    const turnAbility = abilityOverride || 'chat';
     // 2026-10-31：会话化——新对话在首次发送时生成会话 id（此后每轮写回同一会话）；
     // 继续旧会话则沿用 conversationId。后端按它读历史与摘要（现有机制）。
     let convId = conversationId;
@@ -910,6 +919,34 @@ const includeNodeSources = useCallback(() => {
     updateTutorSession({ subject_id: subjectId, ability: preset.ability, node_id: currentNode });
     send(preset.text, preset.ability);
   }, [nodeDetail, send, subjectId, currentNode, map]);
+
+  // 从学情反馈页 / 知识图谱带 action 进入时，待会话就绪自动触发一次对应动作
+  useEffect(() => {
+    if (!initialPrompt || initialActionFired.current) return;
+    if (!subjectId || sessionReady !== subjectId || sessionLoading || sessionError || running) return;
+    initialActionFired.current = true;
+    const nextAbility = initialAbility || 'chat';
+    setAbility(nextAbility);
+    void send(initialPrompt, nextAbility);
+  }, [initialPrompt, initialAbility, subjectId, sessionReady, sessionLoading, sessionError, running, send]);
+
+  const handleGraphDrawerAction = useCallback((action: KnowledgeGraphAction) => {
+    setGraphDrawerOpen(false);
+    if (action.nodeId) {
+      setCurrentNode(action.nodeId);
+      void updateTutorSession({ subject_id: subjectId, node_id: action.nodeId });
+    }
+    if (action.type === 'practice') {
+      setAbility('practice');
+      void send(`请围绕「${action.label}」给我出 2 道巩固检测题。`, 'practice');
+    } else if (action.type === 'prereq') {
+      setAbility('explain');
+      void send(`知识图谱显示我的前置概念「${action.label}」薄弱，请先帮我通俗讲清「${action.label}」，再给 1 道检查题。`, 'explain');
+    } else {
+      setAbility('explain');
+      void send(`请结合课程资料和知识图谱关系，分步讲解「${action.label}」的核心概念、公式与易错点。`, 'explain');
+    }
+  }, [send, subjectId]);
 
   const handleGenerateMap = useCallback(async () => {
     if (!subjectId) return;
@@ -1265,6 +1302,13 @@ const includeNodeSources = useCallback(() => {
             {/* 2026-10-30：原「工具」下拉已拆开——白板/录音笔记和「历史」并排成独立按钮。
                 收在下拉里时用户必须先点一次才知道有什么，功能等于藏起来了。
                 说明走 Tooltip 且 trigger 含 focus：键盘 Tab 过去也能读到一句话简介。 */}
+            <Tooltip title="打开本学科知识图谱（叠加掌握热力、前置溯因与概念关系），点击节点可直接提问或出题" trigger={['hover', 'focus']}>
+              <Button size="small" type="text" icon={<ApiOutlined />} aria-label="知识图谱"
+                      disabled={!subjectId}
+                      onClick={() => setGraphDrawerOpen(true)}>
+                <span className="tutor-action-label">知识图谱</span>
+              </Button>
+            </Tooltip>
             <Tooltip title="回看这个学科以前的问答与讲解" trigger={['hover', 'focus']}>
               <Button size="small" type="text" icon={<HistoryOutlined />} aria-label="历史"
                       onClick={() => void openHistory()}>
@@ -1755,6 +1799,27 @@ const includeNodeSources = useCallback(() => {
               </>
             )}
           </div>
+        )}
+      </Drawer>
+
+      <Drawer
+        title="学科知识图谱（掌握热力与前置溯因）"
+        open={graphDrawerOpen}
+        onClose={() => setGraphDrawerOpen(false)}
+        width={isNarrow ? '100%' : 780}
+        destroyOnClose
+      >
+        {subjectId ? (
+          <React.Suspense fallback={<div style={{ padding: 24, textAlign: 'center' }}><Spin /></div>}>
+            <KnowledgeGraph
+              subjectId={subjectId}
+              mode="student"
+              compact
+              onAction={handleGraphDrawerAction}
+            />
+          </React.Suspense>
+        ) : (
+          <Text type="secondary">请先选择学科。</Text>
         )}
       </Drawer>
 

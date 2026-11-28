@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from api.schemas.response_schema import SuccessResponse
-from api.deps import require_current_user
+from api.deps import require_current_user, require_subject_read
 from services import (knowledge_tracing, learning_service, mastery_service,
                       quiz_service, review_service)
 from services import learning_events
@@ -113,6 +113,27 @@ async def student_knowledge_tracing(subject_id: str,
     data = await run_in_threadpool(
         knowledge_tracing.estimate_user, subject_id, user_id, knowledge_point)
     return SuccessResponse(data=data, message="获取 BKT 估计成功")
+
+
+@router.get("/student/feedback")
+async def student_feedback_summary(subject_id: str,
+                                   days: int = 30,
+                                   user_id: str = Depends(require_subject_read)):
+    """学生统一学情反馈：掌握与巩固、FSRS 遗忘预警、错因画像、进步对比、前置溯因与教师评语回流。"""
+    from services import student_feedback
+    data = await run_in_threadpool(
+        student_feedback.get_student_feedback_summary, user_id, subject_id, days)
+    return SuccessResponse(data=data, message="获取学情反馈成功")
+
+
+@router.get("/student/knowledge-graph")
+async def student_knowledge_graph_overlay(subject_id: str,
+                                          user_id: str = Depends(require_subject_read)):
+    """学生视角知识图谱热力叠加：节点附带掌握度、BKT、FSRS 预警与前置薄弱溯因。"""
+    from services import graph_bridge
+    data = await run_in_threadpool(
+        graph_bridge.build_student_graph_overlay, user_id, subject_id)
+    return SuccessResponse(data=data, message="获取个人知识图谱成功")
 
 
 @router.get("/student/home")

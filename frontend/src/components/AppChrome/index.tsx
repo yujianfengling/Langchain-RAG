@@ -28,6 +28,7 @@ interface ShellItem {
 }
 
 const STUDENT_ITEMS: ShellItem[] = [
+  { key: '/me', label: '个人学情', icon: <BarChartOutlined />, pathname: '/me' },
   { key: '/student', label: 'AI 伴学', icon: <RobotOutlined />, pathname: '/student' },
   { key: '/student/materials', label: '资料库', icon: <DatabaseOutlined />, pathname: '/student/materials' },
   { key: '/student/tasks', label: '任务与复习', icon: <CheckSquareOutlined />, pathname: '/student/tasks' },
@@ -86,7 +87,10 @@ const AppChrome: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
   const isTeacher = user?.role === 'teacher' || user?.role === 'admin';
   const roleItems = isTeacher ? TEACHER_ITEMS : STUDENT_ITEMS;
-  const wheelItems = useMemo(() => [...roleItems, ME_ITEM, SETTINGS_ITEM], [roleItems]);
+  const wheelItems = useMemo(
+    () => (isTeacher ? [...roleItems, ME_ITEM, SETTINGS_ITEM] : [...roleItems, SETTINGS_ITEM]),
+    [isTeacher, roleItems],
+  );
 
   const [mode, setMode] = useState<NavMode>(readNavMode);
   const [open, setOpen] = useState(false);

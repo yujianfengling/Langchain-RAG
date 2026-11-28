@@ -14,7 +14,8 @@ import { isLoggedIn } from '../api/auth';
 import { AUTH_CHANGED_EVENT } from '../components/UserAuth';
 import { EmptyBlock, ErrorAlert, LoadingBlock, PermissionAlert } from '../components/Teacher/common';
 import CoursePrepPanel from '../components/Teacher/CoursePrepPanel';
-import AssignmentsPanel from '../components/Teacher/AssignmentsPanel';
+import AssignmentsPanel, { type RemedialAssignmentDraft } from '../components/Teacher/AssignmentsPanel';
+import { type RemedialLessonPlanDraft } from '../components/Teacher/LessonPlansPanel';
 import AnalyticsPanel from '../components/Teacher/AnalyticsPanel';
 import StudentsPanel from '../components/Teacher/StudentsPanel';
 import TutorAssistantPanel from '../components/Teacher/TutorAssistantPanel';
@@ -83,6 +84,8 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [assignDraft, setAssignDraft] = useState<RemedialAssignmentDraft | null>(null);
+  const [planDraft, setPlanDraft] = useState<RemedialLessonPlanDraft | null>(null);
   const [form] = Form.useForm<{ title: string; description?: string; subject_name?: string }>();
 
   useEffect(() => {
@@ -213,6 +216,7 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
           courseId={prepList ? undefined : courseId}
           courseTitle={currentCourse?.title}
           initialTab={prepTab}
+          planDraft={planDraft}
           onSelectCourse={(id) => { setCourseId(id); setPrepList(false); }}
           onBackToList={() => setPrepList(true)}
           onCreateCourse={() => setCreateOpen(true)}
@@ -239,6 +243,7 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
             courseId={courseId}
             courseTitle={currentCourse?.title}
             subjectId={currentCourse?.subject_id}
+            prefillDraft={assignDraft}
             onBack={goCourseWorkspace}
             onOpenMaterials={() => { setPrepTab('materials'); setPrepList(false); selectSection('prep'); }}
           />
@@ -251,7 +256,18 @@ const TeacherPage: React.FC<TeacherPageProps> = () => {
               key={'analytics-' + courseId}
               courseId={courseId}
               courseTitle={currentCourse?.title}
+              subjectId={currentCourse?.subject_id}
               onBack={goCourseWorkspace}
+              onCreateRemedialAssignment={(draft) => {
+                setAssignDraft({ ...draft, nonce: Date.now() });
+                selectSection('assignments');
+              }}
+              onCreateRemedialLessonPlan={(draft) => {
+                setPlanDraft({ ...draft, nonce: Date.now() });
+                setPrepTab('plans');
+                setPrepList(false);
+                selectSection('prep');
+              }}
             />
           </Space>
         );

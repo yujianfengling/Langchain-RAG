@@ -40,10 +40,19 @@ const QUESTION_SOURCE_META: Record<string, { color: string; label: string; tip: 
   general_knowledge: { color: 'orange', label: 'AI 通用知识', tip: '本地资料不足，题目由 AI 通用知识生成，表述可能与你的教材不同' },
 };
 
+export interface RemedialAssignmentDraft {
+  classId?: string;
+  knowledgePoints: string[];
+  title?: string;
+  description?: string;
+  nonce: number;
+}
+
 export interface AssignmentsPanelProps {
   courseId: string;
   courseTitle?: string;
   subjectId?: string;
+  prefillDraft?: RemedialAssignmentDraft | null;
   onBack?: () => void;
   /** 定向出题无合格题目时的"去补充资料"入口（切到课程资料） */
   onOpenMaterials?: () => void;
@@ -61,7 +70,7 @@ interface AssignmentFormValues {
 
 /** 作业 / 练习：创建草稿 → AI 出题 → 预览 → 设截止 → 发布 → 查看完成情况 */
 const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({
-  courseId, courseTitle, subjectId, onBack, onOpenMaterials,
+  courseId, courseTitle, subjectId, prefillDraft, onBack, onOpenMaterials,
 }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -127,6 +136,23 @@ const AssignmentsPanel: React.FC<AssignmentsPanelProps> = ({
 
   useEffect(() => { load(classFilter); }, [load, classFilter]);
   useEffect(() => { loadClasses(); }, [loadClasses]);
+
+  // 从学情分析一键带入薄弱知识点，直接打开新建补练弹窗
+  useEffect(() => {
+    if (!prefillDraft) return;
+    setEditing(null);
+    form.resetFields();
+    form.setFieldsValue({
+      class_id: prefillDraft.classId || classes[0]?.id,
+      title: prefillDraft.title || `薄弱点巩固练习：${prefillDraft.knowledgePoints.slice(0, 2).join('、')}`,
+      description: prefillDraft.description || '依据班级学情分析定向布置，重点巩固高频错题与前置概念。',
+      assign_type: 'quiz',
+      knowledge_points: prefillDraft.knowledgePoints,
+      estimated_minutes: 25,
+    });
+    setFormOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillDraft?.nonce]);
 
   const openCreate = () => {
     setEditing(null);

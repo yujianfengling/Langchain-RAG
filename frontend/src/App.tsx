@@ -74,7 +74,7 @@ const AppRoutes: React.FC = () => {
         >
           <Suspense fallback={<PageFallback />}>
             <Routes location={location}>
-              <Route path="/" element={<Navigate to={{ pathname: '/student', search: location.search }} replace />} />
+              <Route path="/" element={<Navigate to={{ pathname: '/me', search: location.search }} replace />} />
               <Route path="/student" element={<Protected><StudentLearningPage /></Protected>} />
               <Route path="/student/materials" element={<Protected><MaterialsPage /></Protected>} />
               <Route path="/student/tasks" element={<Protected><TasksPage /></Protected>} />
@@ -88,7 +88,7 @@ const AppRoutes: React.FC = () => {
               <Route path="/student/todo" element={<Navigate to="/student/tasks" replace />} />
               <Route path="/student/assignments" element={<Protected><AssignmentsPage /></Protected>} />
               <Route path="/learning" element={<Navigate to="/student/tasks" replace />} />
-              <Route path="*" element={<Navigate to="/student" replace />} />
+              <Route path="*" element={<Navigate to="/me" replace />} />
             </Routes>
           </Suspense>
         </motion.div>

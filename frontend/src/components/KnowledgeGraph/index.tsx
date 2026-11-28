@@ -1,11 +1,21 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import * as echarts from 'echarts';
-import { Button, Card, Empty, Popconfirm, Segmented, Spin, Tag, Space, Typography, message } from 'antd';
-import { ApiOutlined, ReloadOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import {
+  Alert, Button, Card, Empty, Popconfirm, Segmented, Select, Spin, Tag, Tooltip, Space, Typography, message,
+} from 'antd';
+import {
+  AimOutlined, ApiOutlined, BookOutlined, CompressOutlined, ExpandOutlined, FileAddOutlined,
+  FormOutlined, NodeExpandOutlined, PlayCircleOutlined, ReloadOutlined, SearchOutlined,
+  ThunderboltOutlined, ZoomInOutlined, ZoomOutOutlined,
+} from '@ant-design/icons';
 import katex from 'katex';
 import { SkeletonCard } from '../AnimateMotion';
 import { MarkdownText } from '../TutorWorkspace/markdown';
 import { getKnowledgeGraph, buildKnowledgeGraph, getKnowledgeGraphStatus } from '../../api/knowledge';
+import { getStudentKnowledgeGraph, type PrerequisiteDiagnosis } from '../../api/student';
+import { getClassAnalyticsGraph } from '../../api/teacher';
+import { isLoggedIn } from '../../api/auth';
 
 const { Text } = Typography;
 
@@ -16,6 +26,36 @@ interface GraphExcerpt {
   page?: number | string | null;
 }
 
+interface StudentLearningState {
+  status: 'weak' | 'forgetting' | 'developing' | 'mastered' | 'unassessed' | string;
+  status_label: string;
+  mastery_level: number | null;
+  bkt_p_known?: number | null;
+  evidence_count: number;
+  wrong_count: number;
+  retrievability?: number | null;
+  due_date?: string | null;
+  overdue?: boolean;
+  consolidated?: boolean;
+  matched_kps?: string[];
+  map_node_id?: string | null;
+  prerequisite_diagnosis?: PrerequisiteDiagnosis | null;
+}
+
+interface ClassLearningState {
+  status: 'high_error' | 'medium_error' | 'low_error' | 'insufficient' | 'unassessed' | string;
+  status_label: string;
+  attempt_count: number;
+  wrong_count: number;
+  wrong_rate: number | null;
+  student_count: number;
+  enough_data: boolean;
+  kp_id?: string | null;
+  kp_name?: string | null;
+  matched_kps?: string[];
+  prerequisite_diagnosis?: PrerequisiteDiagnosis | null;
+}
+
 interface GraphNode {
   id: string;
   label: string;
@@ -24,6 +64,8 @@ interface GraphNode {
   content?: string;
   source?: string;
   excerpts?: GraphExcerpt[];
+  learning_state?: StudentLearningState;
+  class_state?: ClassLearningState;
 }
 
 interface GraphEdge {
@@ -43,32 +85,84 @@ interface GraphData {
   };
 }
 
-// 节点类型颜色映射（CiteSpace风格）
+interface RootCauseItem {
+  concept: string;
+  summary: string;
+  kp_id?: string | null;
+  weak_prerequisites?: { concept: string }[];
+}
+
+export interface KnowledgeGraphAction {
+  type: 'explain' | 'practice' | 'prereq' | 'mistakes' | 'teacher_drill' | 'teacher_assign' | 'teacher_plan';
+  label: string;
+  nodeId?: string | null;
+  kpId?: string | null;
+}
+
+export interface KnowledgeGraphProps {
+  subjectId: string;
+  mode?: 'concept' | 'student' | 'teacher';
+  classId?: string;
+  days?: number;
+  compact?: boolean;
+  onAction?: (action: KnowledgeGraphAction) => void;
+}
+
+// 现代协调的节点类型色板
 const TYPE_COLORS: Record<string, string> = {
-  '概念': '#5470c6',
-  '公式': '#91cc75',
-  '定理': '#fac858',
-  '例题': '#ee6666',
-  '方法': '#73c0de',
-  '人物': '#3ba272',
-  '其他': '#999999',
+  '概念': '#4f46e5',
+  '公式': '#0d9488',
+  '定理': '#d97706',
+  '例题': '#e11d48',
+  '方法': '#0284c7',
+  '人物': '#7c3aed',
+  '其他': '#64748b',
 };
 
-/** 节点直径仍按权重线性拉开，不压小高权重节点。 */
-function symbolSizeForWeight(weight: number | undefined, minWeight: number, maxWeight: number): number {
-  const span = maxWeight - minWeight || 1;
-  return 20 + ((weight || 1) - minWeight) / span * 30;
-}
+// 学生掌握热力配色（与个人学情四色完全对齐）
+const STUDENT_HEAT_META: Record<string, { color: string; label: string; border?: string }> = {
+  weak: { color: '#ef4444', label: '薄弱', border: '#fecaca' },
+  forgetting: { color: '#f59e0b', label: '遗忘预警', border: '#fde68a' },
+  developing: { color: '#3b82f6', label: '巩固中', border: '#bfdbfe' },
+  mastered: { color: '#10b981', label: '已巩固', border: '#a7f3d0' },
+  unassessed: { color: '#94a3b8', label: '未评估', border: '#e2e8f0' },
+};
 
-/** 线宽仍按边权重。球线图里权重越大，边越短。 */
-function edgeWidthForWeight(weight: number | undefined): number {
-  return (weight || 1) * 1.5;
-}
+// 教师班级学情热力配色
+const TEACHER_HEAT_META: Record<string, { color: string; label: string }> = {
+  high_error: { color: '#ef4444', label: '高频薄弱 (≥45%)' },
+  medium_error: { color: '#f59e0b', label: '存在分化 (25-44%)' },
+  low_error: { color: '#10b981', label: '整体较好 (<25%)' },
+  insufficient: { color: '#8b5cf6', label: '样本不足' },
+  unassessed: { color: '#94a3b8', label: '暂无作答' },
+};
 
 type GraphView = 'force' | 'tree';
+type ColorMode = 'heat' | 'type';
+type ExpandMode = 'focus' | 'all';
 
-const TREE_ROW = 64;
-const TREE_COL = 220;
+const CORE_THRESHOLD = 24;
+const CORE_TARGET = 20;
+const CORE_TARGET_COMPACT = 15;
+
+/** 节点直径克制拉开（18..38），视觉有主次但不喧宾夺主。 */
+function symbolSizeForWeight(weight: number | undefined, minWeight: number, maxWeight: number, isHub?: boolean): number {
+  const span = maxWeight - minWeight || 1;
+  const base = 18 + ((weight || 1) - minWeight) / span * 18;
+  return isHub ? Math.max(base, 36) : base;
+}
+
+/** 优雅折行概念名称，拒绝截断成 “xxx (...” */
+function formatNodeLabel(label: string, maxPerLine = 7): string {
+  const s = (label || '').trim();
+  if (s.length <= maxPerLine) return s;
+  if (s.length <= maxPerLine * 2) {
+    const mid = Math.ceil(s.length / 2);
+    return `${s.slice(0, mid)}\n${s.slice(mid)}`;
+  }
+  return `${s.slice(0, maxPerLine)}\n${s.slice(maxPerLine, maxPerLine * 2 - 1)}…`;
+}
+
 const REL_RANK: Record<string, number> = {
   包含: 0,
   属于: 1,
@@ -80,163 +174,297 @@ const REL_RANK: Record<string, number> = {
   相关: 8,
 };
 
-interface TreeLayout {
-  positions: Map<string, { x: number; y: number }>;
-  links: GraphEdge[];
-  width: number;
-  height: number;
+/** 构图无向邻接表，用于连通子图采样和按需展开邻域。 */
+function buildAdjacency(nodes: GraphNode[], edges: GraphEdge[]): Map<string, Set<string>> {
+  const valid = new Set(nodes.map((n) => n.id));
+  const adj = new Map<string, Set<string>>();
+  for (const n of nodes) adj.set(n.id, new Set());
+  for (const e of edges) {
+    if (!valid.has(e.source) || !valid.has(e.target) || e.source === e.target) continue;
+    adj.get(e.source)!.add(e.target);
+    adj.get(e.target)!.add(e.source);
+  }
+  return adj;
 }
 
-/** 每个节点只挂到一条主线上，从左到右铺开。方块大小仍由调用方按权重计算。 */
-function buildTreeLayout(nodes: GraphNode[], edges: GraphEdge[]): TreeLayout {
+/**
+ * 连通聚焦子图算法：
+ * 从最大核心枢纽节点（及薄弱/预警节点）出发按连通 BFS 向外生长，
+ * 彻底杜绝旧版按全局度数挑点导致的「孤岛浮球、没有连线」问题。
+ */
+function computeConnectedCoreIds(
+  nodes: GraphNode[],
+  adj: Map<string, Set<string>>,
+  effectiveMode: 'concept' | 'student' | 'teacher',
+  limit: number,
+): { ids: Set<string>; hubId: string | null } {
+  if (!nodes.length) return { ids: new Set(), hubId: null };
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const incoming = new Map<string, GraphEdge[]>();
-  for (const n of nodes) incoming.set(n.id, []);
-  for (const edge of edges) {
-    if (!byId.has(edge.source) || !byId.has(edge.target) || edge.source === edge.target) continue;
-    // 包含/定义/推导/举例：左边是总概念。属于/前置条件/应用：原文箭头指向总概念，树里反过来。
-    let parentId = edge.source;
-    let childId = edge.target;
-    if (edge.relation === '属于' || edge.relation === '前置条件' || edge.relation === '应用') {
-      parentId = edge.target;
-      childId = edge.source;
-    } else if (edge.relation === '相关') {
-      const targetWeight = byId.get(edge.target)?.weight || 1;
-      const sourceWeight = byId.get(edge.source)?.weight || 1;
-      if (targetWeight > sourceWeight) {
-        parentId = edge.target;
-        childId = edge.source;
-      }
-    }
-    incoming.get(childId)!.push({
-      source: parentId,
-      target: childId,
-      relation: edge.relation,
-      weight: edge.weight,
-    });
-  }
-  for (const list of incoming.values()) {
-    list.sort((a, b) => {
-      const rank = (REL_RANK[a.relation] ?? 9) - (REL_RANK[b.relation] ?? 9);
-      if (rank !== 0) return rank;
-      const parentWeight = (byId.get(b.source)?.weight || 1) - (byId.get(a.source)?.weight || 1);
-      if (parentWeight !== 0) return parentWeight;
-      return (b.weight || 1) - (a.weight || 1);
-    });
+  const importance = (id: string) => {
+    const n = byId.get(id);
+    return (adj.get(id)?.size || 0) * 3 + (n?.weight || 1);
+  };
+
+  const sortedByImp = [...nodes].sort((a, b) => importance(b.id) - importance(a.id));
+  const hubId = sortedByImp[0]?.id || null;
+  if (nodes.length <= limit) {
+    return { ids: new Set(nodes.map((n) => n.id)), hubId };
   }
 
-  const parent = new Map<string, string>();
-  const parentEdge = new Map<string, GraphEdge>();
-  const wouldCycle = (id: string, candidate: string) => {
-    let cursor: string | undefined = candidate;
-    const seen = new Set<string>();
-    while (cursor) {
-      if (cursor === id || seen.has(cursor)) return true;
-      seen.add(cursor);
-      cursor = parent.get(cursor);
+  const picked = new Set<string>();
+  const queue: string[] = [];
+
+  // 1) 主核心枢纽先入队，作为整张网的视觉中心
+  if (hubId) {
+    picked.add(hubId);
+    queue.push(hubId);
+  }
+
+  // 2) 若有薄弱/遗忘/高错节点，优先纳入（并尽量拉入与主枢纽相连的桥接点）
+  const priorityIds: string[] = [];
+  for (const n of nodes) {
+    if (effectiveMode === 'student' && (n.learning_state?.status === 'weak' || n.learning_state?.status === 'forgetting')) {
+      priorityIds.push(n.id);
+    } else if (effectiveMode === 'teacher' && (n.class_state?.status === 'high_error' || n.class_state?.status === 'medium_error')) {
+      priorityIds.push(n.id);
     }
-    return false;
-  };
-  const pending = new Set(nodes.map((n) => n.id));
-  let guard = pending.size + 2;
-  while (pending.size && guard-- > 0) {
-    let progressed = false;
-    for (const id of [...pending]) {
-      const options = incoming.get(id) || [];
-      if (!options.length) {
-        pending.delete(id);
-        progressed = true;
-        continue;
+  }
+  for (const pid of priorityIds.slice(0, 6)) {
+    if (picked.size >= limit) break;
+    if (!picked.has(pid)) {
+      picked.add(pid);
+      queue.push(pid);
+      // 若与主枢纽有共同邻居，拉入 1 个桥接点保持连通
+      if (hubId && !adj.get(pid)?.has(hubId)) {
+        const hubNbs = adj.get(hubId);
+        const bridge = [...(adj.get(pid) || [])].find((nb) => hubNbs?.has(nb));
+        if (bridge && picked.size < limit) picked.add(bridge);
       }
-      const ready = options.find((edge) => !pending.has(edge.source) && !wouldCycle(id, edge.source));
-      const settled = options.some((edge) => pending.has(edge.source));
-      const chosen = ready || (!settled ? options.find((edge) => !wouldCycle(id, edge.source)) : undefined);
-      if (!chosen && settled) continue;
-      if (chosen) {
-        parent.set(id, chosen.source);
-        parentEdge.set(id, chosen);
-      }
-      pending.delete(id);
-      progressed = true;
     }
-    if (!progressed) {
-      for (const id of [...pending]) {
-        const chosen = (incoming.get(id) || []).find((edge) => !wouldCycle(id, edge.source));
-        if (chosen) {
-          parent.set(id, chosen.source);
-          parentEdge.set(id, chosen);
+  }
+
+  // 3) 从主枢纽出发按重要性 BFS 扩展直接邻居，保证每个节点都有清晰连线
+  let head = 0;
+  while (head < queue.length && picked.size < limit) {
+    const cur = queue[head++];
+    const nbs = [...(adj.get(cur) || [])].sort((a, b) => importance(b) - importance(a));
+    // 第一轮从主枢纽取较多分支，二级节点每个最多扩 2 个，形成清晰星状骨架
+    const branchCap = cur === hubId ? Math.max(8, Math.floor(limit * 0.65)) : 2;
+    let added = 0;
+    for (const nb of nbs) {
+      if (picked.size >= limit || added >= branchCap) break;
+      if (!picked.has(nb)) {
+        picked.add(nb);
+        queue.push(nb);
+        added += 1;
+      }
+    }
+  }
+
+  // 4) 若主连通分量节点不足，按重要性补齐其余连通分量的核心节点及其 1 个邻居
+  if (picked.size < limit) {
+    for (const n of sortedByImp) {
+      if (picked.size >= limit) break;
+      if (picked.has(n.id)) continue;
+      picked.add(n.id);
+      const topNb = [...(adj.get(n.id) || [])].sort((a, b) => importance(b) - importance(a))[0];
+      if (topNb && picked.size < limit) picked.add(topNb);
+    }
+  }
+
+  return { ids: picked, hubId };
+}
+
+interface NativeTreeNode {
+  name: string;
+  id?: string;
+  node?: GraphNode;
+  relation?: string;
+  isGroup?: boolean;
+  collapsed?: boolean;
+  symbol?: string;
+  symbolSize?: number;
+  itemStyle?: Record<string, any>;
+  children?: NativeTreeNode[];
+}
+
+/**
+ * 构建原生 ECharts `type: 'tree'` 所需的真正层级树结构：
+ * - 以主枢纽为树根，平滑贝塞尔连线 + 圆形节点（永不变形压扁）
+ * - 子节点超过 10 个时，将叶子节点按概念类型自动归组，避免一列塞 40 个字重叠
+ * - 原生点击展开 / 收起分支，体验接近专业思维导图
+ */
+function buildNativeTree(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  resolveColor: (n: GraphNode) => { color: string; borderColor?: string; borderWidth?: number },
+): NativeTreeNode | null {
+  if (!nodes.length) return null;
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const adj = buildAdjacency(nodes, edges);
+
+  // 记录边关系方便悬浮显示
+  const relMap = new Map<string, string>();
+  for (const e of edges) {
+    if (!byId.has(e.source) || !byId.has(e.target) || e.source === e.target) continue;
+    const key1 = `${e.source}::${e.target}`;
+    const key2 = `${e.target}::${e.source}`;
+    const prevRank = REL_RANK[relMap.get(key1) || ''] ?? 99;
+    const nextRank = REL_RANK[e.relation] ?? 9;
+    if (nextRank < prevRank) {
+      relMap.set(key1, e.relation);
+      relMap.set(key2, e.relation);
+    }
+  }
+
+  const importance = (id: string) => (adj.get(id)?.size || 0) * 3 + (byId.get(id)?.weight || 1);
+  const sortedIds = nodes.map((n) => n.id).sort((a, b) => importance(b) - importance(a));
+
+  const visited = new Set<string>();
+  const buildBranch = (rootId: string, depth: number): NativeTreeNode => {
+    visited.add(rootId);
+    const curNode = byId.get(rootId)!;
+    const style = resolveColor(curNode);
+
+    const neighbors = [...(adj.get(rootId) || [])]
+      .filter((nb) => !visited.has(nb))
+      .sort((a, b) => importance(b) - importance(a));
+
+    // 先占位防止同层互抢
+    for (const nb of neighbors) visited.add(nb);
+
+    const rawChildren: NativeTreeNode[] = neighbors.map((nb) => {
+      const child = buildBranch(nb, depth + 1);
+      child.relation = relMap.get(`${rootId}::${nb}`) || '相关';
+      return child;
+    });
+
+    // 若某枢纽直接挂了过多节点（如主概念直连 30+ 节点），
+    // 保留带子树的「骨干分支」在顶层，把纯叶子按类型折叠到分组节点下，保证一屏舒展整洁。
+    let children = rawChildren;
+    if (rawChildren.length > 10) {
+      const withSub = rawChildren.filter((c) => (c.children?.length || 0) > 0);
+      const pureLeaves = rawChildren.filter((c) => !(c.children?.length || 0));
+      if (pureLeaves.length >= 5) {
+        const grouped = new Map<string, NativeTreeNode[]>();
+        for (const leaf of pureLeaves) {
+          const t = leaf.node?.type || '相关概念';
+          const arr = grouped.get(t) || [];
+          arr.push(leaf);
+          grouped.set(t, arr);
         }
-        pending.delete(id);
+        const groupNodes: NativeTreeNode[] = [];
+        for (const [typeName, items] of grouped.entries()) {
+          if (items.length <= 2) {
+            groupNodes.push(...items);
+          } else {
+            groupNodes.push({
+              name: `${typeName} (${items.length})`,
+              isGroup: true,
+              collapsed: true,
+              symbol: 'circle',
+              symbolSize: 11,
+              itemStyle: {
+                color: TYPE_COLORS[typeName] || '#64748b',
+                borderColor: '#ffffff',
+                borderWidth: 2,
+              },
+              children: items,
+            });
+          }
+        }
+        children = [...withSub.slice(0, 8), ...groupNodes, ...withSub.slice(8)];
       }
     }
+
+    const hasChildren = children.length > 0;
+    return {
+      name: curNode.label,
+      id: curNode.id,
+      node: curNode,
+      collapsed: depth >= 1 && hasChildren,
+      symbol: 'circle',
+      symbolSize: depth === 0 ? 18 : hasChildren ? 13 : 9,
+      itemStyle: {
+        color: style.color,
+        borderColor: '#ffffff',
+        borderWidth: 2,
+      },
+      children: hasChildren ? children : undefined,
+    };
+  };
+
+  const components: NativeTreeNode[] = [];
+  for (const id of sortedIds) {
+    if (visited.has(id)) continue;
+    components.push(buildBranch(id, 0));
   }
 
-  const children = new Map<string, string[]>();
-  for (const n of nodes) children.set(n.id, []);
-  for (const [id, source] of parent) children.get(source)?.push(id);
-  const byWeight = (a: string, b: string) => {
-    const delta = (byId.get(b)?.weight || 1) - (byId.get(a)?.weight || 1);
-    if (delta !== 0) return delta;
-    return (byId.get(a)?.label || a).localeCompare(byId.get(b)?.label || b, 'zh');
-  };
-  for (const list of children.values()) list.sort(byWeight);
+  if (components.length === 1) return components[0];
 
-  const roots = nodes.map((n) => n.id).filter((id) => !parent.has(id)).sort(byWeight);
-  const rows = new Map<string, number>();
-  const measure = (id: string): number => {
-    const kids = children.get(id) || [];
-    const count = kids.length ? kids.reduce((sum, kid) => sum + measure(kid), 0) : 1;
-    rows.set(id, count);
-    return count;
-  };
-  for (const id of roots) measure(id);
-
-  const positions = new Map<string, { x: number; y: number }>();
-  let maxDepth = 0;
-  const place = (id: string, depth: number, topRow: number) => {
-    maxDepth = Math.max(maxDepth, depth);
-    const kids = children.get(id) || [];
-    const x = 36 + depth * TREE_COL;
-    if (!kids.length) {
-      positions.set(id, { x, y: 28 + topRow * TREE_ROW + TREE_ROW / 2 });
-      return;
-    }
-    let cursor = topRow;
-    for (const kid of kids) {
-      place(kid, depth + 1, cursor);
-      cursor += rows.get(kid) || 1;
-    }
-    const first = positions.get(kids[0]);
-    const last = positions.get(kids[kids.length - 1]);
-    positions.set(id, { x, y: first && last ? (first.y + last.y) / 2 : 28 + TREE_ROW / 2 });
-  };
-  let top = 0;
-  for (const id of roots) {
-    place(id, 0, top);
-    top += rows.get(id) || 1;
+  // 多个不连通分量：合并到整洁的根主题下
+  const main = components[0];
+  const rest = components.slice(1);
+  if (rest.length <= 4) {
+    return {
+      name: main.name,
+      id: main.id,
+      node: main.node,
+      symbol: 'circle',
+      symbolSize: 18,
+      itemStyle: main.itemStyle,
+      children: [
+        ...(main.children || []),
+        ...rest.map((r) => ({ ...r, collapsed: true })),
+      ],
+    };
   }
-
   return {
-    positions,
-    links: [...parentEdge.values()],
-    width: 36 + maxDepth * TREE_COL + 210,
-    height: Math.max(TREE_ROW + 48, top * TREE_ROW + 48),
+    name: main.name,
+    id: main.id,
+    node: main.node,
+    symbol: 'circle',
+    symbolSize: 18,
+    itemStyle: main.itemStyle,
+    children: [
+      ...(main.children || []),
+      {
+        name: `其他独立主题 (${rest.length})`,
+        isGroup: true,
+        collapsed: true,
+        symbol: 'circle',
+        symbolSize: 11,
+        itemStyle: { color: '#64748b', borderColor: '#ffffff', borderWidth: 2 },
+        children: rest,
+      },
+    ],
   };
 }
 
-function chartLayout(nodeCount: number): {
+/** 根据当前可见节点数计算均衡的力导参数与初始缩放比。 */
+function chartLayout(nodeCount: number, compact?: boolean): {
   height: number;
   repulsion: number;
-  edgeLength: number | [number, number];
+  edgeLength: [number, number];
   gravity: number;
+  initialZoom: number;
 } {
-  if (nodeCount >= 80) {
-    return { height: 640, repulsion: 560, edgeLength: [90, 200], gravity: 0.035 };
+  if (compact) {
+    return {
+      height: 430,
+      repulsion: nodeCount > 30 ? 220 : 250,
+      edgeLength: [68, 120],
+      gravity: 0.16,
+      initialZoom: nodeCount > 35 ? 0.62 : nodeCount > 18 ? 0.8 : 0.94,
+    };
   }
-  if (nodeCount >= 30) {
-    return { height: 520, repulsion: 340, edgeLength: [70, 160], gravity: 0.07 };
+  if (nodeCount >= 75) {
+    return { height: 560, repulsion: 260, edgeLength: [75, 140], gravity: 0.12, initialZoom: 0.54 };
   }
-  return { height: 420, repulsion: 180, edgeLength: 110, gravity: 0.12 };
+  if (nodeCount >= 35) {
+    return { height: 520, repulsion: 260, edgeLength: [75, 138], gravity: 0.14, initialZoom: 0.7 };
+  }
+  return { height: 480, repulsion: 290, edgeLength: [82, 145], gravity: 0.14, initialZoom: 0.92 };
 }
 
 function excerptSource(item: GraphExcerpt): string {
@@ -256,7 +484,6 @@ function isUnreadableEquation(eq: string): boolean {
   const compact = eq.replace(/\s/g, '');
   if (FORMULA_CODE_RE.test(eq)) return true;
   if (!/[=＝]/.test(compact) && !/\\[a-zA-Z]/.test(eq)) return true;
-  // 幻灯片抽文本常把公式挤成一长串，没有运算符，排出来也不是公式。
   if (/[A-Za-zα-ωΑ-Ω0-9]{6,}/.test(compact) && !/\\[a-zA-Z]/.test(eq)) return true;
   return false;
 }
@@ -321,17 +548,35 @@ function ExcerptBody({ text, formula }: { text: string; formula?: boolean }) {
 }
 
 function NodePopup({
-  node, left, top, onClose,
+  node,
+  left,
+  top,
+  effectiveMode,
+  showExpandBtn,
+  hiddenNeighborCount,
+  onExpandNeighbors,
+  onAction,
+  onClose,
 }: {
   node: GraphNode;
   left: number;
   top: number;
+  effectiveMode: 'concept' | 'student' | 'teacher';
+  showExpandBtn: boolean;
+  hiddenNeighborCount: number;
+  onExpandNeighbors: (nodeId: string) => void;
+  onAction: (action: KnowledgeGraphAction) => void;
   onClose: () => void;
 }) {
   const excerpts = node.excerpts || [];
   const formulas = excerpts.filter((item) => item.kind === 'formula' && item.text);
   const definitions = excerpts.filter((item) => item.kind === 'definition' && item.text);
   const passages = excerpts.filter((item) => item.kind === 'passage' && item.text);
+  const st = node.learning_state;
+  const cs = node.class_state;
+  const diag = effectiveMode === 'teacher' ? cs?.prerequisite_diagnosis : st?.prerequisite_diagnosis;
+  const firstWeakPre = diag?.weak_prerequisites?.[0]?.concept;
+
   const renderGroup = (title: string, items: GraphExcerpt[]) => (
     items.length ? (
       <div>
@@ -345,38 +590,299 @@ function NodePopup({
       </div>
     ) : null
   );
+
   return (
-    <div className="kg-node-pop" style={{ left, top }} role="dialog" aria-label={node.label}>
+    <div className="kg-node-pop" style={{ left, top, width: 350, maxHeight: 380, overflowY: 'auto' }} role="dialog" aria-label={node.label}>
       <div className="kg-node-pop-head">
-        <strong>{node.label}</strong>
+        <Space size={6} wrap>
+          <strong>{node.label}</strong>
+          {node.type && <Tag style={{ marginInlineEnd: 0 }}>{node.type}</Tag>}
+          {effectiveMode === 'student' && st && (
+            <Tag color={STUDENT_HEAT_META[st.status]?.color || '#94a3b8'} style={{ marginInlineEnd: 0 }}>
+              {st.status_label}
+            </Tag>
+          )}
+          {effectiveMode === 'teacher' && cs && (
+            <Tag color={TEACHER_HEAT_META[cs.status]?.color || '#94a3b8'} style={{ marginInlineEnd: 0 }}>
+              {cs.status_label}
+            </Tag>
+          )}
+        </Space>
         <button type="button" className="kg-node-pop-close" onClick={onClose} aria-label="关闭">×</button>
       </div>
-      {formulas.length || definitions.length || passages.length ? (
-        <>
-          {renderGroup('公式', formulas)}
-          {renderGroup('定义', definitions)}
-          {renderGroup('原文', passages)}
-        </>
-      ) : (
-        <div className="kg-node-pop-empty">原文里没有直接出现这个概念。</div>
+
+      {/* 学情状态与前置知识溯因 */}
+      {effectiveMode === 'student' && st && (
+        <div style={{ padding: '6px 0 8px', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+          {st.mastery_level != null ? (
+            <Space size={8} wrap>
+              <span>掌握估计 <strong>{Math.round(st.mastery_level * 100)}%</strong></span>
+              <span>证据 {st.evidence_count} 次</span>
+              {st.wrong_count > 0 && <Text type="danger">错 {st.wrong_count} 次</Text>}
+              {st.bkt_p_known != null && <Text type="secondary">预测 {Math.round(st.bkt_p_known * 100)}%</Text>}
+              {st.retrievability != null && (
+                <Text type={st.retrievability < 0.78 ? 'warning' : 'secondary'}>
+                  记忆保持 {Math.round(st.retrievability * 100)}%
+                </Text>
+              )}
+            </Space>
+          ) : (
+            <Text type="secondary">尚无作答证据，点击下方直接开始学习或检测。</Text>
+          )}
+          {diag?.summary && (
+            <div style={{ marginTop: 6, padding: '6px 8px', background: '#fff7ed', borderRadius: 6, color: '#9a3412' }}>
+              {diag.summary}
+            </div>
+          )}
+        </div>
       )}
+
+      {effectiveMode === 'teacher' && cs && (
+        <div style={{ padding: '6px 0 8px', borderBottom: '1px solid #f0f0f0', fontSize: 12 }}>
+          {cs.attempt_count > 0 ? (
+            <Space size={8} wrap>
+              <span>错误率 <strong>{cs.wrong_rate != null ? `${Math.round(cs.wrong_rate * 100)}%` : '—'}</strong></span>
+              <span>错 {cs.wrong_count} / {cs.attempt_count} 次</span>
+              <span>涉及 {cs.student_count} 人</span>
+              {!cs.enough_data && <Tag color="purple">样本不足</Tag>}
+            </Space>
+          ) : (
+            <Text type="secondary">本时间范围内暂无关联作答记录。</Text>
+          )}
+          {diag?.summary && (
+            <div style={{ marginTop: 6, padding: '6px 8px', background: '#fef2f2', borderRadius: 6, color: '#991b1b' }}>
+              {diag.summary}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 行动入口 + 按需展开关联节点 */}
+      <div style={{ padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
+        <Space size={6} wrap>
+          {showExpandBtn && hiddenNeighborCount > 0 && (
+            <Button
+              size="small"
+              icon={<NodeExpandOutlined />}
+              onClick={() => onExpandNeighbors(node.id)}
+            >
+              展开关联 (+{hiddenNeighborCount})
+            </Button>
+          )}
+          {effectiveMode === 'teacher' ? (
+            <>
+              {cs?.kp_id && (
+                <Button
+                  size="small"
+                  type="primary"
+                  icon={<SearchOutlined />}
+                  onClick={() => onAction({ type: 'teacher_drill', label: cs.kp_name || node.label, kpId: cs.kp_id })}
+                >
+                  下钻错题
+                </Button>
+              )}
+              <Button
+                size="small"
+                icon={<ThunderboltOutlined />}
+                onClick={() => onAction({ type: 'teacher_assign', label: cs?.kp_name || node.label, kpId: cs?.kp_id })}
+              >
+                布置补练
+              </Button>
+              <Button
+                size="small"
+                icon={<FileAddOutlined />}
+                onClick={() => onAction({ type: 'teacher_plan', label: cs?.kp_name || node.label, kpId: cs?.kp_id })}
+              >
+                带入教案
+              </Button>
+            </>
+          ) : (
+            <>
+              {firstWeakPre && (
+                <Button
+                  size="small"
+                  type="primary"
+                  danger
+                  icon={<BookOutlined />}
+                  onClick={() => onAction({ type: 'prereq', label: firstWeakPre })}
+                >
+                  先补前置：{firstWeakPre}
+                </Button>
+              )}
+              <Button
+                size="small"
+                type={firstWeakPre ? 'default' : 'primary'}
+                icon={<BookOutlined />}
+                onClick={() => onAction({ type: 'explain', label: node.label, nodeId: st?.map_node_id })}
+              >
+                AI 精讲
+              </Button>
+              <Button
+                size="small"
+                icon={<FormOutlined />}
+                onClick={() => onAction({ type: 'practice', label: node.label, nodeId: st?.map_node_id })}
+              >
+                练 2 题
+              </Button>
+            </>
+          )}
+        </Space>
+      </div>
+
+      {/* 原文公式与定义摘录 */}
+      <div style={{ marginTop: 6 }}>
+        {formulas.length || definitions.length || passages.length ? (
+          <>
+            {renderGroup('公式', formulas)}
+            {renderGroup('定义', definitions)}
+            {renderGroup('原文', passages)}
+          </>
+        ) : (
+          <div className="kg-node-pop-empty">原文里没有直接出现该概念的独立摘录。</div>
+        )}
+      </div>
     </div>
   );
 }
 
-const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
+const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
+  subjectId,
+  mode = 'concept',
+  classId,
+  days = 30,
+  compact = false,
+  onAction,
+}) => {
+  const navigate = useNavigate();
   const chartWrapRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<HTMLDivElement>(null);
   const chartInstance = useRef<echarts.ECharts | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentZoomRef = useRef<number>(0.9);
+
+  const effectiveMode: 'concept' | 'student' | 'teacher' =
+    mode === 'teacher' ? 'teacher' : (mode === 'student' || isLoggedIn() ? 'student' : 'concept');
+
   const [loading, setLoading] = useState(true);
   const [building, setBuilding] = useState(false);
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
   const [graph, setGraph] = useState<GraphData | null>(null);
+  const [rootCauses, setRootCauses] = useState<RootCauseItem[]>([]);
+  const [hasHeatData, setHasHeatData] = useState(false);
   const [view, setView] = useState<GraphView>('force');
+  const [colorMode, setColorMode] = useState<ColorMode>('heat');
+  const [expandMode, setExpandMode] = useState<ExpandMode>('focus');
+  const [extraVisibleIds, setExtraVisibleIds] = useState<string[]>([]);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [popup, setPopup] = useState<{ node: GraphNode; left: number; top: number } | null>(null);
   const chartReady = useRef(false);
-  const treeLayout = graph?.nodes?.length ? buildTreeLayout(graph.nodes, graph.edges || []) : null;
+
+  const adjacency = useMemo(
+    () => (graph?.nodes?.length ? buildAdjacency(graph.nodes, graph.edges || []) : new Map<string, Set<string>>()),
+    [graph],
+  );
+
+  const isLargeGraph = (graph?.nodes?.length || 0) > CORE_THRESHOLD;
+
+  const { visibleNodes, visibleEdges, visibleIdSet, hubId } = useMemo(() => {
+    const allNodes = graph?.nodes || [];
+    const allEdges = graph?.edges || [];
+    if (!allNodes.length) {
+      return {
+        visibleNodes: [] as GraphNode[],
+        visibleEdges: [] as GraphEdge[],
+        visibleIdSet: new Set<string>(),
+        hubId: null as string | null,
+      };
+    }
+    const core = computeConnectedCoreIds(
+      allNodes, adjacency, effectiveMode, compact ? CORE_TARGET_COMPACT : CORE_TARGET,
+    );
+    if (!isLargeGraph || expandMode === 'all') {
+      return {
+        visibleNodes: allNodes,
+        visibleEdges: allEdges,
+        visibleIdSet: new Set(allNodes.map((n) => n.id)),
+        hubId: core.hubId,
+      };
+    }
+    const ids = new Set(core.ids);
+    for (const id of extraVisibleIds) ids.add(id);
+    const vNodes = allNodes.filter((n) => ids.has(n.id));
+    const vEdges = allEdges.filter((e) => ids.has(e.source) && ids.has(e.target));
+    return { visibleNodes: vNodes, visibleEdges: vEdges, visibleIdSet: ids, hubId: core.hubId };
+  }, [graph, isLargeGraph, expandMode, adjacency, effectiveMode, compact, extraVisibleIds]);
+
+  const hiddenCountOf = useCallback((nodeId: string): number => {
+    const neighbors = adjacency.get(nodeId);
+    if (!neighbors) return 0;
+    let hidden = 0;
+    neighbors.forEach((nb) => {
+      if (!visibleIdSet.has(nb)) hidden += 1;
+    });
+    return hidden;
+  }, [adjacency, visibleIdSet]);
+
+  const expandNodeNeighbors = useCallback((nodeId: string) => {
+    const neighbors = [...(adjacency.get(nodeId) || [])];
+    const newlyAdded = neighbors.filter((nb) => !visibleIdSet.has(nb));
+    if (!newlyAdded.length) {
+      message.info('该概念的关联节点已全部展开');
+      return;
+    }
+    // 单次展开最多增加 12 个最高关联邻点，避免点一次主枢纽把画布瞬间撑爆
+    const sorted = newlyAdded.sort((a, b) => (adjacency.get(b)?.size || 0) - (adjacency.get(a)?.size || 0));
+    const batch = sorted.slice(0, 12);
+    setExtraVisibleIds((prev) => Array.from(new Set([...prev, nodeId, ...batch])));
+    const label = graph?.nodes?.find((n) => n.id === nodeId)?.label || '';
+    const remain = newlyAdded.length - batch.length;
+    message.success(
+      remain > 0
+        ? `已展开「${label}」的 ${batch.length} 个核心关联（还有 ${remain} 个，可再次双击继续展开）`
+        : `已展开「${label}」的 ${batch.length} 个关联概念`,
+    );
+  }, [adjacency, visibleIdSet, graph]);
+
+  const resolveBaseColor = useCallback((n: GraphNode) => {
+    if (colorMode === 'heat') {
+      if (effectiveMode === 'teacher' && n.class_state) {
+        const meta = TEACHER_HEAT_META[n.class_state.status] || TEACHER_HEAT_META.unassessed;
+        return {
+          color: meta.color,
+          borderColor: n.class_state.status === 'high_error' ? '#991b1b' : '#ffffff',
+          borderWidth: n.class_state.status === 'high_error' ? 3 : 2.5,
+        };
+      }
+      if (effectiveMode === 'student' && n.learning_state) {
+        const meta = STUDENT_HEAT_META[n.learning_state.status] || STUDENT_HEAT_META.unassessed;
+        const alert = n.learning_state.status === 'forgetting' || n.learning_state.status === 'weak';
+        return {
+          color: meta.color,
+          borderColor: alert ? (meta.border || '#ffffff') : '#ffffff',
+          borderWidth: alert ? 3 : 2.5,
+        };
+      }
+    }
+    return {
+      color: TYPE_COLORS[n.type || '其他'] || TYPE_COLORS['其他'],
+      borderColor: '#ffffff',
+      borderWidth: 2.5,
+    };
+  }, [colorMode, effectiveMode]);
+
+  const resolveForceNodeStyle = useCallback((n: GraphNode, hasHidden: boolean) => {
+    const base = resolveBaseColor(n);
+    return {
+      ...base,
+      shadowBlur: hasHidden ? 12 : 7,
+      shadowColor: hasHidden ? 'rgba(79, 70, 229, 0.28)' : 'rgba(15, 23, 42, 0.12)',
+    };
+  }, [resolveBaseColor]);
+
+  const nativeTreeRoot = useMemo(
+    () => (graph?.nodes?.length ? buildNativeTree(graph.nodes, graph.edges || [], resolveBaseColor) : null),
+    [graph, resolveBaseColor],
+  );
 
   const stopPolling = useCallback(() => {
     if (pollTimer.current) {
@@ -386,24 +892,82 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
   }, []);
 
   const loadGraph = useCallback(async () => {
+    if (!subjectId) {
+      setGraph(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
+    setPopup(null);
+    setExtraVisibleIds([]);
+    setFocusedNodeId(null);
+    setExpandMode('focus');
     try {
+      if (effectiveMode === 'teacher' && classId) {
+        const res = await getClassAnalyticsGraph(classId, days);
+        const overlay = res?.data;
+        if (overlay?.exists && overlay.graph?.nodes?.length) {
+          setGraph(overlay.graph);
+          setRootCauses(overlay.root_causes || []);
+          const covered = (overlay.summary?.covered_nodes || 0) > 0;
+          setHasHeatData(covered);
+          setColorMode(covered ? 'heat' : 'type');
+          return;
+        }
+      } else if (effectiveMode === 'student' && isLoggedIn()) {
+        const res = await getStudentKnowledgeGraph(subjectId);
+        const overlay = res?.data;
+        if (overlay?.exists && overlay.graph?.nodes?.length) {
+          setGraph(overlay.graph);
+          setRootCauses(overlay.root_causes || []);
+          const covered = (overlay.summary?.covered_nodes || 0) > 0;
+          setHasHeatData(covered);
+          setColorMode(covered ? 'heat' : 'type');
+          return;
+        }
+      }
       const res = await getKnowledgeGraph(subjectId);
-      // 兼容 axios 拦截器解包后的格式
       const data = res?.data ?? res;
       if (data?.nodes) {
         setGraph(data);
+        setRootCauses([]);
+        setHasHeatData(false);
+        setColorMode('type');
       } else {
         setGraph(null);
+        setRootCauses([]);
       }
     } catch {
-      setGraph(null);
+      try {
+        const res = await getKnowledgeGraph(subjectId);
+        const data = res?.data ?? res;
+        setGraph(data?.nodes ? data : null);
+      } catch {
+        setGraph(null);
+      }
+      setRootCauses([]);
+      setHasHeatData(false);
     } finally {
       setLoading(false);
     }
-  }, [subjectId]);
+  }, [subjectId, effectiveMode, classId, days]);
 
-  // 轮询图谱构建状态
+  const handleAction = useCallback((action: KnowledgeGraphAction) => {
+    setPopup(null);
+    if (onAction) {
+      onAction(action);
+      return;
+    }
+    if (action.type === 'explain' || action.type === 'practice' || action.type === 'prereq') {
+      const qs = new URLSearchParams();
+      qs.set('subject', subjectId);
+      if (action.nodeId) qs.set('node', action.nodeId);
+      else qs.set('kp', action.label);
+      qs.set('action', action.type);
+      navigate(`/student?${qs.toString()}`);
+    }
+  }, [navigate, onAction, subjectId]);
+
   const pollBuildStatus = useCallback(async () => {
     try {
       const res: any = await getKnowledgeGraphStatus(subjectId);
@@ -421,7 +985,6 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
         setProgress(null);
         message.error(data?.message || '知识图谱生成失败，请重试');
       } else {
-        // queued / building：展示进度（不显示假百分比）
         const current = data?.processed_chunks;
         const total = data?.total_chunks;
         if (typeof current === 'number' && typeof total === 'number') {
@@ -437,7 +1000,6 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
     }
   }, [subjectId, loadGraph, stopPolling]);
 
-  // 提交图谱构建任务
   const handleBuild = async () => {
     setBuilding(true);
     setProgress(null);
@@ -456,7 +1018,6 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
         setBuilding(false);
         message.error(data?.message || '知识图谱生成失败');
       } else {
-        // 409 已构建中 / busy 等
         setBuilding(false);
         message.warning(data?.message || '任务未能提交，请稍后再试');
       }
@@ -465,12 +1026,8 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
       const detail = error?.response?.data?.message
         || error?.response?.data?.detail
         || '提交知识图谱生成任务失败';
-      // 409 = 已有任务进行中，提示即可
-      if (error?.response?.status === 409) {
-        message.warning(detail);
-      } else {
-        message.error(detail);
-      }
+      if (error?.response?.status === 409) message.warning(detail);
+      else message.error(detail);
     }
   };
 
@@ -479,12 +1036,41 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
     return () => stopPolling();
   }, [loadGraph, stopPolling]);
 
-  // 渲染图谱（首次延迟，避开打开详情页的动画；切换视图立即重画）
+  const applyZoom = useCallback((factor: number) => {
+    if (!chartInstance.current) return;
+    const nextZoom = Math.max(0.3, Math.min(3.0, Number((currentZoomRef.current * factor).toFixed(2))));
+    currentZoomRef.current = nextZoom;
+    chartInstance.current.setOption({ series: [{ zoom: nextZoom }] });
+  }, []);
+
+  const resetViewport = useCallback(() => {
+    if (!chartInstance.current) return;
+    const defaultZoom = view === 'tree' ? 1 : chartLayout(visibleNodes.length, compact).initialZoom;
+    currentZoomRef.current = defaultZoom;
+    chartInstance.current.setOption({ series: [{ zoom: defaultZoom, center: undefined }] });
+  }, [visibleNodes.length, compact, view]);
+
+  const handleSearchLocate = useCallback((nodeId: string | undefined) => {
+    setFocusedNodeId(nodeId || null);
+    if (!nodeId || !graph?.nodes?.length) {
+      setPopup(null);
+      return;
+    }
+    const target = graph.nodes.find((n) => n.id === nodeId);
+    if (!target) return;
+    if (view === 'force' && !visibleIdSet.has(nodeId)) {
+      const neighbors = [...(adjacency.get(nodeId) || [])].slice(0, 6);
+      setExtraVisibleIds((prev) => Array.from(new Set([...prev, nodeId, ...neighbors])));
+    }
+    setPopup({ node: target, left: 16, top: 16 });
+  }, [graph, view, visibleIdSet, adjacency]);
+
   useEffect(() => {
     if (!chartRef.current || !graph?.nodes?.length) return;
-    const placed = view === 'tree' ? buildTreeLayout(graph.nodes, graph.edges || []) : null;
+    if (view === 'force' && !visibleNodes.length) return;
+    if (view === 'tree' && !nativeTreeRoot) return;
 
-    const delay = chartReady.current ? 0 : 400;
+    const delay = chartReady.current ? 0 : 120;
     const timer = setTimeout(() => {
       if (!chartRef.current) return;
       chartReady.current = true;
@@ -493,151 +1079,198 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
         chartInstance.current = echarts.init(chartRef.current);
       }
 
-      const maxWeight = Math.max(...graph.nodes.map(n => n.weight || 1));
-      const minWeight = Math.min(...graph.nodes.map(n => n.weight || 1));
-      const nodeColor = (n: GraphNode) => TYPE_COLORS[n.type || '其他'] || TYPE_COLORS['其他'];
+      const maxWeight = Math.max(...visibleNodes.map((n) => n.weight || 1), 1);
+      const minWeight = Math.min(...visibleNodes.map((n) => n.weight || 1), 1);
       const tooltip = {
         trigger: 'item' as const,
+        backgroundColor: 'rgba(255, 255, 255, 0.96)',
+        borderColor: '#e2e8f0',
+        borderWidth: 1,
+        textStyle: { color: '#1e293b', fontSize: 12 },
         formatter: (params: any) => {
-          // 节点业务数据在 node / value 上；data.label 是 echarts 的标签样式对象。
-          const node = (params.data?.node || params.data?.value) as GraphNode | undefined;
+          const dataObj = params.data || {};
+          if (dataObj.isGroup) {
+            return `<b>${dataObj.name}</b><br/><span style="color:#4f46e5">点击节点可展开 / 收起此分类分支</span>`;
+          }
+          const node = (dataObj.node || dataObj.value) as GraphNode | undefined;
           if (node?.label) {
-            return `<b>${node.label}</b><br/>点击查看原文里的公式和定义`;
+            const lines = [`<b>${node.label}</b>${node.type ? ` <span style="color:#64748b">(${node.type})</span>` : ''}`];
+            if (effectiveMode === 'student' && node.learning_state) {
+              const s = node.learning_state;
+              lines.push(s.mastery_level != null
+                ? `掌握：${s.status_label}（约 ${Math.round(s.mastery_level * 100)}%）`
+                : '掌握：暂未评估');
+            } else if (effectiveMode === 'teacher' && node.class_state) {
+              const c = node.class_state;
+              lines.push(c.attempt_count > 0 && c.wrong_rate != null
+                ? `班级：${c.status_label}（错率 ${Math.round(c.wrong_rate * 100)}%，作答 ${c.attempt_count} 次）`
+                : '班级：暂无作答');
+            }
+            if (view === 'force') {
+              const hiddenN = hiddenCountOf(node.id);
+              if (hiddenN > 0) {
+                lines.push(`<span style="color:#4f46e5">还有 ${hiddenN} 个隐藏关联 · 双击逐层展开</span>`);
+              }
+              lines.push('<span style="color:#64748b">单击查看原文摘录与学习入口</span>');
+            } else {
+              if (dataObj.relation) {
+                lines.push(`关系：${dataObj.relation}`);
+              }
+              if (dataObj.children?.length) {
+                lines.push(`<span style="color:#4f46e5">含 ${dataObj.children.length} 个下级分支 · 单击展开/收起</span>`);
+              }
+              lines.push('<span style="color:#64748b">双击节点查看诊断与学习入口</span>');
+            }
+            return lines.join('<br/>');
           }
           if (params.dataType === 'edge') {
             const edge = params.data;
-            return `${edge.source} —[${edge.relation}]→ ${edge.target}`;
+            const sLabel = visibleNodes.find((n) => n.id === edge.source)?.label || edge.source;
+            const tLabel = visibleNodes.find((n) => n.id === edge.target)?.label || edge.target;
+            return `${sLabel} —[${edge.relation}]→ ${tLabel}`;
           }
           return '';
         },
       };
 
-      const option: echarts.EChartsOption = view === 'tree' && placed
+      const layoutCfg = chartLayout(visibleNodes.length, compact);
+      currentZoomRef.current = view === 'tree' ? 1 : layoutCfg.initialZoom;
+
+      const option: echarts.EChartsOption = view === 'tree' && nativeTreeRoot
         ? {
             tooltip,
-            animationDuration: 400,
+            animationDuration: 350,
+            animationDurationUpdate: 350,
             series: [
               {
-                type: 'graph' as const,
-                layout: 'none' as const,
-                roam: false,
-                draggable: false,
-                left: 0,
-                right: 0,
-                top: 0,
-                bottom: 0,
-                data: graph.nodes.map(n => {
-                  const at = placed.positions.get(n.id) || { x: 36, y: 36 };
-                  const size = symbolSizeForWeight(n.weight, minWeight, maxWeight);
-                  return {
-                    id: n.id,
-                    name: n.label,
-                    x: at.x,
-                    y: at.y,
-                    symbol: 'rect',
-                    symbolSize: [size, size],
-                    itemStyle: { color: nodeColor(n), borderWidth: 0 },
-                    node: n,
-                    value: n,
-                  };
-                }) as any,
-                links: placed.links.map(e => ({
-                  source: e.source,
-                  target: e.target,
-                  relation: e.relation,
-                  label: { show: false, formatter: e.relation, fontSize: 11, color: '#5c6570' },
-                  lineStyle: { width: edgeWidthForWeight(e.weight), curveness: 0 },
-                })) as any,
+                type: 'tree' as const,
+                data: [nativeTreeRoot as any],
+                orient: 'LR',
+                roam: true,
+                zoom: 1,
+                scaleLimit: { min: 0.4, max: 2.5 },
+                top: '6%',
+                bottom: '6%',
+                left: '9%',
+                right: '22%',
+                edgeShape: 'curve',
+                expandAndCollapse: true,
+                initialTreeDepth: 1,
+                lineStyle: {
+                  color: '#cbd5e1',
+                  width: 1.5,
+                  curveness: 0.45,
+                },
                 label: {
-                  show: true,
-                  position: 'right',
+                  position: 'top',
+                  verticalAlign: 'middle',
+                  align: 'center',
                   distance: 8,
                   fontSize: 12,
-                  color: '#3d4450',
-                  width: 136,
-                  overflow: 'truncate',
-                  ellipsis: '…',
+                  fontWeight: 500,
+                  color: '#1e293b',
+                  backgroundColor: 'rgba(255,255,255,0.88)',
+                  padding: [2, 6],
+                  borderRadius: 4,
                 },
-                edgeLabel: { show: false },
-                lineStyle: { color: '#b7bec8', opacity: 0.9 },
+                leaves: {
+                  label: {
+                    position: 'right',
+                    verticalAlign: 'middle',
+                    align: 'left',
+                    distance: 8,
+                    fontSize: 12,
+                    fontWeight: 400,
+                    color: '#334155',
+                    backgroundColor: 'rgba(255,255,255,0.88)',
+                    padding: [2, 6],
+                    borderRadius: 4,
+                  },
+                },
                 emphasis: {
-                  focus: 'adjacency' as const,
-                  label: { show: true },
-                  edgeLabel: { show: true, fontSize: 11, color: '#4b5563' },
-                  lineStyle: { opacity: 1 },
-                },
-                blur: {
-                  itemStyle: { opacity: 0.18 },
-                  label: { opacity: 0.12 },
-                  lineStyle: { opacity: 0.06 },
+                  focus: 'descendant' as const,
+                  lineStyle: { color: '#6366f1', width: 2.2 },
                 },
               },
             ],
           }
         : {
             tooltip,
-            animationDuration: 800,
-            animationEasingUpdate: 'quinticInOut' as any,
+            animationDuration: 300,
             series: [
               {
                 type: 'graph' as const,
                 layout: 'force' as const,
                 roam: true,
                 draggable: true,
-                scaleLimit: { min: 0.25, max: 6 },
-                left: 20,
-                right: 20,
-                top: 16,
+                zoom: layoutCfg.initialZoom,
+                scaleLimit: { min: 0.3, max: 3.0 },
+                left: 30,
+                right: 30,
+                top: 24,
                 bottom: 24,
-                autoCurveness: 0.16,
-                data: graph.nodes.map(n => ({
-                  id: n.id,
-                  name: n.label,
-                  symbolSize: symbolSizeForWeight(n.weight, minWeight, maxWeight),
-                  itemStyle: { color: nodeColor(n) },
-                  node: n,
-                  value: n,
-                })) as any,
-                links: graph.edges.map(e => ({
+                edgeSymbol: ['none', 'arrow'],
+                edgeSymbolSize: [0, 6],
+                autoCurveness: 0.14,
+                data: visibleNodes.map((n) => {
+                  const hiddenN = hiddenCountOf(n.id);
+                  const isHub = n.id === hubId;
+                  return {
+                    id: n.id,
+                    name: formatNodeLabel(n.label, isHub ? 10 : 7),
+                    symbolSize: symbolSizeForWeight(n.weight, minWeight, maxWeight, isHub),
+                    itemStyle: resolveForceNodeStyle(n, hiddenN > 0),
+                    label: isHub
+                      ? { fontSize: 13, fontWeight: 700, color: '#0f172a' }
+                      : undefined,
+                    node: n,
+                    value: n,
+                  };
+                }) as any,
+                links: visibleEdges.map((e) => ({
                   source: e.source,
                   target: e.target,
                   relation: e.relation,
                   value: e.weight || 1,
-                  label: { show: false, formatter: e.relation, fontSize: 11, color: '#5c6570' },
-                  lineStyle: { width: edgeWidthForWeight(e.weight) },
+                  label: { show: false, formatter: e.relation, fontSize: 11, color: '#475569' },
+                  lineStyle: { width: Math.min(2.8, 1.2 + (e.weight || 1) * 0.45) },
                 })) as any,
                 label: {
                   show: true,
                   position: 'bottom',
-                  distance: 4,
-                  fontSize: 11,
-                  color: '#3d4450',
+                  distance: 6,
+                  fontSize: 11.5,
+                  fontWeight: 500,
+                  color: '#1e293b',
+                  lineHeight: 15,
+                  backgroundColor: 'rgba(255, 255, 255, 0.85)',
+                  padding: [2, 5],
+                  borderRadius: 4,
                 },
-                labelLayout: {
-                  hideOverlap: true,
-                  moveOverlap: 'shiftY',
-                },
+                labelLayout: visibleNodes.length > 32
+                  ? { hideOverlap: true, moveOverlap: 'shiftY' }
+                  : { moveOverlap: 'shiftY' },
                 edgeLabel: { show: false },
-                lineStyle: { color: '#c3c8d0', opacity: 0.72 },
+                lineStyle: { color: '#cbd5e1', opacity: 0.85 },
                 force: {
                   initLayout: 'circular',
-                  repulsion: chartLayout(graph.nodes.length).repulsion,
-                  edgeLength: chartLayout(graph.nodes.length).edgeLength,
-                  gravity: chartLayout(graph.nodes.length).gravity,
-                  friction: 0.6,
-                  layoutAnimation: true,
+                  repulsion: layoutCfg.repulsion,
+                  edgeLength: layoutCfg.edgeLength,
+                  gravity: layoutCfg.gravity,
+                  friction: 0.4,
+                  layoutAnimation: false,
                 },
                 emphasis: {
                   focus: 'adjacency' as const,
-                  scale: 1.08,
-                  label: { show: true },
-                  edgeLabel: { show: true, fontSize: 11, color: '#4b5563' },
-                  lineStyle: { opacity: 1 },
+                  scale: 1.12,
+                  label: { show: true, fontWeight: 600 },
+                  edgeLabel: { show: true, fontSize: 11, color: '#4f46e5', backgroundColor: '#ffffff', padding: [1, 4], borderRadius: 3 },
+                  lineStyle: { color: '#6366f1', opacity: 1, width: 2.2 },
                 },
                 blur: {
-                  itemStyle: { opacity: 0.16 },
-                  label: { opacity: 0.08 },
-                  lineStyle: { opacity: 0.05 },
+                  itemStyle: { opacity: 0.2 },
+                  label: { opacity: 0.15 },
+                  lineStyle: { opacity: 0.08 },
                 },
               },
             ],
@@ -646,27 +1279,63 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
       chartInstance.current.setOption(option, true);
       chartInstance.current.resize();
 
-      chartInstance.current.on('click', (params: any) => {
-        const node = (params.data?.node || params.data?.value) as GraphNode | undefined;
-        if (!node?.label) {
-          setPopup(null);
-          return;
+      if (view === 'force' && focusedNodeId) {
+        const idx = visibleNodes.findIndex((n) => n.id === focusedNodeId);
+        if (idx >= 0) {
+          chartInstance.current.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: idx });
         }
+      }
+
+      const openPopupAt = (node: GraphNode, params: any) => {
         const ev = params.event?.event || params.event;
         const wrap = chartWrapRef.current;
-        const viewLeft = wrap?.scrollLeft || 0;
-        const viewTop = wrap?.scrollTop || 0;
         const viewW = wrap?.clientWidth || 640;
         const viewH = wrap?.clientHeight || 480;
         const ox = Number(ev?.offsetX ?? 24);
         const oy = Number(ev?.offsetY ?? 24);
-        const boxW = 320;
-        const boxH = 260;
-        let left = ox + 12;
-        let top = oy + 12;
-        if (left + boxW > viewLeft + viewW - 8) left = Math.max(viewLeft + 8, ox - boxW - 12);
-        if (top + boxH > viewTop + viewH - 8) top = Math.max(viewTop + 8, oy - boxH - 12);
+        const boxW = 350;
+        const boxH = 300;
+        let left = ox + 14;
+        let top = oy + 14;
+        if (left + boxW > viewW - 8) left = Math.max(8, ox - boxW - 14);
+        if (top + boxH > viewH - 8) top = Math.max(8, oy - boxH - 14);
         setPopup({ node, left, top });
+      };
+
+      chartInstance.current.off('graphroam');
+      chartInstance.current.on('graphroam', (params: any) => {
+        if (typeof params?.zoom === 'number') {
+          currentZoomRef.current = Math.max(0.3, Math.min(3.0, currentZoomRef.current * params.zoom));
+        }
+      });
+
+      chartInstance.current.off('click');
+      chartInstance.current.on('click', (params: any) => {
+        const dataObj = params.data || {};
+        if (dataObj.isGroup) return;
+        const node = (dataObj.node || dataObj.value) as GraphNode | undefined;
+        if (!node?.label) {
+          setPopup(null);
+          return;
+        }
+        // 层级树视图里，有子节点的分支单击由 ECharts 原生展开/收起；叶子节点单击直接弹诊断卡
+        if (view === 'tree' && dataObj.children?.length) {
+          return;
+        }
+        openPopupAt(node, params);
+      });
+
+      chartInstance.current.off('dblclick');
+      chartInstance.current.on('dblclick', (params: any) => {
+        const dataObj = params.data || {};
+        if (dataObj.isGroup) return;
+        const node = (dataObj.node || dataObj.value) as GraphNode | undefined;
+        if (!node?.id) return;
+        if (view === 'force') {
+          expandNodeNeighbors(node.id);
+        } else {
+          openPopupAt(node, params);
+        }
       });
     }, delay);
 
@@ -675,14 +1344,252 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
       chartInstance.current?.dispose();
       chartInstance.current = null;
     };
-  }, [graph, view]);
+  }, [graph, visibleNodes, visibleEdges, hubId, view, nativeTreeRoot, colorMode, compact, effectiveMode, resolveForceNodeStyle, hiddenCountOf, expandNodeNeighbors, focusedNodeId]);
 
-  // 窗口resize适配
   useEffect(() => {
     const handleResize = () => chartInstance.current?.resize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  const totalNodes = graph?.nodes?.length || 0;
+  const shownNodes = visibleNodes.length;
+  const chartHeight = view === 'tree' ? (compact ? 450 : 540) : chartLayout(visibleNodes.length, compact).height;
+
+  const body = loading ? (
+    <div style={{ padding: 24 }}>
+      <SkeletonCard height={40} />
+      <div style={{ height: 12 }} />
+      <SkeletonCard height={260} />
+    </div>
+  ) : !graph?.nodes?.length ? (
+    <Empty
+      description={
+        <div>
+          <div>暂无知识图谱</div>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            点击右上角「生成知识图谱」后，可叠加{effectiveMode === 'teacher' ? '班级错题热力与前置溯因' : '个人掌握度热力、前置溯因与检索增强'}
+          </Text>
+        </div>
+      }
+      style={{ padding: 36 }}
+    />
+  ) : (
+    <>
+      {rootCauses.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 10 }}
+          message={`图谱前置溯因（发现 ${rootCauses.length} 处前置薄弱链）`}
+          description={
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              {rootCauses.slice(0, 2).map((rc) => {
+                const firstPre = rc.weak_prerequisites?.[0]?.concept;
+                return (
+                  <Space key={rc.concept} size={6} wrap>
+                    <Text style={{ fontSize: 12 }}>{rc.summary}</Text>
+                    {firstPre && (
+                      <Button
+                        size="small"
+                        type="link"
+                        style={{ padding: 0, height: 'auto' }}
+                        onClick={() => handleAction(
+                          effectiveMode === 'teacher'
+                            ? { type: 'teacher_assign', label: firstPre }
+                            : { type: 'prereq', label: firstPre },
+                        )}
+                      >
+                        {effectiveMode === 'teacher' ? `给全班补练「${firstPre}」` : `先补前置「${firstPre}」`}
+                      </Button>
+                    )}
+                  </Space>
+                );
+              })}
+            </Space>
+          }
+        />
+      )}
+
+      {/* 顶部控制条：视图 + 热力配色 + 渐进展开切换 + 搜索定位 + 缩放复位 */}
+      <div className="kg-view-bar" style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+        <Space size={8} wrap>
+          <Segmented
+            size="small"
+            value={view}
+            onChange={(next) => {
+              setPopup(null);
+              setView(next as GraphView);
+            }}
+            options={[
+              { label: '关系网', value: 'force' },
+              { label: '层级树', value: 'tree' },
+            ]}
+          />
+          {effectiveMode !== 'concept' && (
+            <Segmented
+              size="small"
+              value={colorMode}
+              onChange={(next) => setColorMode(next as ColorMode)}
+              options={[
+                { label: effectiveMode === 'teacher' ? '班级热力' : '掌握热力', value: 'heat' },
+                { label: '概念类型', value: 'type' },
+              ]}
+            />
+          )}
+          {view === 'force' && isLargeGraph && (
+            <Segmented
+              size="small"
+              value={expandMode}
+              onChange={(next) => {
+                setPopup(null);
+                const modeNext = next as ExpandMode;
+                setExpandMode(modeNext);
+                if (modeNext === 'focus') setExtraVisibleIds([]);
+              }}
+              options={[
+                { label: <Space size={4}><CompressOutlined /><span>聚焦核心 ({shownNodes}/{totalNodes})</span></Space>, value: 'focus' },
+                { label: <Space size={4}><ExpandOutlined /><span>展开全部 ({totalNodes})</span></Space>, value: 'all' },
+              ]}
+            />
+          )}
+        </Space>
+
+        <Space size={6} wrap>
+          <Select
+            size="small"
+            showSearch
+            allowClear
+            placeholder="搜索定位概念…"
+            style={{ width: 175 }}
+            value={focusedNodeId || undefined}
+            optionFilterProp="label"
+            onChange={(val) => handleSearchLocate(val as string | undefined)}
+            options={graph.nodes.map((n) => ({ value: n.id, label: n.label }))}
+          />
+          <Tooltip title="放大">
+            <Button size="small" icon={<ZoomInOutlined />} onClick={() => applyZoom(1.22)} />
+          </Tooltip>
+          <Tooltip title="缩小">
+            <Button size="small" icon={<ZoomOutOutlined />} onClick={() => applyZoom(0.82)} />
+          </Tooltip>
+          <Tooltip title="居中适配视野">
+            <Button size="small" icon={<AimOutlined />} onClick={resetViewport}>适配</Button>
+          </Tooltip>
+        </Space>
+      </div>
+
+      <div className="kg-chart-wrap is-force" ref={chartWrapRef}>
+        <div
+          ref={chartRef}
+          className="kg-chart"
+          style={{ height: chartHeight }}
+        />
+        {popup && (
+          <NodePopup
+            node={popup.node}
+            left={popup.left}
+            top={popup.top}
+            effectiveMode={effectiveMode}
+            showExpandBtn={view === 'force'}
+            hiddenNeighborCount={hiddenCountOf(popup.node.id)}
+            onExpandNeighbors={expandNodeNeighbors}
+            onAction={handleAction}
+            onClose={() => setPopup(null)}
+          />
+        )}
+      </div>
+
+      <div style={{ marginTop: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <Space size={6} wrap>
+          {colorMode === 'heat' && effectiveMode === 'teacher'
+            ? Object.entries(TEACHER_HEAT_META).map(([k, v]) => (
+                <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: '#475569' }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: v.color }} />
+                  {v.label}
+                </span>
+              ))
+            : colorMode === 'heat' && effectiveMode === 'student'
+              ? Object.entries(STUDENT_HEAT_META).map(([k, v]) => (
+                  <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: '#475569' }}>
+                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: v.color }} />
+                    {v.label}
+                  </span>
+                ))
+              : Object.entries(TYPE_COLORS)
+                  .filter(([k]) => graph.nodes.some((n) => (n.type || '其他') === k))
+                  .map(([type, color]) => (
+                    <span key={type} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: '#475569' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: color }} />
+                      {type}
+                    </span>
+                  ))}
+        </Space>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {effectiveMode !== 'concept' && !hasHeatData && colorMode === 'heat'
+            ? '尚无匹配到图谱节点的作答记录，完成练习后节点会自动按掌握情况着色'
+            : view === 'tree'
+              ? '单击分支节点可平滑展开/收起下级；单击叶子或双击分支查看诊断与学习入口'
+              : isLargeGraph && expandMode === 'focus'
+                ? '默认从核心主题连通展开；双击带光晕节点可逐层扩出关联，单击查看诊断'
+                : '滚轮缩放、拖拽平移；单击节点查看诊断与学习入口，点「适配」回中'}
+        </Text>
+      </div>
+    </>
+  );
+
+  const actions = (
+    <Space>
+      {building ? (
+        <Button size="small" disabled icon={<Spin size="small" />}>
+          {progress && progress.total > 0
+            ? `正在抽取知识关系：${progress.current} / ${progress.total}`
+            : '知识图谱生成中...'}
+        </Button>
+      ) : graph?.nodes?.length ? (
+        <Popconfirm
+          title="重新生成知识图谱会调用大模型，是否继续？"
+          onConfirm={handleBuild}
+          okText="生成"
+          cancelText="取消"
+        >
+          <Button size="small" icon={<PlayCircleOutlined />}>重新生成</Button>
+        </Popconfirm>
+      ) : (
+        <Popconfirm
+          title="生成知识图谱需要调用大模型，是否继续？"
+          onConfirm={handleBuild}
+          okText="生成"
+          cancelText="取消"
+        >
+          <Button size="small" type="primary" icon={<PlayCircleOutlined />}>生成知识图谱</Button>
+        </Popconfirm>
+      )}
+      <Button size="small" icon={<ReloadOutlined />} onClick={loadGraph} loading={loading}>
+        刷新
+      </Button>
+    </Space>
+  );
+
+  if (compact) {
+    return (
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <Space size={6}>
+            <ApiOutlined />
+            <Text strong>知识图谱</Text>
+            {graph?.stats && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {view === 'force' && shownNodes < totalNodes ? `当前 ${shownNodes} / 共 ${totalNodes} 节点` : `${totalNodes} 节点`} · {graph.stats.edge_count} 边
+              </Text>
+            )}
+          </Space>
+          {actions}
+        </div>
+        {body}
+      </div>
+    );
+  }
 
   return (
     <Card
@@ -690,117 +1597,17 @@ const KnowledgeGraph: React.FC<{ subjectId: string }> = ({ subjectId }) => {
       title={
         <Space>
           <ApiOutlined />
-          知识图谱
+          {effectiveMode === 'teacher' ? '班级知识图谱热力视图' : '知识图谱（学情热力与概念关系）'}
           {graph?.stats && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              {graph.stats.node_count}节点 / {graph.stats.edge_count}边
+              {view === 'force' && shownNodes < totalNodes ? `聚焦 ${shownNodes} / 共 ${totalNodes} 节点` : `${totalNodes} 节点`} / {graph.stats.edge_count} 边
             </Text>
           )}
         </Space>
       }
-      extra={
-        <Space>
-          {building ? (
-            <Button size="small" disabled icon={<Spin size="small" />}>
-              {progress && progress.total > 0
-                ? `正在抽取知识关系：${progress.current} / ${progress.total}`
-                : '知识图谱生成中...'}
-            </Button>
-          ) : graph?.nodes?.length ? (
-            <Popconfirm
-              title="生成知识图谱需要调用大模型并可能产生API费用，是否继续？"
-              onConfirm={handleBuild}
-              okText="生成"
-              cancelText="取消"
-            >
-              <Button size="small" icon={<PlayCircleOutlined />}>
-                重新生成
-              </Button>
-            </Popconfirm>
-          ) : (
-            <Popconfirm
-              title="生成知识图谱需要调用大模型并可能产生API费用，是否继续？"
-              onConfirm={handleBuild}
-              okText="生成"
-              cancelText="取消"
-            >
-              <Button size="small" type="primary" icon={<PlayCircleOutlined />}>
-                生成知识图谱
-              </Button>
-            </Popconfirm>
-          )}
-          <Button size="small" icon={<ReloadOutlined />} onClick={loadGraph} loading={loading}>
-            刷新
-          </Button>
-        </Space>
-      }
+      extra={actions}
     >
-      {loading ? (
-        <div style={{ padding: 24 }}>
-          <SkeletonCard height={40} />
-          <div style={{ height: 12 }} />
-          <SkeletonCard height={280} />
-          <div style={{ height: 12 }} />
-          <SkeletonCard height={30} width="60%" />
-        </div>
-      ) : !graph?.nodes?.length ? (
-        <Empty
-          description={
-            <div>
-              <div>暂无知识图谱</div>
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                点击右上角"生成知识图谱"手动生成（需先构建知识库）
-              </Text>
-            </div>
-          }
-          style={{ padding: 40 }}
-        />
-      ) : (
-        <>
-          <div className="kg-view-bar">
-            <Segmented
-              size="small"
-              value={view}
-              onChange={(next) => {
-                setPopup(null);
-                setView(next as GraphView);
-                if (chartWrapRef.current) {
-                  chartWrapRef.current.scrollTop = 0;
-                  chartWrapRef.current.scrollLeft = 0;
-                }
-              }}
-              options={[
-                { label: '球线', value: 'force' },
-                { label: '树状', value: 'tree' },
-              ]}
-            />
-          </div>
-          <div className={`kg-chart-wrap ${view === 'tree' ? 'is-tree' : 'is-force'}`} ref={chartWrapRef}>
-            <div
-              ref={chartRef}
-              className="kg-chart"
-              style={view === 'tree' && treeLayout
-                ? { width: treeLayout.width, height: treeLayout.height }
-                : { height: chartLayout(graph.nodes.length).height }}
-            />
-            {popup && (
-              <NodePopup node={popup.node} left={popup.left} top={popup.top} onClose={() => setPopup(null)} />
-            )}
-          </div>
-          <div style={{ marginTop: 12 }}>
-            <Space size={4} wrap>
-              {Object.entries(TYPE_COLORS).filter(([k]) => graph.nodes.some(n => (n.type || '其他') === k)).map(([type, color]) => (
-                <Tag key={type} color={color}>{type}</Tag>
-              ))}
-            </Space>
-            <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-              {view === 'tree'
-                ? '方块从左到右。滚动查看，悬停看相邻关系，点击看原文'
-                : '滚轮缩放，拖拽平移。悬停看关系，点击看原文'}
-            </Text>
-          </div>
-        </>
-      )}
+      {body}
     </Card>
   );
 };

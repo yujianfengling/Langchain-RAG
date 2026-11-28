@@ -119,6 +119,10 @@ export interface WrongQuestion {
   error_code?: string | null;
   error_label?: string | null;
   error_note?: string | null;
+  /** 教师改判与评语（存在时展示给学生） */
+  teacher_regraded?: boolean;
+  teacher_reason?: string | null;
+  teacher_graded_at?: string | null;
 }
 
 export interface ReviewTask {
@@ -257,6 +261,153 @@ export const getKnowledgeTracing = async (subjectId: string, knowledgePoint?: st
 export const getMastery = async (subjectId: string)
   : Promise<ApiResponse<{ summary: any; points: MasteryPoint[] }>> => {
   return apiClient.get('/student/mastery', { params: { subject_id: subjectId } });
+};
+
+// ============ 统一学情反馈与个人知识图谱 ============
+
+export interface PrerequisiteEntry {
+  concept: string;
+  depth: number;
+  relation: string;
+  relation_label: string;
+  path: string[];
+  mastery_level?: number | null;
+  evidence_count?: number;
+  wrong_count?: number;
+  wrong_rate?: number | null;
+  attempt_count?: number;
+  enough_data?: boolean;
+  kp_id?: string | null;
+}
+
+export interface PrerequisiteDiagnosis {
+  target: string;
+  matched_concept?: string | null;
+  has_graph_links: boolean;
+  root_cause_type: 'prerequisite_gap' | 'application_or_error' | 'unverified_prerequisite' | 'no_graph_link' | string;
+  weak_prerequisites: PrerequisiteEntry[];
+  unassessed_prerequisites: PrerequisiteEntry[];
+  solid_prerequisites: PrerequisiteEntry[];
+  downstream_concepts: string[];
+  summary: string | null;
+}
+
+export interface StudentFeedbackPoint {
+  knowledge_point_id?: string | null;
+  knowledge_point: string;
+  stage: 'weak' | 'forgetting' | 'developing' | 'consolidated' | 'pending' | string;
+  stage_label: string;
+  mastery_level: number | null;
+  evidence_count: number;
+  correct_count: number;
+  wrong_count: number;
+  consolidated: boolean;
+  spaced_review: boolean;
+  bkt_p_known: number | null;
+  bkt_confidence: number | null;
+  retrievability: number | null;
+  due_date: string | null;
+  lapses: number;
+  prerequisite_diagnosis?: PrerequisiteDiagnosis | null;
+}
+
+export interface ForgettingAlert {
+  knowledge_point_id?: string | null;
+  knowledge_point: string;
+  retrievability: number | null;
+  due_date: string | null;
+  overdue: boolean;
+  lapses: number;
+  reps: number;
+  stability?: number | null;
+}
+
+export interface ErrorCauseStat {
+  code: string;
+  label: string;
+  count: number;
+  ratio: number;
+  advice?: string;
+}
+
+export interface TeacherFeedbackItem {
+  attempt_id: string;
+  question_id: string;
+  stem: string;
+  knowledge_point: string;
+  user_answer?: string | null;
+  user_answer_text?: string | null;
+  original_is_correct: boolean | null;
+  teacher_is_correct: boolean;
+  teacher_reason: string;
+  teacher_graded_at?: string | null;
+}
+
+export interface StudentFeedbackSummary {
+  subject_id: string;
+  days: number;
+  generated_at: string;
+  headline: string;
+  next_action: {
+    kind: string;
+    label: string;
+    concept: string;
+    reason: string;
+  } | null;
+  summary: any;
+  knowledge_points: StudentFeedbackPoint[];
+  root_causes: {
+    knowledge_point: string;
+    mastery_level: number | null;
+    wrong_count: number;
+    weak_prerequisites: PrerequisiteEntry[];
+    summary: string;
+  }[];
+  forgetting_alerts: ForgettingAlert[];
+  error_causes: ErrorCauseStat[];
+  error_cause_total: number;
+  progress: {
+    recent_7d: { attempts: number; correct: number; wrong: number; accuracy: number | null };
+    previous_7d: { attempts: number; correct: number; wrong: number; accuracy: number | null };
+    accuracy_delta: number | null;
+    recovered_questions: number;
+    recovered_kps: string[];
+    daily_trend: { date: string; attempts: number; correct: number; wrong: number; accuracy: number | null }[];
+  };
+  teacher_feedback: TeacherFeedbackItem[];
+  has_knowledge_graph: boolean;
+}
+
+export interface StudentGraphOverlay {
+  exists: boolean;
+  subject_id: string;
+  graph: { nodes: any[]; edges: any[]; stats?: any } | null;
+  summary: {
+    total_nodes: number;
+    covered_nodes: number;
+    weak_count: number;
+    developing_count: number;
+    mastered_count: number;
+    forgetting_count: number;
+    unassessed_count: number;
+  };
+  root_causes: {
+    concept: string;
+    mastery_level: number;
+    wrong_count: number;
+    weak_prerequisites: PrerequisiteEntry[];
+    summary: string;
+  }[];
+}
+
+export const getStudentFeedback = async (subjectId: string, days = 30)
+  : Promise<ApiResponse<StudentFeedbackSummary>> => {
+  return apiClient.get('/student/feedback', { params: { subject_id: subjectId, days } });
+};
+
+export const getStudentKnowledgeGraph = async (subjectId: string)
+  : Promise<ApiResponse<StudentGraphOverlay>> => {
+  return apiClient.get('/student/knowledge-graph', { params: { subject_id: subjectId } });
 };
 
 // ============ 自测作答 ============

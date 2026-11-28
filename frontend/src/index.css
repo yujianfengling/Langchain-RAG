@@ -104,7 +104,7 @@ button, input, textarea, select { font: inherit; }
   overflow: visible;
   min-height: min-content;
 }
-.app-page-wide { width: min(1360px, 100%); }
+.app-page-wide { width: min(1440px, 100%); padding: 20px 24px 36px; }
 .app-page-narrow { width: min(980px, 100%); }
 .page-header {
   display: flex;
@@ -244,6 +244,7 @@ button, input, textarea, select { font: inherit; }
 .kg-node-pop-head {
   display: flex;
   align-items: flex-start;
+  justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
 }

@@ -470,8 +470,27 @@ const StudentCourses: React.FC<StudentCoursesProps> = ({
                       <Alert
                         type={r.is_correct ? 'success' : 'error'}
                         showIcon
-                        message={r.is_correct ? '回答正确' : '回答错误'}
-                        description={r.explanation}
+                        message={
+                          <Space size={6} wrap>
+                            <span>{r.is_correct ? '回答正确' : '回答错误'}</span>
+                            {r.teacher_regraded && <Tag color="blue">教师已改判</Tag>}
+                          </Space>
+                        }
+                        description={
+                          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                            {r.teacher_regraded && (
+                              <Text style={{ fontSize: 12 }}>
+                                <strong>教师批改评语：</strong>
+                                {r.teacher_reason || '教师已复核本题判定'}
+                                {r.orig_is_correct !== undefined && r.orig_is_correct !== null
+                                  ? `（原判定：${r.orig_is_correct ? '正确' : '错误'}）`
+                                  : ''}
+                              </Text>
+                            )}
+                            {r.ai_feedback && <Text type="secondary" style={{ fontSize: 12 }}>AI 评判：{r.ai_feedback}</Text>}
+                            {r.explanation && <div>{r.explanation}</div>}
+                          </Space>
+                        }
                       />
                     )}
                   </Space>

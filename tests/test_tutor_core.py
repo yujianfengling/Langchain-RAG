@@ -366,26 +366,29 @@ def test_practice_prompt_forbids_pre_quiz_summary():
 
 
 def test_practice_turn_never_streams_pre_tool_narration(monkeypatch):
-    # 回归：练习轮里模型把"一、概括"整段讲解当前言流式播出，学生先读一遍课才看到题
+    # 回归：出题轮（无论点「做练习」还是在 chat/explain 中直接说“出 3 道练习题”）
+    # 都不得把"一、概括"整段讲解当前言流式播出；而普通问答（非出题）继续保持 live 流式。
     preamble = "一、概括\n岩石力学是研究岩石的力学性质的一门理论与应用科学。"
     final = "练习题已生成：共 3 道，请在卡片上作答。"
 
     class FakeProvider:
-        def __init__(self):
+        def __init__(self, tool_name="generate_practice", round2_text=final):
             self.round = 0
+            self.tool_name = tool_name
+            self.round2_text = round2_text
 
         def stream_with_tools(self, messages, **kwargs):
             self.round += 1
             if self.round == 1:
                 yield {"type": "content", "text": preamble}
                 yield {"type": "end", "content": preamble, "tool_calls": [
-                    {"id": "c1", "function": {"name": "generate_practice",
-                                              "arguments": '{"topic": "岩石力学"}'}}]}
+                    {"id": "c1", "function": {"name": self.tool_name,
+                                              "arguments": '{"topic": "岩石力学", "query": "岩石力学"}'}}]}
             else:
-                yield {"type": "content", "text": final}
-                yield {"type": "end", "content": final, "tool_calls": []}
+                yield {"type": "content", "text": self.round2_text}
+                yield {"type": "end", "content": self.round2_text, "tool_calls": []}
 
-    def _run(ability):
+    def _run(ability, msg="出 3 道练习题", tool_name="generate_practice", round2_text=final):
         tag = uuid.uuid4().hex[:8]
         monkeypatch.setattr(
             tutor_agent.material_scope, "build_scope",
@@ -395,21 +398,35 @@ def test_practice_turn_never_streams_pre_tool_narration(monkeypatch):
             lambda s: {"mode": s.get("mode", "all"), "label": s.get("label", ""),
                        "selected": [], "invalid": []})
         monkeypatch.setattr("services.model_service.get_model_provider",
-                            lambda model=None: FakeProvider())
+                            lambda model=None: FakeProvider(tool_name, round2_text))
         monkeypatch.setattr(
             tutor_tools, "execute_tool",
             lambda name, args, ctx: {"ok": True, "questions": [{"id": "q1"}],
-                                     "question_count": 1, "topic": "岩石力学"})
+                                     "question_count": 3, "topic": "岩石力学"}
+            if name == "generate_practice" else {"ok": True, "context_used": True, "evidence_count": 1, "sources": []})
         events = list(tutor_agent.stream_turn("prac_u_" + tag, "prac_s_" + tag,
-                                              "出 3 道练习题", ability=ability))
+                                              msg, ability=ability))
         deltas = "".join(e.get("content") or "" for e in events if e["type"] == "delta")
         done = next(e for e in events if e["type"] == "done")
         return deltas, done
 
-    deltas, done = _run("practice")
-    assert "概括" not in deltas, "练习轮的工具前文本不得流式播出"
-    assert final in deltas and done["answer"] == final
+    for ab in ("practice", "chat", "explain"):
+        deltas, done = _run(ab, "出 3 道练习题")
+        assert "概括" not in deltas, f"{ab} 能力下的纯出题轮不得流式播出工具前讲解"
+        assert final in deltas and done["answer"] == final
 
-    deltas, done = _run("chat")
-    assert preamble in deltas, "其他能力保持 live 流式（done 时由终答替换）"
+    # 若模型在出题后第 2 轮仍擅自输出大段讲义，兜底守卫应收敛为简洁一句话
+    long_lecture = "### 一、岩石力学核心概念\n" + ("岩石力学研究岩石在荷载作用下的变形与破坏规律。" * 10)
+    deltas, done = _run("chat", "给我出几道题", round2_text=long_lecture)
+    assert "###" not in done["answer"]
+    assert len(done["answer"]) < 100
+    assert "岩石力学" in done["answer"] and "3 道" in done["answer"]
+
+    # 普通问答（非纯出题）继续保持 live 流式（done 时由终答替换）
+    deltas, done = _run("chat", "什么是岩石力学？", tool_name="search_materials")
+    assert preamble in deltas, "普通问答能力应保持 live 流式"
     assert done["answer"] == final
+
+    # 同时要求讲解和出题时，不应误判为纯出题
+    assert tutor_agent._is_pure_practice_request("给我出3道题") is True
+    assert tutor_agent._is_pure_practice_request("先讲一下岩石力学，再出2道题") is False

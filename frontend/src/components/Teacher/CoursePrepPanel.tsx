@@ -9,7 +9,7 @@ import {
 import { TeacherCourse } from '../../api/teacher';
 import { getKnowledgeStats } from '../../api/knowledge';
 import MaterialsPanel from './MaterialsPanel';
-import LessonPlansPanel from './LessonPlansPanel';
+import LessonPlansPanel, { type RemedialLessonPlanDraft } from './LessonPlansPanel';
 import ClassesPanel from './ClassesPanel';
 import { EmptyBlock } from './common';
 
@@ -24,6 +24,7 @@ export interface CoursePrepPanelProps {
   courseTitle?: string;
   initialTab?: PrepTab;
   focusPlanId?: string;
+  planDraft?: RemedialLessonPlanDraft | null;
   onSelectCourse: (id: string) => void;
   onBackToList: () => void;
   onCreateCourse: () => void;
@@ -40,7 +41,7 @@ export interface CoursePrepPanelProps {
  * 不再要求老师在多个菜单之间来回选课。
  */
 const CoursePrepPanel: React.FC<CoursePrepPanelProps> = ({
-  courses, loading, courseId, courseTitle, initialTab, focusPlanId,
+  courses, loading, courseId, courseTitle, initialTab, focusPlanId, planDraft,
   onSelectCourse, onBackToList, onCreateCourse, onChanged,
 }) => {
   const [tab, setTab] = useState<PrepTab>(initialTab || 'materials');
@@ -211,6 +212,7 @@ const CoursePrepPanel: React.FC<CoursePrepPanelProps> = ({
                 courseId={course.id}
                 courseTitle={course.title}
                 focusPlanId={focusPlanId}
+                prefillDraft={planDraft}
                 onBack={onBackToList}
               />
             ),

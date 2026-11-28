@@ -44,13 +44,11 @@ QUESTION_PROMPT = """你是一名命题老师，请依据下面的课程资料�
 }}
 
 ## 规则
-1. type 只用 single_choice（单选）或 judgement（判断题用 options=["正确","错误"]）。
-2. 每题必须有唯一正确答案，答案必须能在资料里找到依据。
-3. **每题的知识点必须与该题题干实际考查的内容一致**：题目只能考查所选知识点，
-   不要给同一批题目统一填同一个知识点；若某题无法归入上方任一知识点，
-   就不要出这道题。
-4. 若上方给出多个知识点，请分散覆盖，不要全部集中在同一个知识点上。
-5. 若资料不足，就少出题（可以少于 {count} 道），不要编造知识点。
+1. type 只用 `single_choice`（4 个互斥且有区分度的选项，干扰项尽量反映真实易错点）或 `judgement`（options 固定 `["正确","错误"]`）。
+2. 每题必须自洽且有唯一正确答案，答案可在上方课程资料中找到依据；题干与解析面向学生，禁止出现“知识库/检索片段/证据”等系统词。
+3. **每题的知识点必须与该题实际考查内容一致**：不要把同一批题机械套用同一个知识点；无法归入上方任一知识点则不要出这道题。
+4. 若上方给出多个知识点，请均衡覆盖，不要全部集中在同一点。
+5. 若资料不足则如实少出题（可少于 {count} 道），严禁编造知识点。
 """
 
 
@@ -475,15 +473,18 @@ def list_student_assignments(user_id: str, course_id: Optional[str] = None,
 
 
 def _student_attempt_map(user_id: str, question_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """学生对本次作业各题的作答结果（已判分；用于学生端显示自己是否做过）"""
-    from services import quiz_service
+    """学生对本次作业各题的作答结果（已判分；含教师改判与评语回流）"""
+    from services import learning_data, quiz_service
     if not question_ids:
         return {}
     conn = quiz_service._get_db()
     try:
+        learning_data.ensure_columns(conn, "quiz_attempts")
         marks = ",".join("?" for _ in question_ids)
         rows = conn.execute(
-            f"""SELECT question_id, is_correct, attempt_no, created_at, grade_status
+            f"""SELECT question_id, is_correct, attempt_no, created_at, grade_status,
+                       orig_is_correct, teacher_is_correct, teacher_reason, teacher_graded_at,
+                       ai_feedback
                 FROM quiz_attempts WHERE user_id=? AND question_id IN ({marks})
                 ORDER BY attempt_no ASC""",
             [user_id, *question_ids]).fetchall()
@@ -491,10 +492,22 @@ def _student_attempt_map(user_id: str, question_ids: List[str]) -> Dict[str, Dic
         conn.close()
     out: Dict[str, Dict[str, Any]] = {}
     for r in rows:
-        out[r["question_id"]] = {"is_correct": bool(r["is_correct"]),
-                                 "attempt_no": r["attempt_no"],
-                                 "grade_status": r["grade_status"],
-                                 "created_at": r["created_at"]}
+        item: Dict[str, Any] = {
+            "is_correct": None if r["is_correct"] is None else bool(r["is_correct"]),
+            "attempt_no": r["attempt_no"],
+            "grade_status": r["grade_status"],
+            "created_at": r["created_at"],
+            "ai_feedback": r["ai_feedback"],
+        }
+        if r["teacher_is_correct"] is not None:
+            item["teacher_regraded"] = True
+            item["teacher_is_correct"] = bool(r["teacher_is_correct"])
+            item["teacher_reason"] = r["teacher_reason"]
+            item["teacher_graded_at"] = r["teacher_graded_at"]
+            item["orig_is_correct"] = (
+                None if r["orig_is_correct"] is None else bool(r["orig_is_correct"])
+            )
+        out[r["question_id"]] = item
     return out
 
 

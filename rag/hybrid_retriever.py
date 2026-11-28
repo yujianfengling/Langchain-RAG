@@ -70,6 +70,9 @@ _retrieval_info: Dict[str, Any] = {
     "bm25_available": False,
     "vector_result_count": 0,
     "bm25_result_count": 0,
+    "graph_expanded": False,
+    "graph_entities": [],
+    "graph_neighbors": [],
     "fallback_reason": None,
 }
 
@@ -85,6 +88,9 @@ def get_retrieval_diagnostics() -> Dict[str, Any]:
             "bm25_available": bool,
             "vector_result_count": int,
             "bm25_result_count": int,
+            "graph_expanded": bool,
+            "graph_entities": list,
+            "graph_neighbors": list,
             "fallback_reason": str|None,
         }
     """
@@ -101,6 +107,9 @@ def _reset_retrieval_diagnostics() -> None:
             "bm25_available": False,
             "vector_result_count": 0,
             "bm25_result_count": 0,
+            "graph_expanded": False,
+            "graph_entities": [],
+            "graph_neighbors": [],
             "candidate_count": 0,
             "rerank_available": False,
             "fallback_reason": None,
@@ -304,6 +313,7 @@ def retrieve(
     use_vector: bool = True,
     rrf_k: int = 60,
     candidate_k: Optional[int] = None,
+    use_graph: Optional[bool] = None,
 ) -> List[Dict[str, Any]]:
     """
     执行混合检索：向量检索 + BM25关键词检索，RRF融合排序
@@ -369,6 +379,39 @@ def retrieve(
         else:
             with _retrieval_lock:
                 _retrieval_info["bm25_available"] = False
+
+    # 2.5 轻量 GraphRAG 概念扩展（零额外 LLM，无图谱时直接跳过）
+    graph_on = (
+        os.getenv("GRAPH_RAG_ENABLED", "true").strip().lower() not in ("0", "false", "no")
+        if use_graph is None else bool(use_graph)
+    )
+    if graph_on and subject_id:
+        try:
+            from services.graph_bridge import expand_query_with_graph
+            g_exp = expand_query_with_graph(query, subject_id, max_hops=1, max_neighbors=4)
+            expanded_q = g_exp.get("expanded_query") or ""
+            if expanded_q:
+                g_k = min(fetch_k, max(top_k, 4))
+                g_results: List[Dict[str, Any]] = []
+                if use_bm25 and subject_id in _bm25_retrievers:
+                    for item in _bm25_search(expanded_q, subject_id, g_k):
+                        g_results.append({**item, "retrieval_type": "graph_bm25"})
+                elif use_vector:
+                    vec_extra, vec_err = _vector_search(expanded_q, subject_id, g_k, threshold)
+                    if vec_err is None:
+                        for item in vec_extra:
+                            g_results.append({**item, "retrieval_type": "graph_vector"})
+                if g_results:
+                    result_lists.append(g_results)
+                    with _retrieval_lock:
+                        _retrieval_info["graph_expanded"] = True
+                        _retrieval_info["graph_entities"] = g_exp.get("matched_nodes") or []
+                        _retrieval_info["graph_neighbors"] = g_exp.get("neighbor_nodes") or []
+                    logger.debug(
+                        f"图谱扩展检索命中: entities={g_exp.get('matched_nodes')} "
+                        f"neighbors={g_exp.get('neighbor_nodes')} results={len(g_results)}")
+        except Exception as e:
+            logger.debug(f"图谱扩展检索跳过: {e}")
 
     # 3. 结果融合
     if not result_lists:

@@ -186,6 +186,14 @@ def _t_get_knowledge_map(ctx: ToolContext) -> Dict[str, Any]:
     }
 
 
+def _t_query_concept_graph(ctx: ToolContext, concept: Optional[str] = None,
+                           depth: int = 1) -> Dict[str, Any]:
+    """查询学科知识图谱：概念前置依赖、关联公式/定义及学生当前前置掌握溯因。"""
+    from services import graph_bridge
+    return graph_bridge.query_concept_context(
+        ctx.subject_id, concept=concept, user_id=ctx.user_id, depth=depth)
+
+
 def _t_get_node(ctx: ToolContext, node_id: str) -> Dict[str, Any]:
     from services import knowledge_map
     node = knowledge_map.get_node(ctx.subject_id, node_id)
@@ -658,6 +666,18 @@ TOOLS: Dict[str, ToolSpec] = {
         _schema({}), _t_get_knowledge_map,
         abilities=(tutor_session.ABILITY_CHAT, tutor_session.ABILITY_EXPLAIN,
                    tutor_session.ABILITY_MAP, tutor_session.ABILITY_ORGANIZE)),
+    "query_concept_graph": ToolSpec(
+        "query_concept_graph", "正在查询知识图谱关系",
+        "查询本学科知识图谱中的概念关系（前置条件/推导/定义/包含/应用）、原文公式摘录，"
+        "以及该学生在相关前置概念上的薄弱溯因。不传 concept 时返回图谱核心概念概览。",
+        _schema({
+            "concept": {"type": "string", "description": "要查询的核心概念名（可空，空则返回核心概念概览）"},
+            "depth": {"type": "integer", "description": "展开跳数，1 或 2，默认 1"},
+        }),
+        _t_query_concept_graph,
+        abilities=(tutor_session.ABILITY_CHAT, tutor_session.ABILITY_EXPLAIN,
+                   tutor_session.ABILITY_PRACTICE, tutor_session.ABILITY_MAP,
+                   tutor_session.ABILITY_ORGANIZE)),
     "get_node": ToolSpec(
         "get_node", "正在读取知识点",
         "读取地图中某个知识点的详情（目标、来源资料、学习状态）。",

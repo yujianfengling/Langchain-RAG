@@ -165,6 +165,45 @@ def get_card(user_id: str, subject_id: str, knowledge_point_id: str) -> Optional
         conn.close()
 
 
+def list_cards(user_id: str, subject_id: Optional[str] = None,
+               now: Optional[datetime] = None) -> list[Dict[str, Any]]:
+    """列出用户 FSRS 卡片，并附带当前时刻的记忆保持率 retrievability。"""
+    if not user_id:
+        return []
+    now_dt = _now_dt(now)
+    conn = _conn()
+    try:
+        if subject_id:
+            rows = conn.execute(
+                "SELECT * FROM fsrs_cards WHERE user_id=? AND subject_id=? ORDER BY due ASC",
+                (user_id, subject_id)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM fsrs_cards WHERE user_id=? ORDER BY due ASC",
+                (user_id,)).fetchall()
+    finally:
+        conn.close()
+
+    out: list[Dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        stability = float(item.get("stability") or 0)
+        elapsed_days: Optional[float] = None
+        ret: Optional[float] = None
+        last_review = item.get("last_review")
+        if last_review and stability > 0:
+            try:
+                last_dt = datetime.fromisoformat(str(last_review)[:19])
+                elapsed_days = round(max(0.0, (now_dt - last_dt).total_seconds() / 86400.0), 2)
+                ret = round(retrievability(elapsed_days, stability), 4)
+            except ValueError:
+                pass
+        item["elapsed_days"] = elapsed_days
+        item["retrievability"] = ret
+        out.append(item)
+    return out
+
+
 def next_interval(user_id: str, subject_id: str, knowledge_point_id: str,
                   rating: int = RATING_GOOD,
                   now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -203,5 +242,5 @@ def next_interval(user_id: str, subject_id: str, knowledge_point_id: str,
 __all__ = [
     "WEIGHTS", "RATING_AGAIN", "RATING_HARD", "RATING_GOOD", "RATING_EASY",
     "retrievability", "interval_days", "new_card", "review_card",
-    "get_card", "next_interval",
+    "get_card", "list_cards", "next_interval",
 ]

@@ -129,7 +129,13 @@ const UserProfileDashboard: React.FC<UserProfileDashboardProps> = ({
         </Row>
 
         {/* 知识掌握分布 */}
-        {stats && (
+        {stats && (() => {
+          const distTotal = Math.max(
+            1,
+            stats.mastery_distribution.strong + stats.mastery_distribution.medium + stats.mastery_distribution.weak,
+          );
+          const pct = (n: number) => Math.round((n / distTotal) * 100);
+          return (
           <div style={{ marginBottom: 24 }}>
             <Text strong style={{ marginBottom: 12, display: 'block' }}>知识掌握分布</Text>
             <Row gutter={16}>
@@ -137,7 +143,7 @@ const UserProfileDashboard: React.FC<UserProfileDashboardProps> = ({
                 <div style={{ textAlign: 'center' }}>
                   <Progress
                     type="circle"
-                    percent={stats.mastery_distribution.strong}
+                    percent={pct(stats.mastery_distribution.strong)}
                     size={80}
                     strokeColor="#52c41a"
                     format={() => stats.mastery_distribution.strong}
@@ -151,7 +157,7 @@ const UserProfileDashboard: React.FC<UserProfileDashboardProps> = ({
                 <div style={{ textAlign: 'center' }}>
                   <Progress
                     type="circle"
-                    percent={stats.mastery_distribution.medium}
+                    percent={pct(stats.mastery_distribution.medium)}
                     size={80}
                     strokeColor="#faad14"
                     format={() => stats.mastery_distribution.medium}
@@ -165,7 +171,7 @@ const UserProfileDashboard: React.FC<UserProfileDashboardProps> = ({
                 <div style={{ textAlign: 'center' }}>
                   <Progress
                     type="circle"
-                    percent={stats.mastery_distribution.weak}
+                    percent={pct(stats.mastery_distribution.weak)}
                     size={80}
                     strokeColor="#ff4d4f"
                     format={() => stats.mastery_distribution.weak}
@@ -177,7 +183,8 @@ const UserProfileDashboard: React.FC<UserProfileDashboardProps> = ({
               </Col>
             </Row>
           </div>
-        )}
+          );
+        })()}
 
         {/* 平均掌握度 */}
         {stats && (
