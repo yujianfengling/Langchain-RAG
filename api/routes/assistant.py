@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from api.deps import require_teacher
+from api.routes.competition_ai_policy import require_external_ai
 from config.path_config import get_data_dir
 from utils.logger import logger
 
@@ -245,7 +246,7 @@ def _dispatch(name: str, args: dict, state: dict, user: str) -> Any:
         if name == "generate_paper":
             if not s["class"] or not s["quiz"]:
                 return {"ok": False, "error": "当前数据没有可用的班级或测验，无法出卷"}
-            body = AiPaperRequest(class_id=s["class"], quiz_id=s["quiz"],
+            body = AiPaperRequest(dataset=dataset, class_id=s["class"], quiz_id=s["quiz"],
                                   class_label=s["class"], quiz_label=s["quiz"],
                                   style=args.get("style") or "变式提升", count=int(args.get("count") or 10),
                                   custom=args.get("custom") or "", weak=s["weakest"],
@@ -262,7 +263,7 @@ def _dispatch(name: str, args: dict, state: dict, user: str) -> Any:
             return {"ok": True, "title": paper.get("title"), "sections": len(paper.get("sections", [])), "file": ref}
         if not s["class"] or not s["quiz"]:
             return {"ok": False, "error": "当前数据没有可用的班级或测验，无法生成教案"}
-        body = LessonPlanRequest(quiz_label=s["quiz"], class_label=s["class"],
+        body = LessonPlanRequest(dataset=dataset, quiz_label=s["quiz"], class_label=s["class"],
                                    theme=(s["weakest"][0]["name"] if s["weakest"] else "讲评"),
                                    minutes=int(args.get("minutes") or 40), custom=args.get("custom") or "",
                                    standards=[], textbook=ctx["textbook"], exam_analysis=s["weakest"],
@@ -282,13 +283,13 @@ def _dispatch(name: str, args: dict, state: dict, user: str) -> Any:
 
 @router.post("/competition/agent/chat")
 async def agent_chat(body: ChatRequest, user: str = Depends(require_teacher)) -> JSONResponse:
-    from llm import get_llm
-
     scope = body.scope
+    if scope and scope.dataset == "official":
+        require_external_ai(scope.dataset)
     if not scope or not all((scope.dataset, scope.quiz_id, scope.class_id)):
         raise HTTPException(400, "请先在考试分析中选择班级和测验，再打开 AI 助手。")
-    if _rows(scope.dataset, "manifest.json") is None:
-        raise HTTPException(404, "当前评测数据找不到，请重新导入或切换到可用数据。")
+    require_external_ai(scope.dataset)
+    from llm import get_llm
     quizzes = _rows(scope.dataset, "quizzes.json") or []
     classes = _rows(scope.dataset, "classes.json") or []
     if not any(q["id"] == scope.quiz_id for q in quizzes) or not any(c["id"] == scope.class_id for c in classes):

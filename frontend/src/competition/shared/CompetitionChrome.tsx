@@ -6,7 +6,6 @@ import { useAuth } from '../../context/AuthContext';
 import { getBundle, getSourceLabel, getSourceNotice, isPrivateCompetitionData } from '../dataSource';
 import { analysisReturnPath, assistantPath } from './teacherContext';
 import ErrorBoundary from './ErrorBoundary';
-import ImportPanel from './ImportPanel';
 
 const NAV = [
   { path: '/class-analytics', label: '考试分析' },
@@ -18,11 +17,11 @@ const NAV = [
 const CompetitionChrome: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { logout } = useAuth();
+  const { logout, status } = useAuth();
+  const importing = location.pathname === '/data-import';
   const source = getSourceLabel();
   const official = isPrivateCompetitionData();
   const [notice, setNotice] = useState<string | null>(getSourceNotice());
-  const [importOpen, setImportOpen] = useState(false);
   useEffect(() => {
     const onFail = (e: Event) => setNotice((e as CustomEvent<string>).detail || null);
     const onReady = () => setNotice(null);
@@ -36,6 +35,10 @@ const CompetitionChrome: React.FC<{ children: React.ReactNode }> = ({ children }
 
   const go = (path: string) => {
     if (location.pathname === path) return;
+    if (importing) {
+      window.location.assign(path);
+      return;
+    }
     const current = new URLSearchParams(location.search);
     if (path === '/assistant') {
       const fromExam = location.pathname === '/class-analytics';
@@ -79,7 +82,8 @@ const CompetitionChrome: React.FC<{ children: React.ReactNode }> = ({ children }
           ))}
         </nav>
         <div className="comp-right">
-          <Button size="small" type="text" icon={<UploadOutlined />} onClick={() => setImportOpen(true)}>导入评测数据</Button>
+          {!importing && status === 'authenticated' && <Button size="small" type="text" icon={<UploadOutlined />}
+            onClick={() => window.location.assign('/data-import')}>导入评测数据</Button>}
           <Dropdown trigger={['click']} menu={{ items: [{ key: 'logout', icon: <LogoutOutlined />,
             label: '退出登录', onClick: () => { void logout(); } }] }}>
             <button type="button" className="comp-account" aria-label="账号菜单">教师 <DownOutlined /></button>
@@ -87,16 +91,15 @@ const CompetitionChrome: React.FC<{ children: React.ReactNode }> = ({ children }
         </div>
       </header>
       {getBundle()?.manifest.independentEvaluation && <div className="comp-source">{source}</div>}
-      {!official && <button type="button" className="comp-source is-demo"
+      {!importing && !official && <button type="button" className="comp-source is-demo"
         onClick={() => window.location.assign('/class-analytics?source=official')}>
         {source} · 切换官方数据
       </button>}
-      {notice && <div className="comp-notice" role="status">
+      {!importing && notice && <div className="comp-notice" role="status">
         官方数据暂未就绪，当前显示演示样例：{notice}
         <button type="button" onClick={() => window.location.reload()}>重试</button>
       </div>}
       <main className="comp-main"><ErrorBoundary>{children}</ErrorBoundary></main>
-      <ImportPanel open={importOpen} onClose={() => setImportOpen(false)} />
     </div>
   );
 };

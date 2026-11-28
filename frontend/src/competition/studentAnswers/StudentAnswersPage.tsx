@@ -1,3 +1,4 @@
+import { canUseExternalAi, LOCAL_DATA_NOTICE } from '../shared/externalAi';
 import { quizLabel } from '../shared/ids';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -17,7 +18,7 @@ import StudentProfile from './StudentProfile';
 import TeachingSourceLink from '../curriculum/TeachingSourceLink';
 import TextbookDrawer from '../shared/TextbookDrawer';
 import StepDiffDrawer from './StepDiffDrawer';
-import { getBundle, isRealData } from '../dataSource';
+import { getBundle, getDatasetId, isRealData } from '../dataSource';
 import type { AnswerEvent, RealAnswer } from '../dataSource';
 import type { TextbookSource } from '../shared/types';
 
@@ -179,14 +180,15 @@ const StudentAnswersPage: React.FC = () => {
   const advice = question?.kpId ? <LearningAdvice key={`${studentId}|${quizId}|${questionId}|${recordId || ''}`}
     kpId={question.kpId} studentId={studentId} questionId={questionId} nodeId={quizId}
     recordId={recordId || answer?.sourceRecordId || event?.recordId} onOpenTextbook={setTextbook} /> : null;
+  const externalAi = canUseExternalAi();
   const analyzeAnswer = async () => {
-    if (!answer || !question) return;
+    if (!externalAi || !answer || !question) return;
     setAiBusy(true); setAiError('');
     try {
       const token = getToken();
       const response = await fetch('/api/competition/analyze-answer', { method: 'POST', headers: {
         'Content-Type': 'application/json', ...(token ? { 'X-User-Token': token } : {}),
-      }, body: JSON.stringify({ stem: question.stem, answer: answer.finalAnswer || '', steps: answer.steps.map(s => s.text),
+      }, body: JSON.stringify({ dataset: getDatasetId(), stem: question.stem, answer: answer.finalAnswer || '', steps: answer.steps.map(s => s.text),
         score: answer.score, full_score: answer.fullScore,
         rubric: answer.scoringPoints.map(s => ({ point: s.label, earned: s.earnedScore, full: s.fullScore, evidence: s.evidence })) }) });
       const payload = await response.json();
@@ -332,9 +334,10 @@ const StudentAnswersPage: React.FC = () => {
                       <div><Text className="teacher-muted">最终填答</Text><div><Text strong>{answer.finalAnswer || finding.final_answer || '未提供'}</Text></div></div>
                     </div> : <Paragraph><Text className="teacher-muted">最终答案：</Text>{answer.finalAnswer || '未单独记录最终填答'}</Paragraph>}
                     <div className="teacher-actions teacher-ai-analysis">
-                      <Button icon={<RobotOutlined aria-hidden />} onClick={() => void analyzeAnswer()} loading={aiBusy}>AI 分析这份答卷</Button>
-                      <Tooltip title="依据本题原答卷与评分点生成，结论供教师核对"><QuestionCircleOutlined aria-hidden className="teacher-note-hint" /></Tooltip>
+                      <Button icon={<RobotOutlined aria-hidden />} disabled={!externalAi} onClick={() => void analyzeAnswer()} loading={aiBusy}>AI 分析这份答卷</Button>
+                      <Tooltip title={externalAi ? "依据本题原答卷与评分点生成，结论供教师核对" : LOCAL_DATA_NOTICE}><QuestionCircleOutlined aria-hidden className="teacher-note-hint" /></Tooltip>
                     </div>
+                    {!externalAi && <Text type="secondary">{LOCAL_DATA_NOTICE}</Text>}
                     {aiError && <Alert type="warning" showIcon message={aiError} />}
                     {aiAnalysis && <Alert className="teacher-ai-result" type="info" showIcon message="AI 答卷分析" description={<div style={{ whiteSpace: 'pre-wrap' }}>{aiAnalysis}</div>} />}
                   </section>

@@ -27,6 +27,7 @@ import MarkdownIt from 'markdown-it';
 import { getToken } from '../../api/authState';
 import { getBundle, getDatasetId } from '../dataSource';
 import { QUIZZES, quizLabel } from '../shared/ids';
+import { canUseExternalAi, LOCAL_DATA_NOTICE } from '../shared/externalAi';
 import './assistant.css';
 
 /* ------------------------------------------------------------------ */
@@ -184,6 +185,7 @@ const MessageView: React.FC<{
 const AssistantPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const bundle = getBundle();
+  const externalAi = canUseExternalAi();
   const dataset = bundle?.manifest.source === 'official' ? getDatasetId() : '';
   const selectedClass = bundle?.classes.find((c) => c.id === searchParams.get('classId'));
   const selectedQuiz = bundle?.quizzes.find((q) => q.id === searchParams.get('quizId'));
@@ -238,7 +240,7 @@ const AssistantPage: React.FC = () => {
    */
   const send = useCallback(async (raw: string, opts?: { optimistic?: boolean }) => {
     const text = raw.trim();
-    if (!text || sendingRef.current) return;
+    if (!externalAi || !text || sendingRef.current) return;
     const optimisticEnabled = opts?.optimistic !== false;
     sendingRef.current = true;
     setSending(true);
@@ -281,7 +283,7 @@ const AssistantPage: React.FC = () => {
       sendingRef.current = false;
       setSending(false);
     }
-  }, [refreshConversations, dataset, classId, quizId]);
+  }, [refreshConversations, dataset, classId, quizId, externalAi]);
 
   const stopGenerating = useCallback(() => {
     abortRef.current?.abort();
@@ -553,7 +555,7 @@ const AssistantPage: React.FC = () => {
           />
           <span className="assistant-topbar-title">{activeTitle || '新对话'}</span>
           <div className="assistant-topbar-right">
-              <Tooltip title="学情问题按当前数据、班级和测验读取">
+            <Tooltip title="学情问题按当前数据、班级和测验读取">
               <span className={'assistant-data-badge' + (hasData ? '' : ' is-empty')}>
                 <DatabaseOutlined /> {dataBadgeText}
               </span>
@@ -570,6 +572,9 @@ const AssistantPage: React.FC = () => {
           </div>
         </header>
 
+        {!externalAi && <Alert type="info" showIcon style={{ margin: '12px 16px 0' }}
+          message={bundle && dataset ? '赛题数据受本地保护' : '外部 AI 需要导入评测数据'}
+          description={LOCAL_DATA_NOTICE} />}
         <div className="assistant-scroll" ref={scrollRef}>
           {loadingConv ? (
             <div className="assistant-center"><Spin tip="正在加载对话…" /></div>
@@ -584,6 +589,7 @@ const AssistantPage: React.FC = () => {
                     key={q.text}
                     type="button"
                     className="assistant-example-chip"
+                    disabled={!externalAi}
                     onClick={() => { void send(q.prompt); }}
                   >
                     <span className="assistant-example-icon" aria-hidden="true">{q.icon}</span>
@@ -638,13 +644,13 @@ const AssistantPage: React.FC = () => {
                 key={cmd.label}
                 type="button"
                 className="assistant-chip"
-                disabled={sending}
+                disabled={sending || !externalAi}
                 onClick={() => { void send(cmd.prompt); }}
               >
                 {cmd.label}
               </button>
             ))}
-            <button type="button" className="assistant-chip is-prefill" disabled={sending} onClick={prefillKnowledge}>
+            <button type="button" className="assistant-chip is-prefill" disabled={sending || !externalAi} onClick={prefillKnowledge}>
               <EditOutlined /> 知识点讲解
             </button>
           </div>
@@ -654,9 +660,9 @@ const AssistantPage: React.FC = () => {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onInputKeyDown}
-              placeholder="问点什么，例如：这次考试哪些知识点最需要重讲？（Enter 发送，Shift+Enter 换行）"
+              placeholder={externalAi ? '问点什么，例如：这次考试哪些知识点最需要重讲？（Enter 发送，Shift+Enter 换行）' : '导入合成或自定义评测数据后可提问'}
               autoSize={{ minRows: 1, maxRows: 6 }}
-              disabled={sending}
+              disabled={sending || !externalAi}
               aria-label="消息输入框"
             />
             {sending ? (
@@ -674,7 +680,7 @@ const AssistantPage: React.FC = () => {
                 shape="circle"
                 className="assistant-send-btn"
                 icon={<SendOutlined />}
-                disabled={!input.trim()}
+                disabled={!externalAi || !input.trim()}
                 onClick={() => { void send(input); }}
                 aria-label="发送"
               />

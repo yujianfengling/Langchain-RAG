@@ -1,3 +1,4 @@
+import { LOCAL_DATA_NOTICE } from '../shared/externalAi';
 import { useState } from 'react';
 import { Button } from 'antd';
 import type { LiveEvidenceEntry } from '../livePretest/LivePretest';
@@ -46,12 +47,13 @@ export default function FollowUpComparison({ original, attempt, coverageNote, ex
   original: ProfileRecord;
   attempt: LiveEvidenceEntry;
   coverageNote: string;
-  explain: () => Promise<string>;
+  explain?: () => Promise<string>;
 }) {
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function ask() {
+    if (!explain) return;
     setBusy(true);
     setError('');
     try { setNote(await explain()); }
@@ -74,7 +76,7 @@ export default function FollowUpComparison({ original, attempt, coverageNote, ex
       <p><b>这次建议</b> {changes[attempt.kind]}</p>
       <p>{attempt.supports}</p>
       <p><b>仍需保留</b> {coverageNote} 原测验评分保持不变。</p>
-      <Button type="link" loading={busy} onClick={() => void ask()}>{note ? '重新说明调整理由' : '请 AI 说明调整理由'}</Button>
+      <Button type="link" title={!explain ? LOCAL_DATA_NOTICE : undefined} disabled={!explain} loading={busy} onClick={() => void ask()}>{note ? '重新说明调整理由' : '请 AI 说明调整理由'}</Button>
       {note && <p className="followup-ai-note">{note}</p>}
       {error && <p role="alert">{error}</p>}
     </div>

@@ -148,6 +148,18 @@ def _rubric_scores(text: str) -> Dict[str, float]:
     return kv
 
 
+def _transfer_review(q: Optional[dict]) -> str:
+    """复查条件按题型生成：1 分选择题用「独立选择＋口头解释」，不套用解答题的步骤完整度。
+    口头解释属后续教学安排，不改变原题官方评分。"""
+    if q and q.get("question_type") == "选择题" and float(q.get("full_score") or 1) <= 1:
+        stem = q.get("name") or q.get("stem") or ""
+        m = re.search(r"(\d+)\s*\(", stem)
+        phrase = f"括号外的 {m.group(1)} 应分别乘哪两项" if m else "每个选项对错的依据"
+        return (f"先独立选择，再请学生解释{phrase}；选对且解释清楚后，再安排下一道变式。"
+                "口头解释属于后续教学安排，不改变原题官方评分。")
+    return "变式若仍≥80% 且步骤完整，则记录为已观察的迁移表现；否则回到具体失分步。"
+
+
 def _mismatch(e: dict) -> Optional[dict]:
     """步骤末行与最终填答不一致：从官方两个字段直接比对，不推测原因。"""
     step_text = (e.get("answer_text") or "").replace("−", "-")
@@ -507,7 +519,7 @@ def build_diagnoses(src: Path, csv_dir: Path, textbook_map: dict) -> dict:
                         {"order": 1, "title": f"先独立做 {pick_q['material_id']}，不提示",
                          "when_stuck": "先提示找出与已做题不同的条件，再提示可迁移的方法。"},
                     ],
-                    "review": "变式若仍≥80% 且步骤完整，则记录为已观察的迁移表现；否则回到具体失分步。",
+                    "review": _transfer_review(pick_q),
                 }
             else:
                 resource = {
@@ -515,7 +527,7 @@ def build_diagnoses(src: Path, csv_dir: Path, textbook_map: dict) -> dict:
                     "reason": f"表现较好，但本节点暂无可用的同指标新题；先用 {card_id} 拓展，需教师补充变式资源。",
                     "steps": [{"order": 1, "title": f"用 {card_id} 的方法解一道教师补充的新情境题",
                                "when_stuck": "先提示找出新情境的已知量，再提示可迁移的方法。"}],
-                    "review": "变式若仍≥80% 且步骤完整，则记录为已观察的迁移表现；否则回到具体失分步。",
+                    "review": _transfer_review(None),
                 }
             inference = f"已观察题目上的得分率 {rate:.0%}，表现稳定；是否具备迁移能力仍需新题验证。"
             observe = "安排一道同指标但条件变化的变式，观察能否把方法用到新情境。"

@@ -1,7 +1,9 @@
+import { canUseExternalAi, LOCAL_DATA_NOTICE } from '../shared/externalAi';
 import { useState } from 'react';
 import { Alert, Button, Select } from 'antd';
 import { getToken } from '../../api/authState';
 import type { Bundle } from '../dataSource';
+import { getDatasetId } from '../dataSource';
 import TeachingSourceLink from '../curriculum/TeachingSourceLink';
 import { questionLabel } from '../shared/teacherContext';
 import { getPrepContext, rehearse } from './prepRehearsal';
@@ -59,12 +61,14 @@ function ClassroomPrompt({ classId, evidence, quizId, probeId }: {
   const [error, setError] = useState('');
   const record = evidence.answer.sourceRecordId;
   if (!record) return null;
+  const externalAi = canUseExternalAi();
   const generate = async () => {
+    if (!externalAi) return;
     setBusy(true); setError('');
     try {
       const response = await fetch('/api/competition/prep-prompt', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Token': getToken() || '' },
-        body: JSON.stringify({ quiz_id: quizId, class_id: classId, question_id: evidence.answer.questionId, record_id: record, probe_id: probeId }),
+        body: JSON.stringify({ dataset: getDatasetId(), quiz_id: quizId, class_id: classId, question_id: evidence.answer.questionId, record_id: record, probe_id: probeId }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : '暂时无法拟定追问');
@@ -73,7 +77,8 @@ function ClassroomPrompt({ classId, evidence, quizId, probeId }: {
     finally { setBusy(false); }
   };
   return <div className="prep-prompt">
-    <Button type="link" loading={busy} onClick={() => void generate()}>{prompt ? '再拟一句追问' : '请 AI 拟一句课堂追问'}</Button>
+    <Button type="link" disabled={!externalAi} loading={busy} onClick={() => void generate()}>{prompt ? '再拟一句追问' : '请 AI 拟一句课堂追问'}</Button>
+    {!externalAi && <small>{LOCAL_DATA_NOTICE}</small>}
     {prompt && <p><b>课堂追问草稿</b> {prompt}</p>}
     {error && <p role="alert">{error}</p>}
   </div>;

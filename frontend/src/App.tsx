@@ -6,6 +6,7 @@ import { ReloadOutlined, RobotOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import LoginRequired from './components/LoginRequired';
 import CompetitionChrome from './competition/shared/CompetitionChrome';
+import ImportPanel from './competition/shared/ImportPanel';
 import { getBundle } from './competition/dataSource';
 import { assistantPath } from './competition/shared/teacherContext';
 import { CourseProvider } from './context/CourseContext';
@@ -82,6 +83,7 @@ const AppRoutes: React.FC = () => {
               {/* 智慧学伴比赛版：一级导航三页 + 账号页 */}
               <Route path="/" element={<Navigate to={COMPETITION_HOME} replace />} />
               <Route path="/class-analytics" element={<Protected><ClassAnalyticsPage /></Protected>} />
+              <Route path="/data-import" element={<Protected><ImportPanel /></Protected>} />
               <Route path="/student-answers" element={<Protected><StudentAnswersPage /></Protected>} />
               <Route path="/curriculum" element={<Protected><CurriculumPage /></Protected>} />
               {/* AI 助手：独立聊天页，支持 ?prompt=...&autosend=1 深链；不进主导航三入口。 */}
@@ -119,7 +121,7 @@ const AppRoutes: React.FC = () => {
 const AssistantEntry: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  if (location.pathname === '/assistant') return null;
+  if (location.pathname === '/assistant' || location.pathname === '/data-import') return null;
   const current = new URLSearchParams(location.search);
   const fromExam = location.pathname === '/class-analytics';
   const bundle = getBundle();

@@ -1,6 +1,10 @@
 .import-toolbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 10px 0; }
 .import-ai { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #46506a; }
 .import-present { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.import-page { max-width: 1040px; margin: 0 auto; }
+.import-steps { margin: 18px 0 24px; }
+.import-files { color: #46506a; overflow-wrap: anywhere; }
+.import-result { flex-wrap: wrap; row-gap: 6px; }
+.import-result .import-toolbar { margin: 0; gap: 8px; }
 .import-history { margin-top: 14px; border-top: 1px dashed var(--color-border, #d9d9d9); padding-top: 10px; }
-.import-history-head { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: #46506a; margin-bottom: 6px; }
-.import-history .ant-table { font-size: 12px; }
+.import-history summary { cursor: pointer; color: #46506a; }

@@ -337,7 +337,7 @@ async def root():
 
     此前这里恒定返回 JSON，导致即使托管了前端、访问根路径也看不到平台。
     """
-    dist_index = Path(__file__).resolve().parent.parent / "frontend" / "dist" / "index.html"
+    dist_index = _DIST_DIR / "index.html"
     if _APP_ROLE and dist_index.is_file():
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url=f"/{_APP_ROLE}", status_code=307)
@@ -541,7 +541,9 @@ async def health_ready():
 # 会安静跳过并提示，不影响原有开发流程。
 #
 # 注意：catch-all 路由必须**最后注册**，否则会抢走前面所有 API 路由。
-_DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+_DIST_DIR = Path(os.environ["COMPETITION_FRONTEND_DIST_DIR"]) if os.getenv("COMPETITION_FRONTEND_DIST_DIR") else (
+    Path(__file__).resolve().parent.parent / "frontend" / "dist"
+)
 
 if (_DIST_DIR / "index.html").is_file():
     import mimetypes

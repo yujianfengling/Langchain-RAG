@@ -1,5 +1,6 @@
+import { canUseExternalAi, LOCAL_DATA_NOTICE } from '../shared/externalAi';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Input, Modal } from 'antd';
+import { Alert, Button, Input, Modal, Typography } from 'antd';
 import { getToken } from '../../api/authState';
 import type { RealAnswer, TextbookPageRef } from '../dataSource';
 import { getDatasetId } from '../dataSource';
@@ -91,7 +92,10 @@ export default function ReviewDraft({ questionId, quizId, quizName, classId, ans
     return () => cancelAnimationFrame(frame);
   }, [focusCard]);
 
+  const externalAi = canUseExternalAi();
+
   async function generate() {
+    if (!externalAi) return;
     setBusy(true);
     setError('');
     setNotice('');
@@ -147,7 +151,8 @@ export default function ReviewDraft({ questionId, quizId, quizName, classId, ans
   return <div className="source-draft">
     <h3 className="teacher-lecture-heading" ref={heading} tabIndex={-1}>教师讲评卡</h3>
     <div className="source-actions">
-      <Button loading={busy} disabled={!!editor || saving} onClick={() => void generate()}>{result ? '重新生成讲评' : '用这页教材备一段讲评'}</Button>
+      <Button loading={busy} disabled={!externalAi || !!editor || saving} onClick={() => void generate()}>{result ? '重新生成讲评' : '用这页教材备一段讲评'}</Button>
+      {!externalAi && <Typography.Text type="secondary">{LOCAL_DATA_NOTICE}</Typography.Text>}
       {!editor && !saved && <Button type="text" disabled={busy || loadingSaved} onClick={() => setEditor(emptyDraft)}>自己填写</Button>}
       {saved && !editor && <>
         <Button type="primary" onClick={() => setPreview(true)}>预览讲评卡</Button>

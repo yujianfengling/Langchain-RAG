@@ -31,7 +31,7 @@ export default function ProfileEvidence({ profile, focusQuestionId, onOpenAnswer
         {evidence.genuineLosses.length === 0 ? <p className="teacher-muted">未找到可与题目总分对上的失分评分点，可查看原答卷核对。</p>
           : <><ul>{priorities.slice(0, 4).map(({ record, point, loss }) => <li key={`${record.key}|${point.id}`}>
             <Button type="link" onClick={() => onOpenAnswer(record)}>{questionLabel(record.questionId)}</Button>
-            <span>{point.label} · 失 {loss} 分</span>
+            <span>评分点「{point.label}」{point.earnedScore === 0 ? `未得分（失 ${loss} 分）` : `失 ${loss} 分`}</span>
           </li>)}</ul>
           {priorities.length > 4 && <p className="teacher-muted">优先显示当前题和失分较多的评分点，其余见本次考点表现。</p>}</>}
       </div>

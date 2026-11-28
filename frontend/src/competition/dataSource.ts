@@ -64,6 +64,7 @@ export interface Reconciliation {
 }
 
 export interface Bundle {
+  externalAiAllowed?: boolean;
   manifest: BundleManifest;
   classes: ClassInfo[];
   topics: Topic[];
@@ -272,6 +273,7 @@ export async function initDataSource(): Promise<void> {
   if (_loaded) return;
   _loaded = true;
   if (typeof window === 'undefined') return;
+  if (window.location.pathname === '/data-import') return;
   const mode = new URLSearchParams(window.location.search).get('source') || 'official';
   if (mode === 'demo') return;
   if (mode !== 'real' && mode !== 'official' && mode !== 'imported') return;
@@ -296,6 +298,7 @@ export async function initDataSource(): Promise<void> {
       if (!res.ok) throw new Error(`受控接口 HTTP ${res.status}`);
       const payload = await res.json();
       bundle = {
+        externalAiAllowed: payload.external_ai_allowed,
         manifest: payload.manifest, classes: payload.classes, topics: payload.topics,
         quizzes: payload.quizzes, students: payload.students, kps: payload.kps,
         questions: payload.questions, answers: payload.answers, events: payload.events,

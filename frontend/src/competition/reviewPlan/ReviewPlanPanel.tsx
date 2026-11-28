@@ -1,3 +1,4 @@
+import { canUseExternalAi, LOCAL_DATA_NOTICE } from '../shared/externalAi';
 import { questionLabel } from '../shared/teacherContext';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Collapse, Drawer, Empty, Input, List, Modal, Radio, Select, Space, Spin, Table, Tooltip, Typography } from 'antd';
@@ -83,6 +84,7 @@ const ReviewPlanPanel: React.FC<{
   const topics = bundle?.topics || [];
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
+  const externalAi = canUseExternalAi();
   const readUi = () => {
     try { return JSON.parse(sessionStorage.getItem(PLAN_UI_KEY) || '{}'); } catch { return {}; }
   };
@@ -296,6 +298,7 @@ const ReviewPlanPanel: React.FC<{
     return segs.sort((a, b) => (a.rate ?? 1.01) - (b.rate ?? 1.01) || b.lostCount - a.lostCount).slice(0, 3);
   }, [plan, bundle, quizId, classId]);
   const generateVariants = async (seg: ReviewSegment) => {
+    if (!externalAi) return;
     const key = seg.indicator; const scope = requestKey;
     const id = (aiSeq.current[key] || 0) + 1; aiSeq.current[key] = id;
     setAi((m) => ({ ...m, [key]: { busy: true, error: '', questions: null } }));
@@ -304,7 +307,7 @@ const ReviewPlanPanel: React.FC<{
       const res = await fetch('/api/competition/ai-questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-User-Token': getToken() || '' },
-        body: JSON.stringify({ indicator_id: seg.indicator, indicator_name: seg.name, quiz_id: quizId, class_id: classId,
+        body: JSON.stringify({ dataset: getDatasetId(), indicator_id: seg.indicator, indicator_name: seg.name, quiz_id: quizId, class_id: classId,
           wrong_facts: seg.wrongFacts, sample_stems: seg.sampleStems, count: 2 }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -351,7 +354,8 @@ const ReviewPlanPanel: React.FC<{
           </Tooltip>
           <Button size="small" type="primary" ghost icon={<RobotOutlined />} onClick={() => navigate(assistantPath(params, {
             classId, quizId, fromExam: true, prompt: '请根据本班本次测验的薄弱考点生成40分钟讲评教案，含分层任务与教材出处。',
-          }))} data-testid="jump-assistant-plan">AI 生成教案</Button>
+          }))} disabled={!externalAi} data-testid="jump-assistant-plan">AI 生成教案</Button>
+          {!externalAi && <Text type="secondary">{LOCAL_DATA_NOTICE}</Text>}
         </div>
         {segments.map((s, i) => {
           const st = ai[s.indicator];
@@ -383,7 +387,7 @@ const ReviewPlanPanel: React.FC<{
               </div></div>
             </div>
             <footer className="rp-segment-foot">
-              <Button size="small" icon={<RobotOutlined />} loading={st?.busy} onClick={() => void generateVariants(s)}>AI 出变式题</Button>
+              <Button size="small" icon={<RobotOutlined />} disabled={!externalAi} loading={st?.busy} onClick={() => void generateVariants(s)}>AI 出变式题</Button>
               {st?.busy && <span className="rp-ai-busy" role="status"><Spin size="small" />AI 出题中…</span>}
               {st?.questions && <div className="rp-ai-result" data-testid={`ai-variants-${s.indicator}`}>
                 <span className="rp-ai-note">AI 生成 · 需教师核对</span>

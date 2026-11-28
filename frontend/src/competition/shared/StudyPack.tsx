@@ -1,3 +1,4 @@
+import { canUseExternalAi, LOCAL_DATA_NOTICE } from './externalAi';
 import React, { useCallback, useMemo, useState } from 'react';
 import { Button, Empty, Modal, Tabs, Tag, Typography } from 'antd';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -85,6 +86,7 @@ const StudyPack: React.FC<StudyPackProps> = ({ bundle, indicatorId, quizId, clas
   const variants = useMemo(() => questions.filter((q) => q.id !== focusQuestionId).slice(0, 3), [questions, focusQuestionId]);
   const navigate = useNavigate();
   const location = useLocation();
+  const externalAi = canUseExternalAi();
 
   return <Modal open={open} onCancel={onClose} width={880} footer={<Button onClick={onClose}>关闭</Button>}
     title={`学习包 · ${indicator?.requirement || indicatorId}`}>
@@ -112,10 +114,11 @@ const StudyPack: React.FC<StudyPackProps> = ({ bundle, indicatorId, quizId, clas
       </div> : <Empty description="该考点暂无其它可练习题" /> },
       { key: 'ai', label: 'AI 出题', children: <div className="study-pack-quiz">
         <p className="teacher-muted">跳转 AI 助手，自动发送本考点＋学生上下文的出题请求（换数字/情境、解法不变）。AI 生成·需教师核对，不入正式卷。</p>
-        <Button type="primary" data-testid="jump-assistant-questions"
+        <Button type="primary" disabled={!externalAi} data-testid="jump-assistant-questions"
           onClick={() => navigate(assistantPath(new URLSearchParams(location.search), {
-            prompt: `请针对学生 ${studentId || ''} 的考点 ${indicatorId} 薄弱点出2道变式题并给解析。`,
+            classId, quizId, prompt: `请针对学生 ${studentId || ''} 的考点 ${indicatorId} 薄弱点出2道变式题并给解析。`,
           }))}>AI 生成变式题（跳转 AI 助手）</Button>
+        {!externalAi && <p className="teacher-muted">{LOCAL_DATA_NOTICE}</p>}
       </div> },
     ]} />
   </Modal>;

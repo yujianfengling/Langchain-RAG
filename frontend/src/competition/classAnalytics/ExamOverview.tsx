@@ -1,3 +1,4 @@
+import { canUseExternalAi, LOCAL_DATA_NOTICE } from '../shared/externalAi';
 import React, { useMemo } from 'react';
 import { Button, Segmented, Tooltip, Typography } from 'antd';
 import {
@@ -37,6 +38,7 @@ export interface ExamOverviewProps {
 
 /** 考试分析首屏：一句话结论先行 + 班级 KPI + 柱状图/考点雷达，先判断后明细。默认只看顶栏所选班级，可切全部班级对比。 */
 const ExamOverview: React.FC<ExamOverviewProps> = ({ overview, kps, classA, scope, onScopeChange, className, onGoStudent }) => {
+  const externalAi = canUseExternalAi();
   const classes = overview.classes;
   const scopeClasses = useMemo(() => (scope === 'mine' ? classes.filter((c) => c.id === classA) : classes), [classes, scope, classA]);
   const firstRow = overview.rows[0];
@@ -160,9 +162,10 @@ const ExamOverview: React.FC<ExamOverviewProps> = ({ overview, kps, classA, scop
     <div className="teacher-exam-verdict">
       <p className="teacher-exam-verdict-text"><BulbOutlined aria-hidden />{verdict}</p>
       <div className="teacher-exam-verdict-action">
-        <Button type="primary" icon={<RobotOutlined aria-hidden />} onClick={() => jumpAssistant(`请分析班级 ${classA} 在测验 ${quizId} 的整体情况与共性薄弱，给出讲评优先级。`)} data-testid="jump-assistant-class">AI 班级共性诊断</Button>
+        <Button type="primary" icon={<RobotOutlined aria-hidden />} onClick={() => jumpAssistant(`请分析班级 ${classA} 在测验 ${quizId} 的整体情况与共性薄弱，给出讲评优先级。`)} disabled={!externalAi} data-testid="jump-assistant-class">AI 班级共性诊断</Button>
         <Tooltip title="跳转 AI 助手并自动发送带本页班级/测验上下文的提示词，结果需教师核对。"><QuestionCircleOutlined aria-hidden className="teacher-note-hint" /></Tooltip>
-        <Button icon={<FileWordOutlined aria-hidden />} onClick={() => jumpAssistant(`请为班级 ${classA} 生成一份10题查漏补缺强化卷（风格变式提升），含答案解析，并导出Word。`)} data-testid="jump-assistant-paper">AI 出卷（本班强化卷）</Button>
+        <Button icon={<FileWordOutlined aria-hidden />} onClick={() => jumpAssistant(`请为班级 ${classA} 生成一份10题查漏补缺强化卷（风格变式提升），含答案解析，并导出Word。`)} disabled={!externalAi} data-testid="jump-assistant-paper">AI 出卷（本班强化卷）</Button>
+        {!externalAi && <Text type="secondary">{LOCAL_DATA_NOTICE}</Text>}
       </div>
     </div>
 

@@ -1,3 +1,4 @@
+import { canUseExternalAi, LOCAL_DATA_NOTICE } from '../shared/externalAi';
 import { useEffect, useState } from 'react';
 import { Alert, Button, Input, Modal, Select } from 'antd';
 import { getToken } from '../../api/authState';
@@ -154,7 +155,9 @@ function FollowUpEditor({ bundle, row, diagnosis, focusQuestionId, focusRecordId
     } catch (err) { setError((err as Error).message); }
     finally { setBusy(''); }
   };
+  const externalAi = canUseExternalAi();
   const generate = async () => {
+    if (!externalAi) return;
     setBusy('生成'); setError(''); setNotice('');
     try {
       const { prompt } = await request<{ prompt: Prompt }>('/draft', 'POST', plan);
@@ -207,7 +210,8 @@ function FollowUpEditor({ bundle, row, diagnosis, focusQuestionId, focusRecordId
           onChange={(event) => setPlan({ ...plan, review_on: event.target.value || null })} />
       </label>
       <div className="teacher-actions">
-        <Button disabled={!plan.question_ids.length || (!!busy && busy !== '生成')} loading={busy === '生成'} onClick={() => void generate()}>AI 拟定观察与提示</Button>
+        <Button disabled={!externalAi || !plan.question_ids.length || (!!busy && busy !== '生成')} loading={busy === '生成'} onClick={() => void generate()}>AI 拟定观察与提示</Button>
+        {!externalAi && <span className="teacher-muted">{LOCAL_DATA_NOTICE}</span>}
         <Button type="primary" disabled={!dirty || !plan.question_ids.length || (!!busy && busy !== '保存')}
           loading={busy === '保存'} onClick={() => void persist(plan, '补测安排已保存。')}>教师确认并保存</Button>
       </div>
@@ -229,12 +233,12 @@ function FollowUpEditor({ bundle, row, diagnosis, focusQuestionId, focusRecordId
         return <li key={id}>
           <strong>{questionLabel(id)} · {question(id)?.stem}</strong>
           {live && original && <FollowUpComparison key={live.id || live.at} original={original}
-            attempt={live} coverageNote={row.coverageNote} explain={async () => {
+            attempt={live} coverageNote={row.coverageNote} explain={externalAi ? async () => {
               const data = await request<{ explanation: string }>('/explain', 'POST', {
                 ...identity, question_id: id, result_kind: live.kind,
               });
               return data.explanation;
-            }} />}
+            } : undefined} />}
           {attempts.length > 1 && <details><summary>本题核对记录（{attempts.length} 次）</summary>
             {attempts.map((attempt, index) => <p key={attempt.id || `${attempt.at}|${index}`}>
               <time dateTime={attempt.at}>{new Date(attempt.at).toLocaleString('zh-CN')}</time> · {attempt.supports}

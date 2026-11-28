@@ -1,8 +1,8 @@
+import { canUseExternalAi, LOCAL_DATA_NOTICE } from '../shared/externalAi';
 import React, { useMemo } from 'react';
 import { Button, Typography } from 'antd';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { assistantPath } from '../shared/teacherContext';
-import { isPrivateCompetitionData } from '../dataSource';
 import type { StudentProfileData } from './studentProfileData';
 
 const { Text } = Typography;
@@ -23,6 +23,7 @@ export interface AiDiagnosisCardProps {
 const AiDiagnosisCard: React.FC<AiDiagnosisCardProps> = ({ profile, studentId, quizId, studentName }) => {
   const navigate = useNavigate();
   const location = useLocation();
+  const externalAi = canUseExternalAi();
 
   const current = profile.history.find((q) => q.id === quizId)?.totals;
   const weak = useMemo(() => profile.indicators
@@ -32,7 +33,7 @@ const AiDiagnosisCard: React.FC<AiDiagnosisCardProps> = ({ profile, studentId, q
 
   return <section className="teacher-section student-ai-diagnosis" aria-label="AI 学情诊断" data-testid="ai-diagnosis">
     <div className="teacher-section-heading"><h3 style={{ margin: 0 }}>AI 学情诊断</h3>
-      <Text type="secondary">本地即时结论 + AI 助手深度分析</Text></div>
+      <Text type="secondary">{externalAi ? '本地即时结论与 AI 助手分析' : '本地规则诊断'}</Text></div>
     <div className="student-ai-local">
       <p><strong>本次总体：</strong>{current && current.scoredCount
         ? <>有效得分 {current.score}/{current.fullScore} 分（得分率 {pct(rateOf(current.score, current.fullScore))}），{current.scoredCount} 条有效记录。</>
@@ -44,13 +45,13 @@ const AiDiagnosisCard: React.FC<AiDiagnosisCardProps> = ({ profile, studentId, q
       {profile.nextSteps[0] && <p><strong>建议下一步：</strong>{profile.nextSteps[0].title} —— {profile.nextSteps[0].reason}</p>}
     </div>
     <div className="teacher-actions student-ai-actions">
-      <Button type="primary" data-testid="jump-assistant-student"
+      <Button type="primary" data-testid="jump-assistant-student" disabled={!externalAi}
         onClick={() => navigate(assistantPath(new URLSearchParams(location.search), {
           quizId, prompt: `请分析学生 ${studentId} 在本次及历次测验的学情，指出薄弱与下一步。`,
         }))}>
         AI 深度分析（跳转 AI 助手）
       </Button>
-      <Text type="secondary">{isPrivateCompetitionData() ? `跳转 AI 助手为 ${studentName || studentId} 自动发送学情分析请求，结果需教师核对。` : '演示样例下同样可跳转，结果仅供演示。'}</Text>
+      <Text type="secondary">{externalAi ? `跳转 AI 助手为 ${studentName || studentId} 自动发送学情分析请求，结果需教师核对。` : LOCAL_DATA_NOTICE}</Text>
     </div>
   </section>;
 };
